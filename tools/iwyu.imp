@@ -1,0 +1,7 @@
+# iwyu mapping file for ZZDoom
+# https://github.com/include-what-you-use/include-what-you-use/blob/master/docs/IWYZMappings.md
+
+[
+	# don't include the specific headers, just the superheader
+	{ "include": ["@<SDL2/SDL_.*.h>", "private", "<SDL2/SDL.h>", "public"] },
+]

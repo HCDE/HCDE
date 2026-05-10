@@ -1,0 +1,44 @@
+﻿[Desktop Entry]
+Name=HCDE
+Comment=Multi-game launcher for Doom era games
+Icon=org.hcde.HCDE
+Categories=Game;Shooter;
+Exec=hcde %F
+StartupNotify=true
+PrefersNonDefaultGPU=true
+Terminal=false
+Type=Application
+Keywords=Doom;Heretic;Hexen;strife;pwad;iwad;first;person;shooter;
+MimeType=application/x-doom-wad;application/x-doom-pk7;application/x-doom-pk3;
+Actions=launch-safemode;launch-doom-1;launch-doom-2;launch-heretic;launch-hexen;launch-strife;
+
+[Desktop Action launch-safemode]
+Name=HCDE Safemode
+Icon=org.hcde.HCDE
+Exec=hcde -noautoload -noautoexec %F
+
+[Desktop Action launch-doom-1]
+Name=Launch Doom
+Icon=org.hcde.HCDE
+Exec=hcde -iwad DOOM.WAD %F
+
+[Desktop Action launch-doom-2]
+Name=Launch Doom 2
+Icon=org.hcde.HCDE
+Exec=hcde -iwad DOOM2.WAD %F
+
+[Desktop Action launch-heretic]
+Name=Launch Heretic
+Icon=org.hcde.HCDE
+Exec=hcde -iwad HERETIC.WAD %F
+
+[Desktop Action launch-hexen]
+Name=Launch Hexen
+Icon=org.hcde.HCDE
+Exec=hcde -iwad HEXEN.WAD %F
+
+[Desktop Action launch-strife]
+Name=Launch Strife
+Icon=org.hcde.HCDE
+Exec=hcde -iwad STRIFE1.WAD %F
+
