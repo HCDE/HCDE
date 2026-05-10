@@ -131,7 +131,7 @@ static int			StabilityTics[STABILITYTICS] = {};
 static size_t	LocalNetBufferSize = 0;
 static uint8_t	LocalNetBuffer[MAX_MSGLEN] = {};
 
-static uint8_t	CurrentLobbyID = 0u;	// Ignore commands not from this lobby (useful when transitioning levels).
+static uint8_t	CurrentRoomID = 0u;	// Ignore commands not from this room (useful when transitioning levels).
 static int		LastGameUpdate = 0;		// Track the last time the game actually ran the world.
 static uint64_t	MutedClients = 0u;		// Ignore messages from these clients.
 
@@ -400,7 +400,7 @@ void Net_ClearBuffers()
 
 	LagState = LAG_NONE;
 	MutedClients = 0u;
-	CurrentLobbyID = 0u;
+	CurrentRoomID = 0u;
 	NetworkClients.Clear();
 	netgame = multiplayer = false;
 	LastSentConsistency = CurrentConsistency = 0;
@@ -536,7 +536,7 @@ double Net_ModifyParticleFrac(particle_t* part, double ticFrac)
 void Net_ResetCommands(bool midTic)
 {
 	bCommandsReset = midTic;
-	++CurrentLobbyID;
+	++CurrentRoomID;
 	SkipCommandTimer = SkipCommandAmount = CommandsAhead = 0;
 	StabilityBuffer = PrevAvailableDiff = 0;
 	CurStabilityTic = 0u;
@@ -805,7 +805,7 @@ static void CheckLevelStart(int client, int delayTics)
 		{
 			// Someone might've missed the previous packet, so resend it just in case.
 			NetBuffer[0] = NCMD_LEVELREADY;
-			NetBuffer[1] = CurrentLobbyID;
+			NetBuffer[1] = CurrentRoomID;
 			NetBuffer[2] = 0;
 			NetBuffer[3] = 0;
 
@@ -838,7 +838,7 @@ static void CheckLevelStart(int client, int delayTics)
 		constexpr uint16_t LatencyCap = 350u;
 
 		NetBuffer[0] = NCMD_LEVELREADY;
-		NetBuffer[1] = CurrentLobbyID;
+		NetBuffer[1] = CurrentRoomID;
 		uint16_t highestAvg = 0u;
 		// Wait for enough latency info to be accepted so a better average
 		// can be calculated for everyone.
@@ -929,7 +929,7 @@ static void GetPackets()
 
 		if (NetBuffer[0] & NCMD_LEVELREADY)
 		{
-			if (NetBuffer[1] == CurrentLobbyID)
+			if (NetBuffer[1] == CurrentRoomID)
 			{
 				int delay = 0;
 				if (clientNum == Net_Arbitrator)
@@ -947,7 +947,7 @@ static void GetPackets()
 			clientState.Flags |= CF_RETRANSMIT;
 		}
 
-		const bool validID = NetBuffer[1] == CurrentLobbyID;
+		const bool validID = NetBuffer[1] == CurrentRoomID;
 		if (validID)
 		{
 			clientState.Flags |= CF_UPDATED;
@@ -1383,7 +1383,7 @@ void NetUpdate(int tics)
 				if (consoleplayer != Net_Arbitrator && IsMapLoaded())
 				{
 					NetBuffer[0] = NCMD_LEVELREADY;
-					NetBuffer[1] = CurrentLobbyID;
+					NetBuffer[1] = CurrentRoomID;
 					HSendPacket(Net_Arbitrator, 2);
 				}
 			}
@@ -1587,7 +1587,7 @@ void NetUpdate(int tics)
 		NetBuffer[0] = (curState.Flags & CF_MISSING) ? NCMD_RETRANSMIT : 0;
 		curState.Flags &= ~CF_MISSING;
 
-		NetBuffer[1] = (curState.Flags & CF_RETRANSMIT_SEQ) ? curState.ResendID : CurrentLobbyID;
+		NetBuffer[1] = (curState.Flags & CF_RETRANSMIT_SEQ) ? curState.ResendID : CurrentRoomID;
 		int lastSeq = curState.CurrentSequence;
 		int lastCon = curState.CurrentNetConsistency;
 		if (consoleplayer != Net_Arbitrator)

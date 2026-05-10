@@ -33,6 +33,7 @@
 #include "v_text.h"
 #include "m_argv.h"
 #include "v_video.h"
+#include "d_main.h"
 
 void ParseOldDecoration(FScanner &sc, EDefinitionType def, PNamespace *ns);
 EXTERN_CVAR(Bool, strictdecorate);
@@ -1196,6 +1197,7 @@ static void ParseActor(FScanner &sc, PNamespace *ns)
 		sc.ScriptError("%s", err.GetMessage());
 	}
 	sc.SetCMode (false);
+	D_StartupProgress();
 }
 
 //==========================================================================
@@ -1344,5 +1346,6 @@ void ParseAllDecorate()
 		FScanner sc(lump);
 		auto ns = Namespaces.NewNamespace(sc.LumpNum);
 		ParseDecorate(sc, ns);
+		D_StartupProgress();
 	}
 }

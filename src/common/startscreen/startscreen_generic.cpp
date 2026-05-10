@@ -22,10 +22,13 @@
 */
 
 #include "startscreen.h"
+#include "c_console.h"
+#include "c_consolebuffer.h"
 #include "filesystem.h"
 #include "printf.h"
 #include "startupinfo.h"
 #include "image.h"
+#include "v_font.h"
 #include "texturemanager.h"
 #include "widgets/themedata.h"
 
@@ -43,6 +46,10 @@ public:
 	FGenericStartScreen(int max_progress);
 
 	bool DoProgress(int) override;
+	void StartupStatusLine(const char *status, int colors, bool center) override;
+	void LoadingStatus(const char *message, int colors) override;
+	void AppendStatusLine(const char *status) override;
+	bool DrawStartupConsoleOverlay() override;
 };
 
 
@@ -92,6 +99,7 @@ FGenericStartScreen::FGenericStartScreen(int max_progress)
 
 bool FGenericStartScreen::DoProgress(int advance)
 {
+	constexpr int numnotches = 200 * 2;
 	static auto argb = 0;
 	static RgbQuad bcolor = { 255, 255, 255, 255 };
 	if (!argb && bcolor.rgbReserved)
@@ -103,23 +111,73 @@ bool FGenericStartScreen::DoProgress(int advance)
 		bcolor.rgbReserved = static_cast<unsigned char>(0xff&(argb>>24));
 	}
 
-	if (CurPos < MaxPos)
+	bool done = FStartScreen::DoProgress(advance);
+
+	if (MaxPos > 0)
 	{
-		int numnotches = 200 * 2;
-		int notch_pos = ((CurPos + 1) * numnotches) / MaxPos;
-		if (notch_pos != NotchPos)
-		{ // Time to draw another notch.
+		int notch_pos = int((int64_t)CurPos * numnotches / MaxPos);
+		notch_pos = clamp(notch_pos, 0, numnotches);
+		if (notch_pos > NotchPos)
+		{
 			ClearBlock(StartupBitmap, bcolor, (320 - 100) * 2, 480 * 2 - 30, notch_pos, 4 * 2);
 			NotchPos = notch_pos;
 			if (StartupTexture)
 				StartupTexture->CleanHardwareData(true);
 		}
 	}
-	return FStartScreen::DoProgress(advance);
+	return done;
+}
+
+void FGenericStartScreen::StartupStatusLine(const char *message, int colors, bool center)
+{
+	Printf("%s\n", message);
+}
+
+void FGenericStartScreen::LoadingStatus(const char *message, int colors)
+{
+	Printf("%s\n", message);
+}
+
+void FGenericStartScreen::AppendStatusLine(const char *status)
+{
+	Printf("%s\n", status);
+}
+
+bool FGenericStartScreen::DrawStartupConsoleOverlay()
+{
+	if (conbuffer == nullptr || CurrentConsoleFont == nullptr)
+	{
+		return false;
+	}
+
+	const int lineheight = CurrentConsoleFont->GetHeight();
+	const int panelwidth = StartupBitmap.GetWidth() - 16;
+	const int panelheight = lineheight * 8 + 8;
+	const RgbQuad bg = { 0, 0, 0, 180 };
+	const auto fg = TextModePalette[7];
+
+	conbuffer->FormatText(CurrentConsoleFont, panelwidth);
+	unsigned int consolelines = conbuffer->GetFormattedLineCount();
+	FBrokenLines *blines = conbuffer->GetLines();
+	if (blines == nullptr || consolelines == 0)
+	{
+		return false;
+	}
+
+	ClearBlock(StartupBitmap, bg, 0, 0, StartupBitmap.GetWidth(), panelheight);
+	const unsigned int showlines = min<unsigned int>(consolelines, 8);
+	const unsigned int startline = consolelines - showlines;
+	for (unsigned int i = 0; i < showlines; ++i)
+	{
+		DrawString(StartupBitmap, 1, 0.5 + i, blines[startline + i].Text.GetChars(), fg, bg);
+	}
+	return true;
 }
 
 
 FStartScreen* CreateGenericStartScreen(int max_progress)
 {
-	return new FGenericStartScreen(max_progress);
+	auto screen = new FGenericStartScreen(max_progress);
+	screen->BeginCountdown();
+	return screen;
 }

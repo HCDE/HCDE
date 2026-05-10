@@ -1464,6 +1464,21 @@ add_custom_command(TARGET zdoom POST_BUILD
 	VERBATIM
 )
 
+if(WIN32)
+	add_custom_command(TARGET zdoom POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different
+			$<TARGET_FILE:zdoom> "${HCDE_RESOURCE_DIR}/hcdeserv.exe"
+		COMMENT "Publishing hcdeserv.exe..."
+	)
+else()
+	add_custom_command(TARGET zdoom POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E create_symlink
+			$<TARGET_FILE_NAME:zdoom> "${HCDE_RESOURCE_DIR}/hcdeserv"
+		WORKING_DIRECTORY $<TARGET_FILE_DIR:zdoom>
+		COMMENT "Publishing hcdeserv..."
+	)
+endif()
+
 if ( NOT ZMUSIC_SYSTEM_INSTALL AND (NOT DEFINED BUILD_SHARED_LIBS OR BUILD_SHARED_LIBS))
 	# bring zmusic in
 	add_custom_command(TARGET zdoom POST_BUILD

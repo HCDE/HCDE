@@ -99,6 +99,10 @@ FARG(host, "Multiplayer", "Designates the machine as the host for a multiplayer 
 	" start the game when everyone is connected.");
 FARG(join, "Multiplayer", "Connects to a multiplayer host.", "host's IP address[:host's port]",
 	 "Connect to a host for a multiplayer game.");
+FARG(server, "Multiplayer", "Starts a dedicated multiplayer server without the session window.", "x",
+	"This machine will function as a dedicated multiplayer server with x players (including this"
+	" machine). Use this for HCDE's separate server mode so the launcher can start a server process"
+	" and a local join client without showing the old room/session window.");
 FARG(dup, "Multiplayer", "Send less player movement commands over the network.", "x",
 	"Causes " GAMENAME " to transmit fewer player movement commands across the network. Valid"
 	" values range from 1–9. For example, -dup 2 would cause " GAMENAME " to send half as many"
@@ -127,7 +131,7 @@ enum ENetConnectType : uint8_t
 	PRE_GAME_INFO_ACK,		// Sent from guest to host confirming game info was gotten
 	PRE_GO,					// Sent from host to guest telling them to start the game
 
-	PRE_FULL,				// Sent from host to guest if the lobby is full
+	PRE_FULL,				// Sent from host to guest if the room is full
 	PRE_IN_PROGRESS,		// Sent from host to guest if the game has already started
 	PRE_WRONG_PASSWORD,		// Sent from host to guest if their provided password was wrong
 	PRE_VERIFICATION_ERROR,	// Sent from host to guest if something failed during the verification step.
@@ -141,6 +145,14 @@ enum EConnectionStatus
 	CSTAT_CONNECTING,	// Guest is trying to connect
 	CSTAT_WAITING,		// Guest is waiting for game info
 	CSTAT_READY,		// Guest is ready to start the game
+};
+
+enum ERoomFlow
+{
+	RF_IDLE,
+	RF_HOST_WAITING,
+	RF_GUEST_CONTACTING,
+	RF_SYNCING,
 };
 
 // These need to be synced with the window backends so information about each
@@ -169,6 +181,9 @@ struct FConnection
 		SessionToken = 0u;
 	}
 };
+
+static ERoomFlow RoomFlowState = RF_IDLE;
+static bool DedicatedServerMode = false;
 
 bool netgame = false;
 bool multiplayer = false;
@@ -257,6 +272,21 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	FServerQuerySnapshot snapshot = {};
 	snapshot.HostName = FString(GAMENAME " server");
 	snapshot.MapName = level.LevelName.IsNotEmpty() ? level.LevelName : FString("unknown");
+	switch (RoomFlowState)
+	{
+	case RF_HOST_WAITING:
+		snapshot.SessionState = "host-waiting";
+		break;
+	case RF_GUEST_CONTACTING:
+		snapshot.SessionState = "guest-contacting";
+		break;
+	case RF_SYNCING:
+		snapshot.SessionState = "syncing";
+		break;
+	default:
+		snapshot.SessionState = "idle";
+		break;
+	}
 	snapshot.Version = GetVersionString();
 	snapshot.GitHash = GetGitHash();
 	snapshot.MaxPlayers = uint8_t(clamp<int>(MaxClients, 0, UINT8_MAX));
@@ -289,6 +319,15 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	return snapshot;
 }
 
+} // namespace
+
+void I_GetLocalServerSnapshot(FServerQuerySnapshot& snapshot)
+{
+	snapshot = BuildServerQuerySnapshot();
+}
+
+namespace
+{
 struct FQueryWriter
 {
 	std::array<uint8_t, MAX_MSGLEN> Buffer = {};
@@ -354,6 +393,7 @@ static bool SendLauncherInfo(const sockaddr_in& to, const uint8_t* request, int 
 	    !writer.WriteByte(snapshot.PlayerCount) ||
 	    !writer.WriteByte(snapshot.MaxPlayers) ||
 	    !writer.WriteString(snapshot.MapName.GetChars()) ||
+	    !writer.WriteString(snapshot.SessionState.GetChars()) ||
 	    !writer.WriteByte(snapshot.Deathmatch ? 1u : 0u) ||
 	    !writer.WriteByte(snapshot.Skill) ||
 	    !writer.WriteByte(snapshot.Teamplay ? 1u : 0u) ||
@@ -593,6 +633,7 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 	    !ReadQueryByte(data, offset, length, snapshot.PlayerCount) ||
 	    !ReadQueryByte(data, offset, length, snapshot.MaxPlayers) ||
 	    !ReadQueryString(data, offset, length, snapshot.MapName) ||
+	    !ReadQueryString(data, offset, length, snapshot.SessionState) ||
 	    !ReadQueryByte(data, offset, length, deathmatch) ||
 	    !ReadQueryByte(data, offset, length, skill) ||
 	    !ReadQueryByte(data, offset, length, teamplay) ||
@@ -794,38 +835,66 @@ static void I_NetLog(const char* text, ...)
 #endif
 }
 
+static const char* RoomFlowName(ERoomFlow flow)
+{
+	switch (flow)
+	{
+	case RF_HOST_WAITING: return "host-waiting";
+	case RF_GUEST_CONTACTING: return "guest-contacting";
+	case RF_SYNCING: return "syncing";
+	default: return "idle";
+	}
+}
+
+static void SetRoomFlow(ERoomFlow flow)
+{
+	if (RoomFlowState != flow)
+	{
+		RoomFlowState = flow;
+		DebugTrace::Markf("net", "session flow=%s", RoomFlowName(flow));
+	}
+}
+
 // Gracefully closes the net window so that any error messaging can be properly displayed.
 static void I_NetError(const char* error)
 {
-	NetStartWindow::NetClose();
+	if (!DedicatedServerMode)
+		NetStartWindow::NetClose();
 	I_FatalError("%s", error);
 }
 
 static void I_NetInit(const char* msg, bool host)
 {
-	Printf("NetLobby:: %s\n", msg);
-	NetStartWindow::NetInit(msg, host);
+	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
+	if (!DedicatedServerMode)
+		NetStartWindow::NetInit(msg, host);
 }
 
 // todo: later these must be dispatched by the main menu, not the start screen.
-// Updates the general status of the lobby.
+// Updates the general status of the session flow.
 static void I_NetMessage(const char* msg)
 {
-	Printf("NetLobby:: %s\n", msg);
+	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
 	NetStartWindow::NetMessage(msg);
 }
 
-// Listen for incoming connections while the lobby is active. The main thread needs to be locked up
+// Listen for incoming connections while the room is active. The main thread needs to be locked up
 // here to prevent the engine from continuing to start the game until everyone is ready.
 static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 {
+	if (DedicatedServerMode)
+	{
+		while (!loopCallback(data))
+			Sleep(1);
+		return true;
+	}
 	return NetStartWindow::NetLoop(loopCallback, data);
 }
 
 // A new client has just entered the game, so add them to the player list.
 static void I_NetClientConnected(int client, unsigned int charLimit = 0u)
 {
-	Printf("NetLobby:: Client '%s' connected.\n", Net_GetClientName(client, 0u));
+	Printf("%s:: Client '%s' connected.\n", DedicatedServerMode ? "NetServer" : "NetSession", Net_GetClientName(client, 0u));
 
 	const char* name = Net_GetClientName(client, charLimit);
 	unsigned int flags = CFL_NONE;
@@ -845,7 +914,7 @@ static void I_NetClientUpdated(int client)
 
 static void I_NetClientDisconnected(int client)
 {
-	Printf("NetLobby:: Client '%s' disconnected.\n", Net_GetClientName(client, 0u));
+	Printf("%s:: Client '%s' disconnected.\n", DedicatedServerMode ? "NetServer" : "NetSession", Net_GetClientName(client, 0u));
 	NetStartWindow::NetDisconnect(client);
 }
 
@@ -1164,7 +1233,7 @@ static void AddClientConnection(const sockaddr_in& from, int client)
 	Connected[client].Address = from;
 	Connected[client].SessionToken = MakeSessionToken(from, client);
 	NetworkClients += client;
-	I_NetLog("Client %u joined the lobby", client);
+	I_NetLog("Client %u joined the room", client);
 	I_NetClientUpdated(client);
 
 	// Make sure any ready clients are marked as needing the new client's info.
@@ -1184,7 +1253,7 @@ static void RemoveClientConnection(int client)
 	players[client].settings_controller = false;
 	I_ClearClient(client);
 	NetworkClients -= client;
-	I_NetLog("Client %u left the lobby", client);
+	I_NetLog("Client %u left the room", client);
 
 	// Let everyone else know the user left as well.
 	NetBuffer[0] = NCMD_SETUP;
@@ -1371,7 +1440,7 @@ static bool Host_CheckForConnections(void* connected)
 	for (int client = 1; client < MaxClients; ++client)
 	{
 		auto& con = Connected[client];
-		// If we're starting before the lobby is full, only check against connected clients.
+		// If we're starting before the room is full, only check against connected clients.
 		if (con.Status != CSTAT_READY && (!forceStarting || con.Status != CSTAT_NONE))
 			ready = false;
 
@@ -1503,25 +1572,28 @@ static bool HostGame(int arg)
 	StartNetwork(false);
 	DebugTrace::Markf("net", "host network ready port=%u", static_cast<unsigned>(GamePort));
 	SV_InitMasters();
-	I_NetInit("Waiting for other players...", true);
+	SetRoomFlow(RF_HOST_WAITING);
+	I_NetInit("Hosting room...", true);
 	I_NetUpdatePlayers(1, MaxClients);
 	I_NetClientConnected(0u, 16u);
+	I_NetMessage(DedicatedServerMode ? "Server waiting for players" : "Session waiting for players");
 
-	// Wait for the lobby to be full.
+	// Wait for the session to be full.
 	int connectedPlayers = 1;
 	if (!I_NetLoop(Host_CheckForConnections, (void*)&connectedPlayers))
 	{
 		SendAbort();
 		SV_ShutdownMasters();
-		DebugTrace::Mark("net", "host lobby aborted");
+		DebugTrace::Mark("net", "host session aborted");
 		throw CExitEvent(0);
 	}
 
 	// Now go
-	I_NetMessage("Starting game");
+	SetRoomFlow(RF_SYNCING);
+	I_NetMessage(DedicatedServerMode ? "Starting server" : "Starting room");
 	I_NetDone();
 
-	// If the player force started with only themselves in the lobby, start the game
+	// If the player force started with only themselves in the session, start the session
 	// immediately.
 	if (connectedPlayers == 1)
 	{
@@ -1717,7 +1789,7 @@ static bool Guest_ContactHost(void* unused)
 				Net_SetupUserInfo();
 
 				MaxClients = NetBuffer[4];
-				I_NetMessage("Sending game information");
+				I_NetMessage("Sending session information");
 				I_NetUpdatePlayers(NetBuffer[3], MaxClients);
 				I_NetClientConnected(consoleplayer, 16u);
 			}
@@ -1734,7 +1806,7 @@ static bool Guest_ContactHost(void* unused)
 			{
 				Connected[consoleplayer].Status = CSTAT_WAITING;
 				I_NetClientUpdated(consoleplayer);
-				I_NetMessage("Waiting for game to start");
+				I_NetMessage("Waiting for session start");
 			}
 
 			BeginSetupPacket(PRE_USER_INFO_ACK, Connected[0].SessionToken);
@@ -1800,7 +1872,7 @@ static bool Guest_ContactHost(void* unused)
 			if (!CheckSetupPacket(consoleplayer, 6u, 2u, "guest go"))
 				continue;
 
-			I_NetMessage("Starting game");
+			I_NetMessage("Starting session");
 			I_NetLog("Received GO");
 			return true;
 		}
@@ -1858,7 +1930,8 @@ static bool JoinGame(int arg)
 	BuildAddress(Connected[0].Address, Args->GetArg(arg));
 	Connected[0].Status = CSTAT_CONNECTING;
 
-	I_NetInit("Contacting host...", false);
+	SetRoomFlow(RF_GUEST_CONTACTING);
+	I_NetInit("Joining room...", false);
 	I_NetUpdatePlayers(0u, MaxClients);
 	I_NetClientUpdated(0);
 
@@ -1874,6 +1947,7 @@ static bool JoinGame(int arg)
 			Connected[i].Status = CSTAT_READY;
 	}
 
+	SetRoomFlow(RF_SYNCING);
 	I_NetLog("Total players: %u", MaxClients);
 	I_NetDone();
 
@@ -1885,6 +1959,10 @@ static bool JoinGame(int arg)
 //
 bool I_InitNetwork()
 {
+	DedicatedServerMode = false;
+	if (Args->CheckParm(FArg_server))
+		DedicatedServerMode = true;
+
 	// set up for network
 	const char* v = Args->CheckValue(FArg_dup);
 	if (v != nullptr)
@@ -1901,9 +1979,15 @@ bool I_InitNetwork()
 
 	// parse network game options,
 	//		player 1: -host <numplayers>
+	//		player 1: -server <numplayers> (dedicated server mode)
 	//		player x: -join <player 1's address>
 	int arg = -1;
-	if ((arg = Args->CheckParm(FArg_host)))
+	if (DedicatedServerMode && (arg = Args->CheckParm(FArg_server)))
+	{
+		if (!HostGame(arg + 1))
+			return false;
+	}
+	else if ((arg = Args->CheckParm(FArg_host)))
 	{
 		if (!HostGame(arg + 1))
 			return false;
@@ -1925,6 +2009,11 @@ bool I_InitNetwork()
 
 	bGameStarted = true;
 	return true;
+}
+
+bool I_IsDedicatedServerMode()
+{
+	return DedicatedServerMode;
 }
 
 #ifdef _WIN32

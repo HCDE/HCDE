@@ -2276,7 +2276,7 @@ static void AddAutoloadFiles(const char *autoname, std::vector<FileSys::Resource
 	}
 
 	// Disable autoloading in netgames as we don't want people who are hosting/joining loading up random files.
-	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !Args->CheckParm(FArg_join))
+	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !Args->CheckParm(FArg_join) && !Args->CheckParm(FArg_server))
 	{
 		FString file;
 
@@ -2467,6 +2467,30 @@ static void CheckCmdLine()
 	{
 		FStringf temp("Warp to map %s, Skill %d ", startmap.GetChars(), setskill + 1);
 		StartScreen->AppendStatusLine(temp.GetChars());
+	}
+}
+
+static void StartupStatusLine(const char *text, int colors = 0x3f, bool center = false)
+{
+	if (batchrun)
+		return;
+
+	Printf("%s\n", text);
+}
+
+void D_StartupProgress(int advance)
+{
+	if (advance <= 0)
+	{
+		return;
+	}
+	if (StartWindow != nullptr)
+	{
+		StartWindow->Progress(advance);
+	}
+	if (StartScreen != nullptr)
+	{
+		StartScreen->Progress(advance);
 	}
 }
 
@@ -3524,10 +3548,23 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	S_Init();
 
 	int max_progress = TexMan.GuesstimateNumTextures();
+	if (max_progress > 0)
+	{
+		// TexMan's guess covers texture work, but startup has a few extra
+		// fixed phases and callbacks. Give the bar plenty of headroom so it
+		// does not peg at 100% before the engine is actually ready.
+		max_progress = std::max(max_progress * 4, 4096);
+	}
+	else
+	{
+		max_progress = 4096;
+	}
 	int per_shader_progress = 0;//screen->GetShaderCount()? (max_progress / 10 / screen->GetShaderCount()) : 0;
 
 	bool norun = Args->CheckParm(FArg_norun);
-	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_host) || norun;
+	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_host) || Args->CheckParm(FArg_server) || norun;
+	bool videoInitialized = false;
+	bool firstShaderCompiled = false;
 
 	if (GameStartupInfo.Type == FStartupInfo::DefaultStartup)
 	{
@@ -3564,7 +3601,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	if (!restart)
 	{
-		if (!batchrun) Printf ("I_Init: Setting up machine state.\n");
+	StartupStatusLine("I_Init: Setting up machine state.");
 		CheckCPUID(&CPU);
 		CalculateCPUSpeed();
 		auto ci = DumpCPUInfo(&CPU);
@@ -3593,17 +3630,33 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		StartWindow = new FStartupScreen(0);
 	}
 
+	if (!nostartscreen)
+	{
+		// HCDE shows the visible loader before resource-heavy startup so
+		// progress, ETA, and early mod failures are visible to the user.
+		V_Init2();
+		videoInitialized = true;
+		screen->CompileNextShader();
+		firstShaderCompiled = true;
+		StartScreen = GetGameStartScreen(per_shader_progress > 0 ? max_progress * 10 / 9 : max_progress + 3);
+		setmodeneeded = true;
+		if (StartScreen != nullptr)
+		{
+			StartScreen->Render(true);
+		}
+	}
+
 	CheckCmdLine();
 
 	// [RH] Load sound environments
 	S_ParseReverbDef ();
 
 	// [RH] Parse any SNDINFO lumps
-	if (!batchrun) Printf ("S_InitData: Load sound definitions.\n");
+	StartupStatusLine("S_InitData: Load sound definitions.");
 	S_InitData ();
 
 	// [RH] Parse through all loaded mapinfo lumps
-	if (!batchrun) Printf ("G_ParseMapInfo: Load map definitions.\n");
+	StartupStatusLine("G_ParseMapInfo: Load map definitions.");
 	G_ParseMapInfo (iwad_info->MapInfo);
 	CheckDefaultSkill();
 	CheckEpisodeCmd();
@@ -3615,7 +3668,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	// MUSINFO must be parsed after MAPINFO
 	S_ParseMusInfo();
 
-	if (!batchrun) Printf ("Texman.Init: Init texture manager.\n");
+	StartupStatusLine("Texman.Init: Init texture manager.");
 	UpdateUpscaleMask();
 	SpriteFrames.Clear();
 	TexMan.AddTextures([]()
@@ -3638,7 +3691,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	UpdateGenericUI(false);
 
 	// [CW] Parse any TEAMINFO lumps.
-	if (!batchrun) Printf ("ParseTeamInfo: Load team definitions.\n");
+	StartupStatusLine("ParseTeamInfo: Load team definitions.");
 	FTeam::ParseTeamInfo ();
 
 	R_ParseTrnslate();
@@ -3664,7 +3717,10 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	ParseGLDefs();
 
-	if (!batchrun) Printf ("R_Init: Init %s refresh subsystem.\n", gameinfo.ConfigName.GetChars());
+	{
+		FStringf status("R_Init: Init %s refresh subsystem.", gameinfo.ConfigName.GetChars());
+		StartupStatusLine(status.GetChars());
+	}
 	if (StartScreen) StartScreen->LoadingStatus ("Loading graphics", 0x3f);
 	if (StartScreen) StartScreen->Progress(1);
 	StartWindow->Progress();
@@ -3732,7 +3788,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	primaryLevel->BotInfo.spawn_tries = 0;
 	primaryLevel->BotInfo.wanted_botnum = primaryLevel->BotInfo.getspawned.Size();
 
-	if (!batchrun) Printf ("P_Init: Init Playloop state.\n");
+	StartupStatusLine("P_Init: Init Playloop state.");
 	if (StartScreen) StartScreen->LoadingStatus ("Init game engine", 0x3f);
 	AM_StaticInit();
 	P_Init ();
@@ -3761,7 +3817,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	if (!restart)
 	{
-		if (!batchrun) Printf ("D_CheckNetGame: Checking network game status.\n");
+		StartupStatusLine("D_CheckNetGame: Checking network game status.");
 		if (StartScreen) StartScreen->LoadingStatus ("Checking network game status.", 0x3f);
 		if (!D_CheckNetGame ())
 		{
@@ -3794,11 +3850,11 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	// window, or see if we aren't using initializing OpenGL for the
 	// replacement widget framework, or clean up the code to handle
 	// swapping between multiple GL contexts)
-	if (!(restart || norun))
+	if (!(restart || norun) && !videoInitialized)
 		V_Init2();
 
 	if (!(batchrun || norun)) Printf ("V_Init: allocate screen.\n");
-	if (!(restart || norun))
+	if (!(restart || norun) && !firstShaderCompiled)
 	{
 		screen->CompileNextShader();
 	}
@@ -3808,9 +3864,12 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		screen->UpdatePalette();
 	}
 
-	StartScreen = nostartscreen? nullptr : GetGameStartScreen(per_shader_progress > 0 ? max_progress * 10 / 9 : max_progress + 3);
-	setmodeneeded = true;
-	if (StartScreen != nullptr) StartScreen->Render();
+	if (StartScreen == nullptr)
+	{
+		StartScreen = nostartscreen? nullptr : GetGameStartScreen(per_shader_progress > 0 ? max_progress * 10 / 9 : max_progress + 3);
+		setmodeneeded = true;
+		if (StartScreen != nullptr) StartScreen->Render(true);
+	}
 
 	if (norun || batchrun)
 	{
@@ -3839,15 +3898,12 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		}
 
 		S_Sound(CHAN_BODY, CHANF_UI|(haptics_do_menus?CHANF_RUMBLE:CHANF_NORUMBLE), "misc/startupdone", 1, ATTN_NONE);
-		if (!batchrun) Printf ("Init complete.\n");
+		StartupStatusLine("Init complete.");
 
 		StartWindow->Progress(max_progress);
 		if (StartScreen)
 		{
-			StartScreen->Progress(max_progress);	// advance progress bar to the end.
-			StartScreen->Render(true);
-			StartScreen->Progress(max_progress);	// do this again because Progress advances the counter after redrawing.
-			StartScreen->Render(true);
+			StartScreen->FinishProgress();
 			delete StartScreen;
 			StartScreen = NULL;
 		}

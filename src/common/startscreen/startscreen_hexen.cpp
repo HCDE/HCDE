@@ -197,5 +197,7 @@ void FHexenStartScreen::NetDone()
 
 FStartScreen* CreateHexenStartScreen(int max_progress)
 {
-	return new FHexenStartScreen(max_progress);
+	auto screen = new FHexenStartScreen(max_progress);
+	screen->BeginCountdown();
+	return screen;
 }

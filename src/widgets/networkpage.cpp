@@ -38,8 +38,9 @@ namespace
 FString BuildServerInfoText(const FServerQuerySnapshot& snapshot)
 {
 	FString info;
-	info.Format("Host: %s\nMap: %s\nPlayers: %u/%u\nMode: %s\nSkill: %u\nTime left: %u\nFrag limit: %u\nVersion: %s (%s)",
+	info.Format("Host: %s\nSession: %s\nMap: %s\nPlayers: %u/%u\nMode: %s\nSkill: %u\nTime left: %u\nFrag limit: %u\nVersion: %s (%s)",
 		snapshot.HostName.GetChars(),
+		snapshot.SessionState.GetChars(),
 		snapshot.MapName.GetChars(),
 		snapshot.PlayerCount,
 		snapshot.MaxPlayers,

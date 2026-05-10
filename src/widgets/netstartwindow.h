@@ -56,10 +56,12 @@ protected:
 
 private:
 	void OnCallbackTimerExpired();
+	void RefreshSessionSummary();
 
 	TextLabel* MessageLabel = nullptr;
 	TextLabel* ProgressLabel = nullptr;
-	ListView* LobbyWindow = nullptr;
+	TextLabel* SessionLabel = nullptr;
+	ListView* RoomRoster = nullptr;
 	PushButton* AbortButton = nullptr;
 	PushButton* ForceStartButton = nullptr;
 	PushButton* KickButton = nullptr;

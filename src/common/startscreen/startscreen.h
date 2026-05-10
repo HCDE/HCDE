@@ -49,6 +49,10 @@ protected:
 	int CurPos = 0;
 	int MaxPos;
 	int Scale = 1;
+	uint64_t StartTime = 0;
+	double CountdownEtaMs = -1.0;
+	int CountdownSeconds = -1;
+	int CountdownProgress = -1;
 	int NetMaxPos = -1;
 	int NetCurPos = 0;
 	FBitmap StartupBitmap;
@@ -63,9 +67,13 @@ public:
 	virtual ~FStartScreen();
 	void Render(bool force = false);
 	bool Progress(int);
+	void FinishProgress();
 	void NetProgress(int count);
+	void BeginCountdown();
 	virtual void LoadingStatus(const char *message, int colors) {}
 	virtual void AppendStatusLine(const char *status) {}
+	virtual void StartupStatusLine(const char *status, int colors, bool center) {}
+	virtual bool DrawStartupConsoleOverlay() { return false; }
 	virtual bool NetInit(const char* message, int numplayers);
 	virtual void NetDone() {}
 	virtual void NetTick() {}
@@ -83,6 +91,7 @@ protected:
 	void UpdateTextBlink(FBitmap& bitmap_info, const uint8_t* text_screen, bool on);
 	void ST_Sound(const char* sndname);
 	int SizeOfText(const char* text);
+	bool DrawLaunchCountdown();
 	void CreateHeader();
 	void DrawNetStatus(int found, int total);
 	void ValidateTexture();

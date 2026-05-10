@@ -166,5 +166,7 @@ void FHereticStartScreen::AppendStatusLine(const char* status)
 
 FStartScreen* CreateHereticStartScreen(int max_progress)
 {
-	return new FHereticStartScreen(max_progress);
+	auto screen = new FHereticStartScreen(max_progress);
+	screen->BeginCountdown();
+	return screen;
 }

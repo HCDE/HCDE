@@ -29,6 +29,7 @@
 #include "thingdef.h"
 #include "codegen.h"
 #include "backend/codegen_doom.h"
+#include "d_main.h"
 
 //==========================================================================
 //***
@@ -117,6 +118,7 @@ void ParseStates(FScanner &sc, PClassActor * actor, AActor * defaults, Baggage &
 	FArgumentList *args = nullptr;
 	int flagdef = actor->ActorInfo()->DefaultStateUsage;
 	FScriptPosition scp;
+	int parsedstates = 0;
 
 	if (sc.CheckString("("))
 	{
@@ -137,6 +139,10 @@ void ParseStates(FScanner &sc, PClassActor * actor, AActor * defaults, Baggage &
 	sc.SetEscape(false);	// disable escape sequences in the state parser
 	while (!sc.CheckString ("}") && !sc.End)
 	{
+		if ((++parsedstates & 31) == 0)
+		{
+			D_StartupProgress();
+		}
 		ScriptCode = nullptr;
 		memset(&state,0,sizeof(state));
 		state.UseFlags = (uint8_t)flagdef;

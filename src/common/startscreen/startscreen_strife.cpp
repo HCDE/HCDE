@@ -180,5 +180,7 @@ void FStrifeStartScreen::DrawStuff(int old_laser, int new_laser)
 
 FStartScreen* CreateStrifeStartScreen(int max_progress)
 {
-	return new FStrifeStartScreen(max_progress);
+	auto screen = new FStrifeStartScreen(max_progress);
+	screen->BeginCountdown();
+	return screen;
 }

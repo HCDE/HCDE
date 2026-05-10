@@ -22,18 +22,40 @@
 
 #include "basics.h"
 #include "debugtrace.h"
-#include "gstrings.h"
+#include "i_net.h"
 #include "netstartwindow.h"
-#include "version.h"
 
 NetStartWindow* NetStartWindow::Instance = nullptr;
+
+static FString BuildSessionSummaryText(const FServerQuerySnapshot& snapshot)
+{
+	FString info;
+	info.Format("Session: %s | Host: %s | Map: %s | Players: %u/%u",
+		snapshot.SessionState.GetChars(),
+		snapshot.HostName.GetChars(),
+		snapshot.MapName.GetChars(),
+		snapshot.PlayerCount,
+		snapshot.MaxPlayers);
+	return info;
+}
+
+static FString BuildSessionStatusText(const FServerQuerySnapshot& snapshot)
+{
+	FString info;
+	info.Format("Mode: %s | Skill: %u | Time left: %u | Frag limit: %u",
+		snapshot.Deathmatch ? (snapshot.Teamplay ? "Deathmatch + Teamplay" : "Deathmatch") : (snapshot.Teamplay ? "Co-op + Teamplay" : "Co-op"),
+		snapshot.Skill,
+		snapshot.TimeLeft,
+		snapshot.FragLimit);
+	return info;
+}
 
 void NetStartWindow::NetInit(const char* message, bool host)
 {
 	DebugTrace::Markf("netui", "init host=%d", host ? 1 : 0);
 	Size screenSize = GetScreenSize();
 	double windowWidth = 450.0;
-	double windowHeight = 600.0;
+	double windowHeight = host ? 600.0 : 220.0;
 
 	if (!Instance)
 	{
@@ -43,19 +65,23 @@ void NetStartWindow::NetInit(const char* message, bool host)
 	}
 
 	Instance->SetMessage(message);
+	Instance->RefreshSessionSummary();
 }
 
 void NetStartWindow::NetMessage(const char* message)
 {
 	DebugTrace::Markf("netui", "message %s", message != nullptr ? message : "");
 	if (Instance)
+	{
 		Instance->SetMessage(message);
+		Instance->RefreshSessionSummary();
+	}
 }
 
 void NetStartWindow::NetConnect(int client, const char* name, unsigned flags, int status)
 {
 	DebugTrace::Markf("netui", "connect client=%d status=%u flags=%u name=%s", client, status, flags, name != nullptr ? name : "");
-	if (!Instance)
+	if (!Instance || Instance->RoomRoster == nullptr)
 		return;
 
 	std::string value = "";
@@ -64,44 +90,57 @@ void NetStartWindow::NetConnect(int client, const char* name, unsigned flags, in
 	if (flags & 2)
 		value.append("H");
 
-	Instance->LobbyWindow->UpdateItem(value, client, 1);
-	Instance->LobbyWindow->UpdateItem(name, client, 2);
+	Instance->RoomRoster->UpdateItem(value, client, 1);
+	Instance->RoomRoster->UpdateItem(name, client, 2);
 
 	value = "";
 	if (status == 1)
-		value = "CONNECTING";
+		value = "JOINING";
 	else if (status == 2)
-		value = "WAITING";
+		value = "SYNCING";
 	else if (status == 3)
 		value = "READY";
 
-	Instance->LobbyWindow->UpdateItem(value, client, 3);
+	Instance->RoomRoster->UpdateItem(value, client, 3);
+	if (Instance->hosting && client != 0 && status > 0 && !Instance->shouldstart)
+	{
+		DebugTrace::Markf("netui", "auto start session client=%d status=%d", client, status);
+		Instance->shouldstart = true;
+	}
+	Instance->RefreshSessionSummary();
 }
 
 void NetStartWindow::NetUpdate(int client, int status)
 {
 	DebugTrace::Markf("netui", "update client=%d status=%d", client, status);
-	if (!Instance)
+	if (!Instance || Instance->RoomRoster == nullptr)
 		return;
 
 	std::string value = "";
 	if (status == 1)
-		value = "CONNECTING";
+		value = "JOINING";
 	else if (status == 2)
-		value = "WAITING";
+		value = "SYNCING";
 	else if (status == 3)
 		value = "READY";
 
-	Instance->LobbyWindow->UpdateItem(value, client, 3);
+	Instance->RoomRoster->UpdateItem(value, client, 3);
+	if (Instance->hosting && client != 0 && status > 0 && !Instance->shouldstart)
+	{
+		DebugTrace::Markf("netui", "auto start session client=%d status=%d", client, status);
+		Instance->shouldstart = true;
+	}
+	Instance->RefreshSessionSummary();
 }
 
 void NetStartWindow::NetDisconnect(int client)
 {
 	DebugTrace::Markf("netui", "disconnect client=%d", client);
-	if (Instance)
+	if (Instance && Instance->RoomRoster != nullptr)
 	{
-		for (size_t i = 1u; i < Instance->LobbyWindow->GetColumnAmount(); ++i)
-			Instance->LobbyWindow->UpdateItem("", client, int(i));
+		for (size_t i = 1u; i < Instance->RoomRoster->GetColumnAmount(); ++i)
+			Instance->RoomRoster->UpdateItem("", client, int(i));
+		Instance->RefreshSessionSummary();
 	}
 }
 
@@ -113,8 +152,12 @@ void NetStartWindow::NetProgress(int cur, int limit)
 
 	Instance->maxpos = limit;
 	Instance->SetProgress(cur);
-	for (int start = Instance->LobbyWindow->GetItemAmount(); start < Instance->maxpos; ++start)
-		Instance->LobbyWindow->AddItem(std::to_string(start));
+	if (Instance->RoomRoster != nullptr)
+	{
+		for (int start = Instance->RoomRoster->GetItemAmount(); start < Instance->maxpos; ++start)
+			Instance->RoomRoster->AddItem(std::to_string(start));
+	}
+	Instance->RefreshSessionSummary();
 }
 
 void NetStartWindow::NetDone()
@@ -181,38 +224,40 @@ bool NetStartWindow::NetLoop(bool (*loopCallback)(void*), void* data)
 
 NetStartWindow::NetStartWindow(bool host) : Widget(nullptr, WidgetType::Window)
 {
-	SetWindowTitle(GAMENAME);
+	SetWindowTitle(host ? "HCDE Session" : "HCDE Connecting");
 
 	MessageLabel = new TextLabel(this);
 	ProgressLabel = new TextLabel(this);
-	LobbyWindow = new ListView(this);
 	AbortButton = new PushButton(this);
 
 	MessageLabel->SetTextAlignment(TextLabelAlignment::Center);
 	ProgressLabel->SetTextAlignment(TextLabelAlignment::Center);
 
 	AbortButton->OnClick = [this]() { OnClose(); };
-	AbortButton->SetText(GStrings.GetString("ACTION_ABORT"));
+	AbortButton->SetText(host ? "Leave Room" : "Cancel");
 
 	if (host)
 	{
 		hosting = true;
+		SessionLabel = new TextLabel(this);
+		RoomRoster = new ListView(this);
+		SessionLabel->SetTextAlignment(TextLabelAlignment::Center);
 
 		ForceStartButton = new PushButton(this);
 		ForceStartButton->OnClick = [this]() { ForceStart(); };
-		ForceStartButton->SetText(GStrings.GetString("ACTION_STARTGAME"));
+		ForceStartButton->SetText("Start Session");
 
 		KickButton = new PushButton(this);
 		KickButton->OnClick = [this]() { OnKick(); };
-		KickButton->SetText(GStrings.GetString("ACTION_KICK"));
+		KickButton->SetText("Remove");
 
 		BanButton = new PushButton(this);
 		BanButton->OnClick = [this]() { OnBan(); };
-		BanButton->SetText(GStrings.GetString("ACTION_BAN"));
-	}
+		BanButton->SetText("Block");
 
-	// Client number, flags, name, status.
-	LobbyWindow->SetColumnWidths({ 30.0, 30.0, 200.0, 50.0 });
+		// Slot number, flags, name, session status.
+		RoomRoster->SetColumnWidths({ 30.0, 30.0, 200.0, 70.0 });
+	}
 
 	CallbackTimer = new Timer(this);
 	CallbackTimer->FuncExpired = [this]() { OnCallbackTimerExpired(); };
@@ -230,9 +275,22 @@ void NetStartWindow::SetProgress(int newpos)
 	{
 		pos = newpos;
 		FString message;
-		message.Format("%d/%d", pos, maxpos);
+		message.Format("Players %d/%d", pos, maxpos);
 		ProgressLabel->SetText(message.GetChars());
 	}
+}
+
+void NetStartWindow::RefreshSessionSummary()
+{
+	if (!hosting || SessionLabel == nullptr || RoomRoster == nullptr)
+		return;
+
+	FServerQuerySnapshot snapshot = {};
+	I_GetLocalServerSnapshot(snapshot);
+
+	FString text = BuildSessionSummaryText(snapshot);
+	text.AppendFormat("\n%s", BuildSessionStatusText(snapshot).GetChars());
+	SessionLabel->SetText(text.GetChars());
 }
 
 void NetStartWindow::OnClose()
@@ -244,14 +302,14 @@ void NetStartWindow::OnClose()
 
 void NetStartWindow::ForceStart()
 {
-	DebugTrace::Mark("netui", "force start");
+	DebugTrace::Mark("netui", "start session");
 	shouldstart = true;
 }
 
 void NetStartWindow::OnKick()
 {
-	int item = LobbyWindow->GetSelectedItem();
-	DebugTrace::Markf("netui", "kick client=%d", item);
+	int item = RoomRoster->GetSelectedItem();
+	DebugTrace::Markf("netui", "remove client=%d", item);
 
 	size_t i = 0u;
 	for (; i < kickclients.size(); ++i)
@@ -266,8 +324,8 @@ void NetStartWindow::OnKick()
 
 void NetStartWindow::OnBan()
 {
-	int item = LobbyWindow->GetSelectedItem();
-	DebugTrace::Markf("netui", "ban client=%d", item);
+	int item = RoomRoster->GetSelectedItem();
+	DebugTrace::Markf("netui", "block client=%d", item);
 
 	size_t i = 0u;
 	for (; i < banclients.size(); ++i)
@@ -294,8 +352,18 @@ void NetStartWindow::OnGeometryChanged()
 	ProgressLabel->SetFrameGeometry(Rect::xywh(5.0, y, w - 10.0, labelheight));
 	y += labelheight + 5.0;
 
+	if (!hosting || SessionLabel == nullptr || RoomRoster == nullptr)
+	{
+		AbortButton->SetFrameGeometry((w - 100.0) * 0.5, GetHeight() - 15.0 - AbortButton->GetPreferredHeight(), 100.0, AbortButton->GetPreferredHeight());
+		return;
+	}
+
+	labelheight = SessionLabel->GetPreferredHeight();
+	SessionLabel->SetFrameGeometry(Rect::xywh(5.0, y, w - 10.0, labelheight));
+	y += labelheight + 5.0;
+
 	labelheight = (GetHeight() - 30.0 - AbortButton->GetPreferredHeight()) - y;
-	LobbyWindow->SetFrameGeometry(Rect::xywh(5.0, y, w - 10.0, labelheight));
+	RoomRoster->SetFrameGeometry(Rect::xywh(5.0, y, w - 10.0, labelheight));
 
 	y = GetHeight() - 15.0 - AbortButton->GetPreferredHeight();
 	if (hosting)

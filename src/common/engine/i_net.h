@@ -34,6 +34,7 @@ inline constexpr size_t MAXPLAYERS = 64u;
 
 EXTERN_FARG(host);
 EXTERN_FARG(join);
+EXTERN_FARG(server);
 
 enum ENetConstants
 {
@@ -97,6 +98,7 @@ struct FServerQuerySnapshot
 {
 	FString HostName = {};
 	FString MapName = {};
+	FString SessionState = {};
 	FString Version = {};
 	FString GitHash = {};
 	uint8_t PlayerCount = 0u;
@@ -141,6 +143,8 @@ constexpr int32_t LAUNCHER_CHALLENGE = 777123;   // Launcher/server-info challen
 constexpr uint16_t ODAMEX_QUERY_TAG_ID = 0x0AD0;
 
 bool I_InitNetwork();
+bool I_IsDedicatedServerMode();
+void I_GetLocalServerSnapshot(FServerQuerySnapshot& snapshot);
 bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FString* error = nullptr);
 void I_ClearClient(size_t client);
 void I_NetCmd(ENetCommand cmd);

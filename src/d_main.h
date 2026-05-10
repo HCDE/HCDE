@@ -66,6 +66,7 @@ struct CRestartException
 
 
 void D_Display ();
+void D_StartupProgress(int advance = 1);
 
 
 //

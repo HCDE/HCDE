@@ -37,6 +37,7 @@
 #include "stats.h"
 #include "info.h"
 #include "thingdef.h"
+#include "d_main.h"
 #include "zcc_parser.h"
 #include "zcc_compile_doom.h"
 
@@ -417,6 +418,7 @@ void ParseScripts()
 
 		ZCCDoomCompiler cc(state, NULL, symtable, newns, lump, state.ParseVersion);
 		cc.Compile();
+		D_StartupProgress();
 
 		if (FScriptPosition::ErrorCounter > 0)
 		{
@@ -453,14 +455,19 @@ void LoadActors()
 
 	SetDoomCompileEnvironment();
 	InitThingdef();
+	D_StartupProgress();
 	FScriptPosition::StrictErrors = true;
 	ParseScripts();
+	D_StartupProgress();
 
 	FScriptPosition::StrictErrors = strictdecorate;
 	ParseAllDecorate();
+	D_StartupProgress();
 	SynthesizeFlagFields();
+	D_StartupProgress();
 
 	FunctionBuildList.Build();
+	D_StartupProgress();
 
 	if (FScriptPosition::ErrorCounter > 0)
 	{
@@ -489,6 +496,10 @@ void LoadActors()
 	// AllActorClasses hasn'T been set up yet.
 	for (int i = PClass::AllClasses.Size() - 1; i >= 0; i--)
 	{
+		if ((i & 31) == 0)
+		{
+			D_StartupProgress();
+		}
 		auto ti = (PClassActor*)PClass::AllClasses[i];
 		if (!ti->IsDescendantOf(RUNTIME_CLASS(AActor))) continue;
 		if (ti->Size == TentativeClass)

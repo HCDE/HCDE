@@ -6549,13 +6549,31 @@ AActor *FLevelLocals::SpawnMapThing (FMapThing *mthing, int position)
 	if (mentry == NULL)
 	{
 		// [RH] Don't die if the map tries to spawn an unknown thing
-		Printf("Unknown type %i at (%.1f, %.1f)\n",
-			mthing->EdNum, mthing->pos.X, mthing->pos.Y);
+		static FLevelLocals *lastUnknownThingLevel = nullptr;
+		static int unknownThingWarnings = 0;
+		constexpr int MaxUnknownThingWarnings = 16;
+
+		if (lastUnknownThingLevel != this)
+		{
+			lastUnknownThingLevel = this;
+			unknownThingWarnings = 0;
+		}
+
+		if (unknownThingWarnings < MaxUnknownThingWarnings)
+		{
+			Printf("Unknown type %i at (%.1f, %.1f)\n",
+				mthing->EdNum, mthing->pos.X, mthing->pos.Y);
+		}
+		else if (unknownThingWarnings == MaxUnknownThingWarnings)
+		{
+			Printf("Additional unknown map thing warnings suppressed for this level.\n");
+		}
+		unknownThingWarnings++;
 		mentry = DoomEdMap.CheckKey(0);
 		if (mentry == NULL)	// we need a valid entry for the rest of this function so if we can't find a default, let's exit right away.
 		{
-		return NULL;
-	}
+			return NULL;
+		}
 	}
 	if (mentry->Type == NULL && mentry->Special <= 0)
 	{

@@ -68,6 +68,8 @@ void C_AdjustBottom (void);
 void C_FlushDisplay (void);
 class FNotifyBufferBase;
 void C_SetNotifyBuffer(FNotifyBufferBase *nbb);
+class FConsoleBuffer;
+extern FConsoleBuffer *conbuffer;
 
 
 bool C_Responder (event_t *ev);

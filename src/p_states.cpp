@@ -799,13 +799,9 @@ FState *FStateDefinitions::ResolveGotoLabel (PClassActor *mytype, char *name)
 	{
 		state += v;
 	}
-	else if (v != 0)
-	{
-		I_Error ("Attempt to get invalid state %s from actor %s.", label, type->TypeName.GetChars());
-	}
 	else
 	{
-		Printf (TEXTCOLOR_RED "Attempt to get invalid state %s from actor %s.\n", label, type->TypeName.GetChars());
+		Printf (TEXTCOLOR_ORANGE "Attempt to get invalid state %s from actor %s.\n", label, type->TypeName.GetChars());
 	}
 	return state;
 }

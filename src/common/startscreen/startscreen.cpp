@@ -34,6 +34,7 @@
 #include "gstrings.h"
 #include "printf.h"
 #include "i_time.h"
+#include <algorithm>
 #include "v_video.h"
 #include "v_draw.h"
 #include "g_input.h"
@@ -371,6 +372,14 @@ FStartScreen::~FStartScreen()
 	if (NetTexture) delete NetTexture;
 }
 
+void FStartScreen::BeginCountdown()
+{
+	StartTime = I_msTime();
+	CountdownEtaMs = -1.0;
+	CountdownSeconds = -1;
+	CountdownProgress = -1;
+}
+
 //==========================================================================
 //
 // ST_Util_ClearBlock
@@ -621,8 +630,33 @@ bool FStartScreen::NetInit(const char* message, int numplayers)
 
 bool FStartScreen::DoProgress(int advance)
 {
+	if (advance > 0 && advance == 1)
+	{
+		if (MaxPos > 0)
+		{
+			// If the splash loader is getting close to the end of the current
+			// budget, stretch it a bit so the visible bar keeps moving instead of
+			// pegging at 100% while there is still real startup work left.
+			const int headroom = std::max(MaxPos / 8, 1024);
+			if (CurPos + advance >= MaxPos - headroom)
+			{
+				MaxPos += std::max(MaxPos / 2, 2048);
+			}
+		}
+	}
+
 	CurPos = min(CurPos + advance, MaxPos);
 	return true;
+}
+
+void FStartScreen::FinishProgress()
+{
+	if (MaxPos > 0)
+	{
+		DoProgress(MaxPos > CurPos ? MaxPos - CurPos : 0);
+	}
+	CurPos = MaxPos;
+	Render(true);
 }
 
 void FStartScreen::DoNetProgress(int count)
@@ -651,6 +685,91 @@ void FStartScreen::NetProgress(int count)
 	Render();
 }
 
+bool FStartScreen::DrawLaunchCountdown()
+{
+	if (MaxPos <= 0 || StartupBitmap.GetWidth() == 0 || StartupBitmap.GetHeight() == 0)
+	{
+		return false;
+	}
+
+	const double progress = MaxPos > 0 ? std::min(1.0, std::max(0.0, double(CurPos) / double(MaxPos))) : 0.0;
+	const bool complete = MaxPos > 0 && CurPos >= MaxPos;
+	const int percent = complete ? 100 : std::min(99, int(progress * 100.0 + 0.5));
+	bool showcountdown = progress >= 0.02 && progress < 0.995;
+	int seconds = -1;
+
+	if (showcountdown)
+	{
+		const auto now = I_msTime();
+		const double elapsedms = std::max<double>(1.0, double(now - StartTime));
+		double estimatedms = elapsedms * (1.0 - progress) / progress;
+
+		// Progress ticks arrive in bursts during large mod loads. Use the
+		// overall progress curve, then bias it slightly high so the countdown
+		// is useful without promising an exact launch second.
+		const double safetytail = elapsedms > 10000.0 ? 6500.0 : 1500.0;
+		const double safetybias = elapsedms > 10000.0 ? 1.45 : 1.15;
+		estimatedms = std::min(300000.0, estimatedms * safetybias + safetytail);
+		if (CountdownEtaMs < 0.0)
+		{
+			CountdownEtaMs = estimatedms;
+		}
+		else
+		{
+			CountdownEtaMs = CountdownEtaMs * 0.70 + estimatedms * 0.30;
+		}
+
+		seconds = int((CountdownEtaMs + 999.0) / 1000.0);
+		seconds = std::min(999, std::max(1, seconds));
+	}
+
+	if (showcountdown == (CountdownSeconds >= 0) && seconds == CountdownSeconds && CurPos == CountdownProgress)
+	{
+		return false;
+	}
+
+	CountdownSeconds = seconds;
+	CountdownProgress = CurPos;
+
+	const int bannerheight = 64;
+	int bannery = StartupBitmap.GetHeight() - 30 - bannerheight;
+	if (bannery < 0)
+	{
+		bannery = 0;
+	}
+	else if (bannery + bannerheight > StartupBitmap.GetHeight())
+	{
+		bannery = StartupBitmap.GetHeight() - bannerheight;
+		if (bannery < 0)
+		{
+			bannery = 0;
+		}
+	}
+	RgbQuad bg = { 0, 0, 0, 255 };
+	RgbQuad titlefg = { 255, 200, 64, 255 };
+	RgbQuad bodyfg = { 255, 255, 255, 255 };
+	const char* headline = "Get Ready!";
+	char line2[96];
+
+	ClearBlock(StartupBitmap, bg, 0, bannery, StartupBitmap.GetWidth(), bannerheight);
+	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(headline) >> 1), bannery / 16 + 0.5, headline, titlefg, bg);
+	if (complete)
+	{
+		mysnprintf(line2, sizeof(line2), "Loading %d%% - launching", percent);
+	}
+	else if (showcountdown)
+	{
+		mysnprintf(line2, sizeof(line2), "Loading %d%% - about %d second%s remaining", percent, seconds, seconds == 1 ? "" : "s");
+	}
+	else
+	{
+		mysnprintf(line2, sizeof(line2), "Loading %d%% - estimating", percent);
+	}
+	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(line2) >> 1), bannery / 16 + 1.5, line2, bodyfg, bg);
+
+	return true;
+}
+
 void FStartScreen::Render(bool force)
 {
 	static uint64_t minwaittime = 30;
@@ -667,6 +786,16 @@ void FStartScreen::Render(bool force)
 		}
 
 		screen->FrameTime = nowtime;
+		auto countdownupdated = DrawLaunchCountdown();
+		if (countdownupdated && StartupTexture)
+		{
+			StartupTexture->CleanHardwareData(true);
+		}
+		auto consoleoverlayupdated = DrawStartupConsoleOverlay();
+		if (consoleoverlayupdated && StartupTexture)
+		{
+			StartupTexture->CleanHardwareData(true);
+		}
 		screen->BeginFrame();
 		twod->ClearClipRect();
 		I_GetEvent();
