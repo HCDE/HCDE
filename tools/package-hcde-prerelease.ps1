@@ -78,10 +78,14 @@ foreach ($file in $runtimeFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir $file)) -Destination $stageDir
 }
 
-$runtimeDirs = @("fm_banks", "soundfonts")
+$runtimeDirs = @("fm_banks")
 foreach ($dir in $runtimeDirs) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir $dir)) -Destination $stageDir -Recurse
 }
+
+$soundfontsDir = Join-Path $stageDir "soundfonts"
+New-Item -Path $soundfontsDir -ItemType Directory | Out-Null
+Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir "soundfonts/hcde.sf2")) -Destination $soundfontsDir
 
 $docFiles = @("README.md", "LICENSE", "SECURITY.md", "docs/HCDE_GOLDEN_RULES.md")
 foreach ($file in $docFiles) {
