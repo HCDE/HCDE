@@ -26,12 +26,6 @@ It is built to stay friendly to classic Doom content while making room for bigge
 
 If you are testing multiplayer, the launcher and server should both be built from the same checkout.
 
-### Project Links
-
-- Repository: <https://github.com/bokoxthexchocobo/HCDE>
-- Issues: <https://github.com/bokoxthexchocobo/HCDE/issues>
-- Releases: <https://github.com/bokoxthexchocobo/HCDE/releases>
-
 ### License
 
 HCDE is licensed under the GNU General Public License, version 3 or later.
