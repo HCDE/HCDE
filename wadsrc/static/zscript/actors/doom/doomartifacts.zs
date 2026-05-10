@@ -137,6 +137,10 @@ class BlurSphere : PowerupGiver
 	}
 }
 
+class InvisibilitySphere : BlurSphere
+{
+}
+
 // Radiation suit (aka iron feet) -------------------------------------------
 
 class RadSuit : PowerupGiver

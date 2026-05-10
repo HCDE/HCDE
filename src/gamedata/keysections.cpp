@@ -161,6 +161,7 @@ void D_LoadWadSettings ()
 		auto data = fileSystem.ReadFile (lump);
 		const char* conf = data.string();
 		const char *eof = conf + data.size();
+		bool inBlockComment = false;
 
 		while (conf < eof)
 		{
@@ -179,41 +180,57 @@ void D_LoadWadSettings ()
 				conf++;
 			}
 
-			// Does 'command' have a comment? If so, remove it.
-			// Comments begin with //
-			char *stop = &command[linePos];
-			char *comment = &command[0];
+			// Strip KEYCONF comments before handing the line to the restricted command parser.
+			TArray<char> filteredCommand;
 			char prevChar = 0;
 			bool inQuote = false;
-
-			while (comment < stop)
+			for (ptrdiff_t pos = 0; pos < linePos; ++pos)
 			{
-				// if (prevChar != '\\' && *comment == '\"')
-				if (*comment == '\"')
+				char ch = command[pos];
+
+				if (inBlockComment)
+				{
+					if (prevChar == '*' && ch == '/')
+					{
+						inBlockComment = false;
+						prevChar = 0;
+					}
+					else
+					{
+						prevChar = ch;
+					}
+					continue;
+				}
+
+				if (ch == '\"')
 				{
 					inQuote = !inQuote;
 				}
-				else if (!inQuote && prevChar == '/' && *comment == '/')
+				else if (!inQuote && prevChar == '/' && ch == '/')
 				{
-					comment--; // 'comment' is on the second slash
+					if (filteredCommand.Size() > 0)
+					{
+						filteredCommand.Pop();
+					}
 					break;
 				}
-				prevChar = *comment;
-				comment++;
+				else if (!inQuote && prevChar == '/' && ch == '*')
+				{
+					if (filteredCommand.Size() > 0)
+					{
+						filteredCommand.Pop();
+					}
+					inBlockComment = true;
+					prevChar = 0;
+					continue;
+				}
+
+				filteredCommand.Push(ch);
+				prevChar = ch;
 			}
-			// 'comment' will either be the end of the string, or the starting
-			// position of an inline comment.
-			if ((comment - &command[0]) < linePos)
-			{
-				*comment = 0;
-			}
-			else
-			{
-				// Just in case 'comment' is at EOF
-				command.Push(0);
-			}
-			// DPrintf(DMSG_ERROR, "command: %s\n", &command[0]);
-			AddCommandString (&command[0]);
+			filteredCommand.Push(0);
+			// DPrintf(DMSG_ERROR, "command: %s\n", &filteredCommand[0]);
+			AddCommandString (&filteredCommand[0]);
 		}
 	}
 	ParsingKeyConf = false;

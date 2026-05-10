@@ -483,6 +483,11 @@ class Weapon : StateProvider
 		}
 	}
 
+	action void A_CheckRailReload()
+	{
+		A_CheckReload();
+	}
+
 	//===========================================================================
 	//
 	// A_ZoomFactor

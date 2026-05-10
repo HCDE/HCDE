@@ -378,15 +378,8 @@ static void ParseUserVariable (FScanner &sc, PSymbolTable *symt, PClassActor *cl
 	}
 
 	FName symname = sc.String;
-
-	// We must ensure that we do not define duplicates, even when they come from a parent table.
-	if (symt->FindSymbol(symname, true) != NULL)
-	{
-		sc.ScriptMessage ("'%s' is already defined in '%s' or one of its ancestors.",
-			symname.GetChars(), cls ? cls->TypeName.GetChars() : "Global");
-		FScriptPosition::ErrorCounter++;
-		return;
-	}
+	const bool duplicateInClass = symt->FindSymbol(symname, false) != NULL;
+	const bool duplicateInParent = !duplicateInClass && symt->FindSymbol(symname, true) != NULL;
 
 	if (sc.CheckToken('['))
 	{
@@ -417,6 +410,29 @@ static void ParseUserVariable (FScanner &sc, PSymbolTable *symt, PClassActor *cl
 		type = NewArray(type, maxelems);
 	}
 	sc.MustGetToken(';');
+
+	if (duplicateInParent)
+	{
+		if (strictdecorate)
+		{
+			sc.ScriptMessage ("'%s' is already defined in '%s' or one of its ancestors.",
+				symname.GetChars(), cls ? cls->TypeName.GetChars() : "Global");
+			FScriptPosition::ErrorCounter++;
+		}
+		else
+		{
+			FScriptPosition(sc).Message(MSG_WARNING, "Ignoring duplicate inherited user variable '%s' in '%s'.",
+				symname.GetChars(), cls ? cls->TypeName.GetChars() : "Global");
+		}
+		return;
+	}
+	if (duplicateInClass)
+	{
+		sc.ScriptMessage ("'%s' is already defined in '%s'.",
+			symname.GetChars(), cls ? cls->TypeName.GetChars() : "Global");
+		FScriptPosition::ErrorCounter++;
+		return;
+	}
 
 	PField *sym = cls->AddField(symname, type, 0);
 	if (sym == NULL)

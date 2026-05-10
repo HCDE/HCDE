@@ -1878,6 +1878,14 @@ class PowerDoubleFiringSpeed : Powerup
 	}
 }
 
+class PowerTurbo : PowerSpeed
+{
+	Default
+	{
+		Inventory.Icon "ARTITU1";
+	}
+}
+
 //===========================================================================
 //
 // InfiniteAmmo
@@ -1895,7 +1903,245 @@ class PowerInfiniteAmmo : Powerup
 
 //===========================================================================
 //
-// InfiniteAmmo
+// Spread
+//
+//===========================================================================
+
+class PowerSpread : Powerup
+{
+	Default
+	{
+		Powerup.Duration -30;
+	}
+}
+
+
+//===========================================================================
+//
+// Prosperity
+//
+//===========================================================================
+
+class PowerProsperity : Powerup
+{
+	Default
+	{
+		Powerup.Duration -120;
+	}
+}
+
+
+//===========================================================================
+//
+// Skulltag/Zandronum rune powerup aliases
+//
+//===========================================================================
+
+class DoubleDamage : PowerDamage {}
+class DoubleFiringSpeed : PowerDoubleFiringSpeed {}
+class Drain : PowerDrain {}
+class Spread : PowerSpread {}
+class HalfDamage : PowerProtection {}
+class Regeneration : PowerRegeneration {}
+class Prosperity : PowerProsperity {}
+class HighJump : PowerHighJump {}
+
+class Speed25 : PowerSpeed
+{
+	Default
+	{
+		Speed 1.25;
+	}
+}
+
+class PowerQuadDamage : PowerDamage
+{
+	Default
+	{
+		DamageFactor "normal", 4.0;
+	}
+}
+
+class PowerQuarterDamage : PowerProtection
+{
+	Default
+	{
+		DamageFactor "normal", 0.25;
+	}
+}
+
+
+//===========================================================================
+//
+// RuneGiver
+//
+//===========================================================================
+
+class RuneGiver : PowerupGiver
+{
+	property prefix: Rune;
+	property Type: PowerupType;
+
+	Default
+	{
+		Inventory.DefMaxAmount;
+		+INVENTORY.INVBAR
+		+INVENTORY.FANCYPICKUPSOUND
+		Inventory.PickupSound "misc/p_pkup";
+	}
+}
+
+
+//===========================================================================
+//
+// Skulltag/Zandronum pickup shims
+//
+//===========================================================================
+
+class PowerTerminatorArtifact : Powerup
+{
+	Default
+	{
+		Powerup.Duration -1;
+	}
+}
+
+class PowerPossessionArtifact : Powerup
+{
+	Default
+	{
+		Powerup.Duration -1;
+	}
+}
+
+class ReturningPowerupGiver : PowerupGiver
+{
+}
+
+class Terminator : ReturningPowerupGiver
+{
+	Default
+	{
+		Powerup.Type "PowerTerminatorArtifact";
+		Inventory.PickupMessage "$PICKUP_TERMINATOR";
+		Inventory.PickupSound "misc/p_pkup";
+		Inventory.PickupAnnouncerEntry "terminator";
+	}
+}
+
+class PossessionStone : ReturningPowerupGiver
+{
+	Default
+	{
+		Powerup.Type "PowerPossessionArtifact";
+		Inventory.PickupMessage "$PICKUP_POSSESSIONSTONE";
+		Inventory.PickupSound "misc/p_pkup";
+	}
+}
+
+class RandomPowerup : Inventory
+{
+	Default
+	{
+		Inventory.PickupSound "misc/p_pkup";
+	}
+}
+
+class TurboSphere : PowerupGiver
+{
+	Default
+	{
+		+COUNTITEM
+		+NOGRAVITY
+		+INVENTORY.AUTOACTIVATE
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.MaxAmount 0;
+		Powerup.Type "PowerTurbo";
+		Powerup.Duration 1050;
+		Inventory.PickupMessage "$PICKUP_TURBOSPHERE";
+		Inventory.PickupAnnouncerEntry "turbosphere";
+	}
+	States
+	{
+	Spawn:
+		TURB ABCD 3 Bright;
+		Loop;
+	}
+}
+
+class TimeFreezeSphere : PowerupGiver
+{
+	Default
+	{
+		+COUNTITEM
+		+NOGRAVITY
+		+INVENTORY.AUTOACTIVATE
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.MaxAmount 0;
+		Powerup.Type "PowerTimeFreezer";
+		Powerup.Color "GoldMap";
+		Inventory.PickupMessage "$PICKUP_TIMEFREEZER";
+		Inventory.PickupAnnouncerEntry "timefreeze";
+	}
+	States
+	{
+	Spawn:
+		TIME ABCD 6 Bright;
+		Loop;
+	}
+}
+
+class DoomSphere : PowerupGiver
+{
+	Default
+	{
+		+COUNTITEM
+		+NOGRAVITY
+		+INVENTORY.AUTOACTIVATE
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.MaxAmount 0;
+		Powerup.Type "PowerQuadDamage";
+		Powerup.Color "RedMap";
+		Inventory.PickupMessage "$PICKUP_DOOMSPHERE";
+		Inventory.PickupAnnouncerEntry "doomsphere";
+	}
+	States
+	{
+	Spawn:
+		DOOM A 10 Bright;
+		DOOM B 15 Bright;
+		DOOM C 8 Bright;
+		DOOM D 6 Bright;
+		Loop;
+	}
+}
+
+class GuardSphere : PowerupGiver
+{
+	Default
+	{
+		+COUNTITEM
+		+NOGRAVITY
+		+INVENTORY.AUTOACTIVATE
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.MaxAmount 0;
+		Powerup.Type "PowerQuarterDamage";
+		Powerup.Color "GreenMap";
+		Inventory.PickupMessage "$PICKUP_GUARDSPHERE";
+		Inventory.PickupAnnouncerEntry "guardsphere";
+	}
+	States
+	{
+	Spawn:
+		GARD ABCD 6 Bright;
+		Loop;
+	}
+}
+
+
+//===========================================================================
+//
+// Reflection
 //
 //===========================================================================
 
@@ -1911,6 +2157,8 @@ class PowerReflection : Powerup
 		DamageFactor 0.5;
 	}
 }
+
+class Reflection : PowerReflection {}
 
 //===========================================================================
 //

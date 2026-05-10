@@ -135,6 +135,7 @@ void FGenericStartScreen::StartupStatusLine(const char *message, int colors, boo
 
 void FGenericStartScreen::LoadingStatus(const char *message, int colors)
 {
+	SetLoadingPhase(message);
 	Printf("%s\n", message);
 }
 

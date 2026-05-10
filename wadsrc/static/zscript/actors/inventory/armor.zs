@@ -333,6 +333,30 @@ class BasicArmorBonus : Armor
 	}
 }
 
+class MaxArmorBonus : BasicArmorBonus
+{
+	Default
+	{
+		Radius 20;
+		Height 16;
+		+COUNTITEM
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.PickupMessage "$PICKUP_MAXARMORBONUS";
+		Inventory.Icon "ARM1A0";
+		Armor.SavePercent 33.33333;
+		Armor.SaveAmount 1;
+		Armor.MaxSaveAmount 200;
+		Armor.MaxBonus 1;
+		Armor.MaxBonusMax 50;
+	}
+	States
+	{
+	Spawn:
+		BON4 ABCDCB 6;
+		Loop;
+	}
+}
+
 //===========================================================================
 //
 //

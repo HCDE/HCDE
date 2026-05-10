@@ -375,9 +375,28 @@ FStartScreen::~FStartScreen()
 void FStartScreen::BeginCountdown()
 {
 	StartTime = I_msTime();
+	PhaseStartTime = StartTime;
+	LastPercentChangeTime = StartTime;
 	CountdownEtaMs = -1.0;
 	CountdownSeconds = -1;
 	CountdownProgress = -1;
+	CountdownPhaseSeconds = -1;
+	CountdownPercent = -1;
+	CountdownWasStalled = false;
+}
+
+void FStartScreen::SetLoadingPhase(const char* phase)
+{
+	if (phase == nullptr || phase[0] == 0)
+	{
+		return;
+	}
+	LoadingPhase = phase;
+	PhaseStartTime = I_msTime();
+	CountdownEtaMs = -1.0;
+	CountdownSeconds = -1;
+	CountdownPhaseSeconds = -1;
+	CountdownWasStalled = false;
 }
 
 //==========================================================================
@@ -692,15 +711,22 @@ bool FStartScreen::DrawLaunchCountdown()
 		return false;
 	}
 
+	const auto now = I_msTime();
 	const double progress = MaxPos > 0 ? std::min(1.0, std::max(0.0, double(CurPos) / double(MaxPos))) : 0.0;
 	const bool complete = MaxPos > 0 && CurPos >= MaxPos;
 	const int percent = complete ? 100 : std::min(99, int(progress * 100.0 + 0.5));
-	bool showcountdown = progress >= 0.02 && progress < 0.995;
-	int seconds = -1;
-
-	if (showcountdown)
+	if (percent != CountdownPercent)
 	{
-		const auto now = I_msTime();
+		CountdownPercent = percent;
+		LastPercentChangeTime = now;
+	}
+	bool showcountdown = progress >= 0.02 && progress < 0.995;
+	const bool stalled = showcountdown && (now - LastPercentChangeTime) > 3500;
+	int seconds = -1;
+	int phaseseconds = -1;
+
+	if (showcountdown && !stalled)
+	{
 		const double elapsedms = std::max<double>(1.0, double(now - StartTime));
 		double estimatedms = elapsedms * (1.0 - progress) / progress;
 
@@ -721,15 +747,29 @@ bool FStartScreen::DrawLaunchCountdown()
 
 		seconds = int((CountdownEtaMs + 999.0) / 1000.0);
 		seconds = std::min(999, std::max(1, seconds));
+		if (CountdownSeconds > 0 && seconds > CountdownSeconds)
+		{
+			seconds = CountdownSeconds;
+		}
+	}
+	else if (stalled)
+	{
+		phaseseconds = std::min(999, std::max(1, int((now - PhaseStartTime + 999) / 1000)));
 	}
 
-	if (showcountdown == (CountdownSeconds >= 0) && seconds == CountdownSeconds && CurPos == CountdownProgress)
+	if (showcountdown == (CountdownSeconds >= 0) &&
+		stalled == CountdownWasStalled &&
+		seconds == CountdownSeconds &&
+		phaseseconds == CountdownPhaseSeconds &&
+		CurPos == CountdownProgress)
 	{
 		return false;
 	}
 
 	CountdownSeconds = seconds;
+	CountdownPhaseSeconds = phaseseconds;
 	CountdownProgress = CurPos;
+	CountdownWasStalled = stalled;
 
 	const int bannerheight = 64;
 	int bannery = StartupBitmap.GetHeight() - 30 - bannerheight;
@@ -756,6 +796,11 @@ bool FStartScreen::DrawLaunchCountdown()
 	if (complete)
 	{
 		mysnprintf(line2, sizeof(line2), "Loading %d%% - launching", percent);
+	}
+	else if (stalled)
+	{
+		const char* phase = LoadingPhase.IsNotEmpty() ? LoadingPhase.GetChars() : "startup";
+		mysnprintf(line2, sizeof(line2), "Loading %d%% - working on %s (%ds)", percent, phase, phaseseconds);
 	}
 	else if (showcountdown)
 	{

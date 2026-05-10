@@ -2476,6 +2476,10 @@ static void StartupStatusLine(const char *text, int colors = 0x3f, bool center =
 		return;
 
 	Printf("%s\n", text);
+	if (StartScreen != nullptr)
+	{
+		StartScreen->SetLoadingPhase(text);
+	}
 }
 
 void D_StartupProgress(int advance)
@@ -3695,6 +3699,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	FTeam::ParseTeamInfo ();
 
 	R_ParseTrnslate();
+	if (StartScreen) StartScreen->SetLoadingPhase("actor definitions");
 	PClassActor::StaticInit ();
 	FBaseCVar::InitZSCallbacks ();
 
@@ -3704,6 +3709,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	SetupPlayerClasses ();
 
 	// [RH] Load custom key and weapon settings from WADs
+	if (StartScreen) StartScreen->SetLoadingPhase("key bindings");
 	D_LoadWadSettings ();
 
 	// [GRB] Check if someone used clearplayerclasses but not addplayerclass
@@ -3715,6 +3721,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	StartWindow->Progress();
 	if (StartScreen) StartScreen->Progress (1);
 
+	if (StartScreen) StartScreen->SetLoadingPhase("GL definitions");
 	ParseGLDefs();
 
 	{
@@ -4520,7 +4527,13 @@ void I_UpdateWindowTitle()
 		}
 	}
 	*dstp = 0;
-	I_SetWindowTitle(copy.Data());
+
+	FString brandedTitle;
+	if (copy.Data()[0] != 0)
+		brandedTitle.Format("HCDE - %s", copy.Data());
+	else
+		brandedTitle = "HCDE";
+	I_SetWindowTitle(brandedTitle.GetChars());
 }
 
 CCMD(fs_dir)

@@ -2026,11 +2026,24 @@ bool D_CheckNetGame()
 
 	players[Net_Arbitrator].settings_controller = true;
 	for (auto client : NetworkClients)
+	{
+		if (I_UsesDedicatedServerSlot() && client == Net_Arbitrator)
+			continue;
 		playeringame[client] = true;
+	}
 
 	if (MaxClients > 1u)
 	{
-		Printf("Player %d of %d\n", consoleplayer + 1, MaxClients);
+		const int visibleClients = I_UsesDedicatedServerSlot() ? MaxClients - 1 : MaxClients;
+		if (I_IsDedicatedServerMode())
+		{
+			Printf("Dedicated server for %d player%s\n", visibleClients, visibleClients == 1 ? "" : "s");
+		}
+		else
+		{
+			const int visiblePlayer = I_UsesDedicatedServerSlot() ? consoleplayer : consoleplayer + 1;
+			Printf("Player %d of %d\n", visiblePlayer, visibleClients);
+		}
 	}
 
 	return true;

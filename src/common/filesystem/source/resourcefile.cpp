@@ -300,6 +300,68 @@ int entrycmp(const void* a, const void* b)
 	return strcmp(rec1->FileName, rec2->FileName);
 }
 
+static bool IsPathSep(char c)
+{
+	return c == '/' || c == '\\' || c == ':';
+}
+
+static bool IsArchiveNamed(const char* filename, const char* basename)
+{
+	if (filename == nullptr) return false;
+
+	const char* leaf = filename;
+	for (const char* p = filename; *p != 0; ++p)
+	{
+		if (IsPathSep(*p)) leaf = p + 1;
+	}
+	return !stricmp(leaf, basename);
+}
+
+static bool IsZandronumCompatCoreOverride(const char* name)
+{
+	static const char* blockedPrefixes[] =
+	{
+		"mapinfo/",
+		"zscript/",
+	};
+	static const char* blockedNames[] =
+	{
+		"decorate",
+		"decorate.txt",
+		"decorate.z",
+		"fontdefs",
+		"fontdefs.txt",
+		"gameinfo",
+		"gameinfo.txt",
+		"iwadinfo",
+		"iwadinfo.txt",
+		"keyconf",
+		"keyconf.txt",
+		"menudef",
+		"menudef.txt",
+		"menudef.z",
+		"menudef.za",
+		"zscript",
+		"zscript.txt",
+	};
+
+	for (auto prefix : blockedPrefixes)
+	{
+		if (strnicmp(name, prefix, strlen(prefix)) == 0)
+		{
+			return true;
+		}
+	}
+	for (auto lumpname : blockedNames)
+	{
+		if (stricmp(name, lumpname) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 //==========================================================================
 //
 // FResourceFile :: GenerateHash
@@ -358,12 +420,19 @@ void FResourceFile::PostProcessArchive(LumpFilterInfo *filter)
 	// only do this for archive types which contain full file names. All others are assumed to be pre-sorted.
 	if (NumLumps == 0 || !(Entries[0].Flags & RESFF_FULLPATH)) return;
 
+	const bool zandronumCompat = IsArchiveNamed(FileName, "zandronum.pk3");
+
 	// First eliminate all unwanted files
-	if (filter)
+	for (uint32_t i = 0; i < NumLumps; i++)
 	{
-		for (uint32_t i = 0; i < NumLumps; i++)
+		std::string name = Entries[i].FileName;
+		if (zandronumCompat && IsZandronumCompatCoreOverride(name.c_str()))
 		{
-			std::string name = Entries[i].FileName;
+			Entries[i].FileName = "";
+			continue;
+		}
+		if (filter)
+		{
 			for (auto& pattern : filter->blockednames)
 			{
 				if (wildcards::match(name, pattern))

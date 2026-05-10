@@ -68,9 +68,7 @@ constexpr uint64_t MASTER_RERESOLVE_MS = 1000ull * 60ull * 60ull * 3ull;
 constexpr uint64_t MASTER_HEARTBEAT_MS = 1000ull * 25ull;
 
 static constexpr std::string_view def_masterlist[] = {
-	"master1.hcde.net",
-	"voxelsoft.com",
-	"hcde.electricbrass.net"
+	"hcde.servebeer.com"
 };
 
 struct masterserver
@@ -226,7 +224,7 @@ static bool MasterMatchesPrefix(const std::string& masterip, const char* needle)
 }
 }
 
-CVAR(Bool, sv_usemasters, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, sv_usemasters, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 CCMD(addmaster)
 {

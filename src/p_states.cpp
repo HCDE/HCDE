@@ -797,7 +797,26 @@ FState *FStateDefinitions::ResolveGotoLabel (PClassActor *mytype, char *name)
 
 	if (state != NULL)
 	{
-		state += v;
+		auto owner = FState::StaticFindStateOwner(state, type);
+		auto info = owner != NULL ? owner->ActorInfo() : NULL;
+		auto stateindex = info != NULL ? state - info->OwnedStates : ptrdiff_t(-1);
+		auto targetindex = stateindex + v;
+		if (info == NULL || stateindex < 0 || targetindex < 0 || targetindex >= info->NumOwnedStates)
+		{
+			if (offset != NULL)
+			{
+				Printf(TEXTCOLOR_ORANGE "Attempt to get invalid state %s%+d from actor %s.\n",
+					label, v, type->TypeName.GetChars());
+			}
+			else
+			{
+				Printf(TEXTCOLOR_ORANGE "Attempt to get invalid state %s from actor %s.\n",
+					label, type->TypeName.GetChars());
+			}
+			FScriptPosition::WarnCounter++;
+			return NULL;
+		}
+		state = info->OwnedStates + targetindex;
 	}
 	else
 	{

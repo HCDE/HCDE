@@ -130,6 +130,107 @@ class PointPuller : Actor
 	}
 }
 
+// Skulltag/Zandronum invasion spot shims ----------------------------------
+
+class BaseMonsterInvasionSpot : Actor
+{
+	Default
+	{
+		+NOBLOCKMAP
+		+NOSECTOR
+		+NOGRAVITY
+		+DONTSPLASH
+		+NOTONAUTOMAP
+		RenderStyle "None";
+	}
+	States
+	{
+	Spawn:
+		TNT1 A -1;
+		Stop;
+	}
+}
+
+class CustomMonsterInvasionSpot : BaseMonsterInvasionSpot {}
+
+class BasePickupInvasionSpot : BaseMonsterInvasionSpot {}
+
+class CustomPickupInvasionSpot : BasePickupInvasionSpot {}
+
+class BaseWeaponInvasionSpot : BaseMonsterInvasionSpot {}
+
+class CustomWeaponInvasionSpot : BaseWeaponInvasionSpot {}
+
+class WeakDoomMonsterSpot : CustomMonsterInvasionSpot {}
+class PowerfulDoomMonsterSpot : CustomMonsterInvasionSpot {}
+class VeryPowerfulDoomMonsterSpot : CustomMonsterInvasionSpot {}
+class AnyDoomMonsterSpot : CustomMonsterInvasionSpot {}
+class ImpSpot : CustomMonsterInvasionSpot {}
+class DemonSpot : CustomMonsterInvasionSpot {}
+class SpectreSpot : CustomMonsterInvasionSpot {}
+class ZombieManSpot : CustomMonsterInvasionSpot {}
+class ShotgunGuySpot : CustomMonsterInvasionSpot {}
+class ChaingunGuySpot : CustomMonsterInvasionSpot {}
+class CacodemonSpot : CustomMonsterInvasionSpot {}
+class RevenantSpot : CustomMonsterInvasionSpot {}
+class FatsoSpot : CustomMonsterInvasionSpot {}
+class ArachnotronSpot : CustomMonsterInvasionSpot {}
+class HellKnightSpot : CustomMonsterInvasionSpot {}
+class BaronOfHellSpot : CustomMonsterInvasionSpot {}
+class LostSoulSpot : CustomMonsterInvasionSpot {}
+class PainElementalSpot : CustomMonsterInvasionSpot {}
+class CyberdemonSpot : CustomMonsterInvasionSpot {}
+class SpiderMastermindSpot : CustomMonsterInvasionSpot {}
+class ArchvileSpot : CustomMonsterInvasionSpot {}
+class WolfensteinSSSpot : CustomMonsterInvasionSpot {}
+class StimpackSpot : CustomPickupInvasionSpot {}
+class MedikitSpot : CustomPickupInvasionSpot {}
+class HealthBonusSpot : CustomPickupInvasionSpot {}
+class ArmorBonusSpot : CustomPickupInvasionSpot {}
+class MaxHealthBonusSpot : CustomPickupInvasionSpot {}
+class MaxArmorBonusSpot : CustomPickupInvasionSpot {}
+class GreenArmorSpot : CustomPickupInvasionSpot {}
+class BlueArmorSpot : CustomPickupInvasionSpot {}
+class DoomsphereSpot : CustomPickupInvasionSpot {}
+class GuardsphereSpot : CustomPickupInvasionSpot {}
+class InvisibilitySphereSpot : CustomPickupInvasionSpot {}
+class BlurSphereSpot : CustomPickupInvasionSpot {}
+class InvulnerabilitySphereSpot : CustomPickupInvasionSpot {}
+class MegasphereSpot : CustomPickupInvasionSpot {}
+class RandomPowerupSpot : CustomPickupInvasionSpot {}
+class SoulsphereSpot : CustomPickupInvasionSpot {}
+class TimeFreezeSphereSpot : CustomPickupInvasionSpot {}
+class TurbosphereSpot : CustomPickupInvasionSpot {}
+class StrengthRuneSpot : CustomPickupInvasionSpot {}
+class RageRuneSpot : CustomPickupInvasionSpot {}
+class DrainRuneSpot : CustomPickupInvasionSpot {}
+class SpreadRuneSpot : CustomPickupInvasionSpot {}
+class ResistanceRuneSpot : CustomPickupInvasionSpot {}
+class RegenerationRuneSpot : CustomPickupInvasionSpot {}
+class ProsperityRuneSpot : CustomPickupInvasionSpot {}
+class ReflectionRuneSpot : CustomPickupInvasionSpot {}
+class HasteRuneSpot : CustomPickupInvasionSpot {}
+class HighJumpRuneSpot : CustomPickupInvasionSpot {}
+class ClipSpot : CustomPickupInvasionSpot {}
+class ShellSpot : CustomPickupInvasionSpot {}
+class RocketAmmoSpot : CustomPickupInvasionSpot {}
+class CellSpot : CustomPickupInvasionSpot {}
+class ClipBoxSpot : CustomPickupInvasionSpot {}
+class ShellBoxSpot : CustomPickupInvasionSpot {}
+class RocketBoxSpot : CustomPickupInvasionSpot {}
+class CellPackSpot : CustomPickupInvasionSpot {}
+class RandomClipAmmoSpot : CustomPickupInvasionSpot {}
+class RandomBoxAmmoSpot : CustomPickupInvasionSpot {}
+class BackpackSpot : CustomPickupInvasionSpot {}
+class BerserkSpot : CustomPickupInvasionSpot {}
+class ChainsawSpot : CustomWeaponInvasionSpot {}
+class ShotgunSpot : CustomWeaponInvasionSpot {}
+class SuperShotgunSpot : CustomWeaponInvasionSpot {}
+class ChaingunSpot : CustomWeaponInvasionSpot {}
+class RocketLauncherSpot : CustomWeaponInvasionSpot {}
+class PlasmaRifleSpot : CustomWeaponInvasionSpot {}
+class BFG9000Spot : CustomWeaponInvasionSpot {}
+
 // Bloody gibs -------------------------------------------------------------
 
 class RealGibs : Actor

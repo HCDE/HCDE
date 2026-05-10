@@ -148,6 +148,10 @@ class Grenade : Actor
 	}
 }
 
+class Grenade2 : Grenade
+{
+}
+
 //===========================================================================
 //
 // Code (must be attached to StateProvider)

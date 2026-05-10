@@ -50,11 +50,17 @@ protected:
 	int MaxPos;
 	int Scale = 1;
 	uint64_t StartTime = 0;
+	uint64_t PhaseStartTime = 0;
+	uint64_t LastPercentChangeTime = 0;
 	double CountdownEtaMs = -1.0;
 	int CountdownSeconds = -1;
 	int CountdownProgress = -1;
+	int CountdownPhaseSeconds = -1;
+	int CountdownPercent = -1;
+	bool CountdownWasStalled = false;
 	int NetMaxPos = -1;
 	int NetCurPos = 0;
+	FString LoadingPhase;
 	FBitmap StartupBitmap;
 	FBitmap HeaderBitmap;
 	FBitmap NetBitmap;
@@ -70,6 +76,7 @@ public:
 	void FinishProgress();
 	void NetProgress(int count);
 	void BeginCountdown();
+	void SetLoadingPhase(const char* phase);
 	virtual void LoadingStatus(const char *message, int colors) {}
 	virtual void AppendStatusLine(const char *status) {}
 	virtual void StartupStatusLine(const char *status, int colors, bool center) {}

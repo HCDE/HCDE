@@ -485,6 +485,7 @@ class CustomInventory : StateProvider
 	deprecated("2.3", "must be called from Weapon") action void A_Lower() {}
 	deprecated("2.3", "must be called from Weapon") action void A_Raise() {}
 	deprecated("2.3", "must be called from Weapon") action void A_CheckReload() {}
+	deprecated("2.3", "must be called from Weapon") action void A_CheckRailReload() {}
 	deprecated("3.7", "must be called from Weapon") action void A_WeaponReady(int flags = 0) {}	// this was somehow missed in 2.3 ...
 	native bool CallStateChain (Actor actor, State state);
 

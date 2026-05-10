@@ -103,6 +103,12 @@ FARG(server, "Multiplayer", "Starts a dedicated multiplayer server without the s
 	"This machine will function as a dedicated multiplayer server with x players (including this"
 	" machine). Use this for HCDE's separate server mode so the launcher can start a server process"
 	" and a local join client without showing the old room/session window.");
+FARG(netwaitsilent, "Multiplayer", "Suppresses the multiplayer connection status window.", "",
+	"Run the pregame network handshake without showing the old room/session window. Launchers use"
+	" this when starting a local client for a separate dedicated server.");
+FARG(dedicatedjoin, "Multiplayer", "Connects to a dedicated server with a hidden server slot.", "",
+	"Treat the network arbitrator as a transport-only slot. This is used by launchers when joining"
+	" HCDE's separate dedicated server executable so the server does not appear as an in-game player.");
 FARG(dup, "Multiplayer", "Send less player movement commands over the network.", "x",
 	"Causes " GAMENAME " to transmit fewer player movement commands across the network. Valid"
 	" values range from 1–9. For example, -dup 2 would cause " GAMENAME " to send half as many"
@@ -184,6 +190,8 @@ struct FConnection
 
 static ERoomFlow RoomFlowState = RF_IDLE;
 static bool DedicatedServerMode = false;
+static bool SilentNetStartMode = false;
+static bool DedicatedJoinMode = false;
 
 bool netgame = false;
 bool multiplayer = false;
@@ -259,7 +267,8 @@ static bool CheckSetupPacket(size_t client, size_t minimumSize, size_t tokenOffs
 static int CountConnectedClients()
 {
 	int count = 0;
-	for (int i = 0; i < MaxClients; ++i)
+	const int firstClient = DedicatedServerMode ? 1 : 0;
+	for (int i = firstClient; i < MaxClients; ++i)
 	{
 		if (Connected[i].Status != CSTAT_NONE)
 			++count;
@@ -289,7 +298,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	}
 	snapshot.Version = GetVersionString();
 	snapshot.GitHash = GetGitHash();
-	snapshot.MaxPlayers = uint8_t(clamp<int>(MaxClients, 0, UINT8_MAX));
+	snapshot.MaxPlayers = uint8_t(clamp<int>(DedicatedServerMode ? MaxClients - 1 : MaxClients, 0, UINT8_MAX));
 	snapshot.PlayerCount = uint8_t(clamp<int>(CountConnectedClients(), 0, UINT8_MAX));
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
@@ -302,7 +311,8 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	}
 
 	snapshot.Players.Reserve(snapshot.PlayerCount);
-	for (int i = 0; i < MaxClients; ++i)
+	const int firstClient = DedicatedServerMode ? 1 : 0;
+	for (int i = firstClient; i < MaxClients; ++i)
 	{
 		if (playeringame[i])
 		{
@@ -858,7 +868,7 @@ static void SetRoomFlow(ERoomFlow flow)
 // Gracefully closes the net window so that any error messaging can be properly displayed.
 static void I_NetError(const char* error)
 {
-	if (!DedicatedServerMode)
+	if (!DedicatedServerMode && !SilentNetStartMode)
 		NetStartWindow::NetClose();
 	I_FatalError("%s", error);
 }
@@ -866,7 +876,7 @@ static void I_NetError(const char* error)
 static void I_NetInit(const char* msg, bool host)
 {
 	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
-	if (!DedicatedServerMode)
+	if (!DedicatedServerMode && !SilentNetStartMode)
 		NetStartWindow::NetInit(msg, host);
 }
 
@@ -875,14 +885,15 @@ static void I_NetInit(const char* msg, bool host)
 static void I_NetMessage(const char* msg)
 {
 	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
-	NetStartWindow::NetMessage(msg);
+	if (!SilentNetStartMode)
+		NetStartWindow::NetMessage(msg);
 }
 
 // Listen for incoming connections while the room is active. The main thread needs to be locked up
 // here to prevent the engine from continuing to start the game until everyone is ready.
 static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 {
-	if (DedicatedServerMode)
+	if (DedicatedServerMode || SilentNetStartMode)
 	{
 		while (!loopCallback(data))
 			Sleep(1);
@@ -1548,7 +1559,16 @@ static void SendAbort()
 static bool HostGame(int arg)
 {
 	DebugTrace::Markf("net", "host request arg=%d", arg);
-	if (arg >= Args->NumArgs() || !(MaxClients = atoi(Args->GetArg(arg))))
+	int requestedClients = (arg < Args->NumArgs()) ? atoi(Args->GetArg(arg)) : 0;
+	if (DedicatedServerMode)
+	{
+		if (requestedClients <= 0)
+			requestedClients = 1;
+		if ((unsigned)requestedClients >= MAXPLAYERS)
+			I_FatalError("Cannot host a dedicated game with %u client slots. The limit is currently %lu", requestedClients, MAXPLAYERS - 1u);
+		MaxClients = requestedClients + 1;
+	}
+	else if (!(MaxClients = requestedClients))
 	{	// No player count specified, assume 2
 		MaxClients = 2u;
 	}
@@ -1573,10 +1593,10 @@ static bool HostGame(int arg)
 	DebugTrace::Markf("net", "host network ready port=%u", static_cast<unsigned>(GamePort));
 	SV_InitMasters();
 	SetRoomFlow(RF_HOST_WAITING);
-	I_NetInit("Hosting room...", true);
+	I_NetInit(DedicatedServerMode ? "Starting dedicated server..." : "Hosting game...", true);
 	I_NetUpdatePlayers(1, MaxClients);
 	I_NetClientConnected(0u, 16u);
-	I_NetMessage(DedicatedServerMode ? "Server waiting for players" : "Session waiting for players");
+	I_NetMessage(DedicatedServerMode ? "Dedicated server accepting clients" : "Waiting for players");
 
 	// Wait for the session to be full.
 	int connectedPlayers = 1;
@@ -1590,7 +1610,7 @@ static bool HostGame(int arg)
 
 	// Now go
 	SetRoomFlow(RF_SYNCING);
-	I_NetMessage(DedicatedServerMode ? "Starting server" : "Starting room");
+	I_NetMessage(DedicatedServerMode ? "Starting dedicated game" : "Starting game");
 	I_NetDone();
 
 	// If the player force started with only themselves in the session, start the session
@@ -1615,7 +1635,7 @@ static bool HostGame(int arg)
 			SendPacket(Connected[client].Address);
 	}
 
-	I_NetLog("Total players: %d", connectedPlayers);
+	I_NetLog("Total players: %d", DedicatedServerMode ? connectedPlayers - 1 : connectedPlayers);
 
 	return true;
 }
@@ -1962,6 +1982,8 @@ bool I_InitNetwork()
 	DedicatedServerMode = false;
 	if (Args->CheckParm(FArg_server))
 		DedicatedServerMode = true;
+	SilentNetStartMode = Args->CheckParm(FArg_netwaitsilent) != 0;
+	DedicatedJoinMode = Args->CheckParm(FArg_dedicatedjoin) != 0;
 
 	// set up for network
 	const char* v = Args->CheckValue(FArg_dup);
@@ -2014,6 +2036,11 @@ bool I_InitNetwork()
 bool I_IsDedicatedServerMode()
 {
 	return DedicatedServerMode;
+}
+
+bool I_UsesDedicatedServerSlot()
+{
+	return DedicatedServerMode || DedicatedJoinMode;
 }
 
 #ifdef _WIN32

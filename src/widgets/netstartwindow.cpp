@@ -30,7 +30,7 @@ NetStartWindow* NetStartWindow::Instance = nullptr;
 static FString BuildSessionSummaryText(const FServerQuerySnapshot& snapshot)
 {
 	FString info;
-	info.Format("Session: %s | Host: %s | Map: %s | Players: %u/%u",
+	info.Format("Server: %s | Host: %s | Map: %s | Players: %u/%u",
 		snapshot.SessionState.GetChars(),
 		snapshot.HostName.GetChars(),
 		snapshot.MapName.GetChars(),
@@ -224,7 +224,7 @@ bool NetStartWindow::NetLoop(bool (*loopCallback)(void*), void* data)
 
 NetStartWindow::NetStartWindow(bool host) : Widget(nullptr, WidgetType::Window)
 {
-	SetWindowTitle(host ? "HCDE Session" : "HCDE Connecting");
+	SetWindowTitle(host ? "HCDE Host" : "HCDE Joining Server");
 
 	MessageLabel = new TextLabel(this);
 	ProgressLabel = new TextLabel(this);
@@ -234,7 +234,7 @@ NetStartWindow::NetStartWindow(bool host) : Widget(nullptr, WidgetType::Window)
 	ProgressLabel->SetTextAlignment(TextLabelAlignment::Center);
 
 	AbortButton->OnClick = [this]() { OnClose(); };
-	AbortButton->SetText(host ? "Leave Room" : "Cancel");
+	AbortButton->SetText(host ? "Stop Host" : "Cancel");
 
 	if (host)
 	{
@@ -245,7 +245,7 @@ NetStartWindow::NetStartWindow(bool host) : Widget(nullptr, WidgetType::Window)
 
 		ForceStartButton = new PushButton(this);
 		ForceStartButton->OnClick = [this]() { ForceStart(); };
-		ForceStartButton->SetText("Start Session");
+		ForceStartButton->SetText("Start Game");
 
 		KickButton = new PushButton(this);
 		KickButton->OnClick = [this]() { OnKick(); };

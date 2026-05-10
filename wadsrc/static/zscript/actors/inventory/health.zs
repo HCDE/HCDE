@@ -103,6 +103,25 @@ class MaxHealth : Health
 	}
 }
 
+class MaxHealthBonus : MaxHealth
+{
+	Default
+	{
+		+COUNTITEM
+		+INVENTORY.ALWAYSPICKUP
+		Inventory.Amount 1;
+		Inventory.MaxAmount 50;
+		Health 200;
+		Inventory.PickupMessage "$PICKUP_MAXHEALTHBONUS";
+	}
+	States
+	{
+	Spawn:
+		BON3 ABCDCB 6;
+		Loop;
+	}
+}
+
 class HealthPickup : Inventory
 {
 	int autousemode;
