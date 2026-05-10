@@ -83,7 +83,7 @@ foreach ($dir in $runtimeDirs) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir $dir)) -Destination $stageDir -Recurse
 }
 
-$docFiles = @("README.md", "LICENSE", "SECURITY.md")
+$docFiles = @("README.md", "LICENSE", "SECURITY.md", "docs/HCDE_GOLDEN_RULES.md")
 foreach ($file in $docFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $repoRoot $file)) -Destination $stageDir
 }
