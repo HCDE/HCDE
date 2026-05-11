@@ -1,0 +1,42 @@
+{
+  "name": "HCDE master discovery protocol",
+  "version": 1,
+  "byteOrder": "little",
+  "defaultMasterHost": "hcde.servebeer.com",
+  "defaultMasterPort": 15000,
+  "defaultEntryTtlSeconds": 180,
+  "serverHeartbeatIntervalSeconds": 25,
+  "serverAddressReresolveIntervalSeconds": 10800,
+  "packets": {
+    "serverHeartbeat": {
+      "marker": 5560020,
+      "size": 6,
+      "fields": [
+        { "name": "marker", "offset": 0, "size": 4, "type": "uint32", "endian": "little" },
+        { "name": "gamePort", "offset": 4, "size": 2, "type": "uint16", "endian": "little" }
+      ]
+    },
+    "launcherListQuery": {
+      "marker": 777123,
+      "size": 4,
+      "fields": [
+        { "name": "marker", "offset": 0, "size": 4, "type": "uint32", "endian": "little" }
+      ]
+    },
+    "masterListResponse": {
+      "marker": 777123,
+      "headerSize": 6,
+      "entrySize": 6,
+      "fields": [
+        { "name": "marker", "offset": 0, "size": 4, "type": "uint32", "endian": "little" },
+        { "name": "serverCount", "offset": 4, "size": 2, "type": "uint16", "endian": "little" },
+        { "name": "serverAddress", "offset": 6, "size": 4, "type": "ipv4", "endian": "network", "repeat": "serverCount" },
+        { "name": "serverPort", "offset": 10, "size": 2, "type": "uint16", "endian": "little", "repeat": "serverCount" }
+      ]
+    }
+  },
+  "boundary": {
+    "allowedSharing": "Protocol facts, neutral schemas, generated constants, and documentation.",
+    "forbiddenSharing": "Socket loops, storage logic, launcher behavior, engine headers, gameplay code, and linked implementation libraries."
+  }
+}

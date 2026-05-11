@@ -2171,6 +2171,7 @@ public:
 	FxExpression *Resolve(FCompileContext&);
 	ExpEmit Emit(VMFunctionBuilder *build);
 	VMFunction *GetDirectFunction(PFunction *func, const VersionInfo &ver);
+	bool IsEmptyReturn() const { return Args.Size() == 0; }
 	bool CheckReturn() { return true; }
 };
 

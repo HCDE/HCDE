@@ -27,6 +27,7 @@
 
 #include "c_console.h"
 #include "c_cvars.h"
+#include "hcde_servermode.h"
 #include "c_dispatch.h"
 #include "i_interface.h"
 #include "i_time.h"
@@ -44,6 +45,7 @@ EXTERN_CVAR(Int, menu_resolution_custom_width)
 EXTERN_CVAR(Int, menu_resolution_custom_height)
 
 EXTERN_FARG(devparm);
+EXTERN_FARG(server);
 
 CVAR(Int, win_x, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, win_y, -1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -89,6 +91,7 @@ CUSTOM_CVAR(Int, vid_preferbackend, BACKEND_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBALC
 	// do it right without memory leaks
 
 	static_assert(0 <= BACKEND_DEFAULT && BACKEND_DEFAULT < NUM_BACKEND, "default back-end out of range");
+	const bool dedicatedserver = HCDE_ServerMode_IsDedicatedServer();
 
 	switch(self)
 	{
@@ -100,17 +103,23 @@ CUSTOM_CVAR(Int, vid_preferbackend, BACKEND_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBALC
 		return;
 #ifdef HAVE_GLES2
 	case BACKEND_OPENGLES:
-		Printf("Selecting OpenGLES 2.0 backend...\n");
+		if (!dedicatedserver) Printf("Selecting OpenGLES 2.0 backend...\n");
 		break;
 #endif
 #ifdef HAVE_VULKAN
 	case BACKEND_VULKAN:
-		Printf("Selecting Vulkan backend...\n");
+		if (!dedicatedserver) Printf("Selecting Vulkan backend...\n");
 		break;
 #endif
 	case BACKEND_OPENGL:
-		Printf("Selecting OpenGL backend...\n");
+		if (!dedicatedserver) Printf("Selecting OpenGL backend...\n");
 		break;
+	}
+
+	if (dedicatedserver)
+	{
+		vid_shadersupport = self != BACKEND_OPENGLES;
+		return;
 	}
 
 	vid_shadersupport = self != BACKEND_OPENGLES;
@@ -377,6 +386,7 @@ void V_InitScreen()
 
 void V_Init2()
 {
+	HCDE_ServerMode_GuardClientSubsystem("video renderer");
 	{
 		DFrameBuffer *s = screen;
 		screen = NULL;

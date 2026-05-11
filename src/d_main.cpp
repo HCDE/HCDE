@@ -73,6 +73,7 @@
 #include "gameconfigfile.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_servermode.h"
 #include "hu_stuff.h"
 #include "hw_clock.h"
 #include "hwrenderer/scene/hw_drawinfo.h"
@@ -1112,8 +1113,8 @@ void D_Display ()
 
 	SetDeltaTime();
 
-	if (nodrawers || screen == NULL)
-		return; 				// for comparative timing / profiling
+	if (nodrawers || screen == NULL || HCDE_ServerMode_IsDedicatedServer() || I_IsDedicatedServerMode())
+		return; 				// for comparative timing / profiling and dedicated servers
 
 	if (!AppActive && !setmodeneeded && !vid_activeinbackground)
 	{
@@ -2276,7 +2277,7 @@ static void AddAutoloadFiles(const char *autoname, std::vector<FileSys::Resource
 	}
 
 	// Disable autoloading in netgames as we don't want people who are hosting/joining loading up random files.
-	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !Args->CheckParm(FArg_join) && !Args->CheckParm(FArg_server))
+	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !Args->CheckParm(FArg_join) && !HCDE_ServerMode_IsDedicatedServer())
 	{
 		FString file;
 
@@ -3431,6 +3432,9 @@ static int FileSystemPrintf(FSMessageLevel level, const char* fmt, ...)
 static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceName>& allwads, std::vector<FileSys::ResourceName>& pwads)
 {
 	NetworkEntityManager::InitializeNetworkEntities();
+	HCDE_ServerMode_InitFromArgs();
+	HCDE_ServerMode_SetSelectedIWAD(iwad_info != nullptr ? iwad_info->Name.GetChars() : nullptr);
+	bool dedicatedserver = HCDE_ServerMode_IsDedicatedServer();
 
 	bool dap_debugging = vm_debug;
 	if (Args->CheckValue(FArg_debug) || dap_debugging)
@@ -3443,9 +3447,17 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	if (!restart)
 	{
-		V_InitScreenSize();
-		// This allocates a dummy framebuffer as a stand-in until V_Init2 is called.
-		V_InitScreen();
+		if (!dedicatedserver)
+		{
+			HCDE_ServerMode_GuardClientSubsystem("startup dummy framebuffer");
+			V_InitScreenSize();
+			// This allocates a dummy framebuffer as a stand-in until V_Init2 is called.
+			V_InitScreen();
+		}
+		else
+		{
+			screen = nullptr;
+		}
 	}
 	SavegameFolder = iwad_info->Autoname;
 	gameinfo.gametype = iwad_info->gametype;
@@ -3548,7 +3560,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	D_GrabCVarDefaults(); //parse DEFCVARS
 	InitPalette();
 
-	if (!batchrun) Printf("S_Init: Setting up sound.\n");
+	if (!batchrun) Printf(dedicatedserver ? "S_Init: Setting up server sound tables.\n" : "S_Init: Setting up sound.\n");
 	S_Init();
 
 	int max_progress = TexMan.GuesstimateNumTextures();
@@ -3566,7 +3578,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	int per_shader_progress = 0;//screen->GetShaderCount()? (max_progress / 10 / screen->GetShaderCount()) : 0;
 
 	bool norun = Args->CheckParm(FArg_norun);
-	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_host) || Args->CheckParm(FArg_server) || norun;
+	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_host) || dedicatedserver || norun;
 	bool videoInitialized = false;
 	bool firstShaderCompiled = false;
 
@@ -3591,6 +3603,15 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		exec->ExecCommands();
 		delete exec;
 		exec = NULL;
+	}
+	if (dedicatedserver)
+	{
+		const int skipped = C_ClearDelayedCommands();
+		if (skipped > 0)
+		{
+			Printf("Dedicated server ignored %d delayed startup command%s.\n",
+				skipped, skipped == 1 ? "" : "s");
+		}
 	}
 
 	// [RH] Initialize localizable strings.
@@ -3624,10 +3645,18 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		compatmode = (int)strtoll(compatmodeval, nullptr, 10);
 	}
 
-	if (!batchrun) Printf ("ST_Init: Init startup screen.\n");
+	if (!batchrun && !dedicatedserver) Printf ("ST_Init: Init startup screen.\n");
 	if (!restart)
 	{
-		StartWindow = FStartupScreen::CreateInstance(max_progress);
+		if (dedicatedserver)
+		{
+			StartWindow = new FStartupScreen(max_progress);
+		}
+		else
+		{
+			HCDE_ServerMode_GuardClientSubsystem("startup progress window");
+			StartWindow = FStartupScreen::CreateInstance(max_progress);
+		}
 	}
 	else
 	{
@@ -3638,6 +3667,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	{
 		// HCDE shows the visible loader before resource-heavy startup so
 		// progress, ETA, and early mod failures are visible to the user.
+		HCDE_ServerMode_GuardClientSubsystem("startup video loader");
 		V_Init2();
 		videoInitialized = true;
 		screen->CompileNextShader();
@@ -3857,23 +3887,27 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	// window, or see if we aren't using initializing OpenGL for the
 	// replacement widget framework, or clean up the code to handle
 	// swapping between multiple GL contexts)
-	if (!(restart || norun) && !videoInitialized)
+	if (!(restart || norun || dedicatedserver) && !videoInitialized)
+	{
+		HCDE_ServerMode_GuardClientSubsystem("late video initialization");
 		V_Init2();
+	}
 
-	if (!(batchrun || norun)) Printf ("V_Init: allocate screen.\n");
-	if (!(restart || norun) && !firstShaderCompiled)
+	if (!(batchrun || norun || dedicatedserver)) Printf ("V_Init: allocate screen.\n");
+	if (!(restart || norun || dedicatedserver) && !firstShaderCompiled)
 	{
 		screen->CompileNextShader();
 	}
-	else if(!norun)
+	else if(!(norun || dedicatedserver))
 	{
 		// Update screen palette when restarting
 		screen->UpdatePalette();
 	}
 
-	if (StartScreen == nullptr)
+	if (StartScreen == nullptr && !nostartscreen)
 	{
-		StartScreen = nostartscreen? nullptr : GetGameStartScreen(per_shader_progress > 0 ? max_progress * 10 / 9 : max_progress + 3);
+		HCDE_ServerMode_GuardClientSubsystem("startup overlay");
+		StartScreen = GetGameStartScreen(per_shader_progress > 0 ? max_progress * 10 / 9 : max_progress + 3);
 		setmodeneeded = true;
 		if (StartScreen != nullptr) StartScreen->Render(true);
 	}
@@ -3886,7 +3920,10 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	// [RH] Run any saved commands from the command line or autoexec.cfg now.
 	gamestate = GS_FULLCONSOLE;
 	Net_Initialize();
-	C_RunDelayedCommands();
+	if (!dedicatedserver)
+	{
+		C_RunDelayedCommands();
+	}
 	gamestate = GS_STARTUP;
 
 	// enable custom invulnerability map here
@@ -3904,7 +3941,10 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 			autostart = true;
 		}
 
-		S_Sound(CHAN_BODY, CHANF_UI|(haptics_do_menus?CHANF_RUMBLE:CHANF_NORUMBLE), "misc/startupdone", 1, ATTN_NONE);
+		if (!dedicatedserver)
+		{
+			S_Sound(CHAN_BODY, CHANF_UI|(haptics_do_menus?CHANF_RUMBLE:CHANF_NORUMBLE), "misc/startupdone", 1, ATTN_NONE);
+		}
 		StartupStatusLine("Init complete.");
 
 		StartWindow->Progress(max_progress);
@@ -3915,16 +3955,19 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 			StartScreen = NULL;
 		}
 
-		while(!screen->CompileNextShader())
+		while(!dedicatedserver && !screen->CompileNextShader())
 		{
 			// here we can do some visual updates later
 		}
-		twod->fullscreenautoaspect = gameinfo.fullscreenautoaspect;
-		// Initialize the size of the 2D drawer so that an attempt to access it outside the draw code won't crash.
-		twod->Begin(screen->GetWidth(), screen->GetHeight());
-		twod->End();
-		UpdateJoystickMenu(NULL);
-		UpdateVRModes();
+		if (!dedicatedserver)
+		{
+			twod->fullscreenautoaspect = gameinfo.fullscreenautoaspect;
+			// Initialize the size of the 2D drawer so that an attempt to access it outside the draw code won't crash.
+			twod->Begin(screen->GetWidth(), screen->GetHeight());
+			twod->End();
+			UpdateJoystickMenu(NULL);
+			UpdateVRModes();
+		}
 		Local_Job_Init();
 
 		v = Args->CheckValue (FArg_loadgame);
@@ -3968,7 +4011,14 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 						G_InitNew(startmap.GetChars(), false);
 						if (StoredWarp.IsNotEmpty())
 						{
-							AddCommandString(StoredWarp.GetChars());
+							if (dedicatedserver)
+							{
+								Printf("Dedicated server ignored startup command: %s\n", StoredWarp.GetChars());
+							}
+							else
+							{
+								AddCommandString(StoredWarp.GetChars());
+							}
 							StoredWarp = "";
 						}
 						gameaction = ga_mapwarp;

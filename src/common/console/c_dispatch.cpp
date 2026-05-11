@@ -121,9 +121,11 @@ public:
 		}
 	}
 
-	void Clear()
+	int Clear()
 	{
+		const int count = (int)delayedCommands.Size();
 		delayedCommands.DeleteAndClear();
+		return count;
 	}
 
 	void AddCommand(FDelayedCommand * cmd)
@@ -139,9 +141,9 @@ void C_RunDelayedCommands()
 	delayedCommandQueue.Run();
 }
 
-void C_ClearDelayedCommands()
+int C_ClearDelayedCommands()
 {
-	delayedCommandQueue.Clear();
+	return delayedCommandQueue.Clear();
 }
 
 
@@ -866,6 +868,18 @@ CCMD (key)
 
 // Execute any console commands specified on the command line.
 // These all begin with '+' as opposed to '-'.
+static bool C_IsHandledByStartupParser(const FString& cmdString)
+{
+	const char* cmd = cmdString.GetChars();
+	if (*cmd == '+') cmd++;
+	while (isspace((unsigned char)*cmd)) cmd++;
+
+	// +map is consumed later by CheckCmdLine() after WADs and MAPINFO are
+	// loaded. If it reaches the generic exec list, it can be delayed until
+	// after netgame init and then run as the single-player map command.
+	return strnicmp(cmd, "map", 3) == 0 && (cmd[3] == 0 || isspace((unsigned char)cmd[3]));
+}
+
 FExecList *C_ParseCmdLineParams(FExecList *exec)
 {
 	for (int currArg = 1; currArg < Args->NumArgs(); )
@@ -885,7 +899,7 @@ FExecList *C_ParseCmdLineParams(FExecList *exec)
 			}
 
 			cmdString = BuildString (cmdlen, Args->GetArgList (argstart));
-			if (cmdString.Len() > 1)
+			if (cmdString.Len() > 1 && !C_IsHandledByStartupParser(cmdString))
 			{
 				if (exec == NULL)
 				{

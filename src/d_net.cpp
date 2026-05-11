@@ -18,6 +18,7 @@
 */
 
 #include <stddef.h>
+#include <string.h>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -131,9 +132,113 @@ static int			StabilityTics[STABILITYTICS] = {};
 static size_t	LocalNetBufferSize = 0;
 static uint8_t	LocalNetBuffer[MAX_MSGLEN] = {};
 
+constexpr size_t HCDELiveMagicOffset = 1u;
+constexpr size_t HCDELiveVersionOffset = 5u;
+constexpr size_t HCDELiveTypeOffset = 6u;
+constexpr size_t HCDELiveTxSequenceOffset = 7u;
+constexpr size_t HCDELiveAckOffset = 11u;
+constexpr size_t HCDELiveHeaderSize = 15u;
+constexpr uint64_t HCDELiveControlIntervalMS = 1000u;
+constexpr uint8_t HCDELiveProtocolVersion = 1u;
+constexpr uint8_t HCDELiveMagic[4] = { 'H', 'L', 'I', 'V' };
+constexpr size_t HCDEGameplayMagicOffset = 0u;
+constexpr size_t HCDEGameplayVersionOffset = 4u;
+constexpr size_t HCDEGameplayKindOffset = 5u;
+constexpr size_t HCDEGameplayRoomOffset = 6u;
+constexpr size_t HCDEGameplayFlagsOffset = 7u;
+constexpr size_t HCDEGameplayTicOffset = 8u;
+constexpr size_t HCDEGameplayHeaderSize = 12u;
+constexpr uint8_t HCDEGameplayProtocolVersion = 1u;
+constexpr uint8_t HCDEGameplayMagic[4] = { 'H', 'G', 'P', 'L' };
+
+constexpr size_t HCDEClientInputMagicOffset = 0u;
+constexpr size_t HCDEClientInputVersionOffset = 4u;
+constexpr size_t HCDEClientInputFlagsOffset = 5u;
+constexpr size_t HCDEClientInputRoutingOffset = 6u;
+constexpr size_t HCDEClientInputPlayerCountOffset = 7u;
+constexpr size_t HCDEClientInputSequenceAckOffset = 8u;
+constexpr size_t HCDEClientInputConsistencyAckOffset = 12u;
+constexpr size_t HCDEClientInputBaseSequenceOffset = 16u;
+constexpr size_t HCDEClientInputBaseConsistencyOffset = 20u;
+constexpr size_t HCDEClientInputCommandTicsOffset = 24u;
+constexpr size_t HCDEClientInputConsistencyTicsOffset = 25u;
+constexpr size_t HCDEClientInputStabilityOffset = 26u;
+constexpr size_t HCDEClientInputBodyBytesOffset = 27u;
+constexpr size_t HCDEClientInputHeaderSize = 29u;
+constexpr uint8_t HCDEClientInputProtocolVersion = 5u;
+constexpr uint8_t HCDEClientInputMagic[4] = { 'H', 'C', 'I', 'N' };
+constexpr size_t HCDEClientInputRecordsMagicOffset = 0u;
+constexpr size_t HCDEClientInputRecordsVersionOffset = 4u;
+constexpr size_t HCDEClientInputRecordsPlayerCountOffset = 5u;
+constexpr size_t HCDEClientInputRecordsHeaderSize = 6u;
+constexpr uint8_t HCDEClientInputRecordsProtocolVersion = 4u;
+constexpr uint8_t HCDEClientInputRecordsMagic[4] = { 'H', 'C', 'I', 'R' };
+constexpr size_t HCDEExplicitUserCmdBytes = 16u;
+
+constexpr size_t HCDEServerSnapshotMagicOffset = 0u;
+constexpr size_t HCDEServerSnapshotVersionOffset = 4u;
+constexpr size_t HCDEServerSnapshotFlagsOffset = 5u;
+constexpr size_t HCDEServerSnapshotRoutingOffset = 6u;
+constexpr size_t HCDEServerSnapshotPlayerCountOffset = 7u;
+constexpr size_t HCDEServerSnapshotSequenceAckOffset = 8u;
+constexpr size_t HCDEServerSnapshotConsistencyAckOffset = 12u;
+constexpr size_t HCDEServerSnapshotQuitterBytesOffset = 16u;
+constexpr size_t HCDEServerSnapshotBaseSequenceOffset = 18u;
+constexpr size_t HCDEServerSnapshotBaseConsistencyOffset = 22u;
+constexpr size_t HCDEServerSnapshotCommandTicsOffset = 26u;
+constexpr size_t HCDEServerSnapshotConsistencyTicsOffset = 27u;
+constexpr size_t HCDEServerSnapshotStabilityOffset = 28u;
+constexpr size_t HCDEServerSnapshotBodyBytesOffset = 29u;
+constexpr size_t HCDEServerSnapshotHeaderSize = 31u;
+constexpr uint8_t HCDEServerSnapshotProtocolVersion = 3u;
+constexpr uint8_t HCDEServerSnapshotMagic[4] = { 'H', 'C', 'S', 'N' };
+constexpr size_t HCDEServerSnapshotRecordsMagicOffset = 0u;
+constexpr size_t HCDEServerSnapshotRecordsVersionOffset = 4u;
+constexpr size_t HCDEServerSnapshotRecordsPlayerCountOffset = 5u;
+constexpr size_t HCDEServerSnapshotRecordsHeaderSize = 6u;
+constexpr uint8_t HCDEServerSnapshotRecordsProtocolVersion = 2u;
+constexpr uint8_t HCDEServerSnapshotRecordsMagic[4] = { 'H', 'C', 'S', 'R' };
+
+enum EHCDELiveMessage : uint8_t
+{
+	HLIVE_CONTROL = 1,
+	HLIVE_CLIENT_COMMANDS,
+	HLIVE_SERVER_SNAPSHOT,
+};
+
+enum EHCDEGameplayPayload : uint8_t
+{
+	HGP_RESERVED_LEGACY_CLIENT_COMMANDS = 1,
+	HGP_RESERVED_LEGACY_SERVER_SNAPSHOT,
+	HGP_CLIENT_INPUTS,
+	HGP_SERVER_SNAPSHOT,
+};
+
+struct FHCDELivePeerState
+{
+	uint32_t TxSequence = 0u;
+	uint32_t RxSequence = 0u;
+	uint32_t PeerAck = 0u;
+	uint32_t DuplicateCount = 0u;
+	uint32_t ControlSent = 0u;
+	uint32_t ControlReceived = 0u;
+	uint32_t ClientCommandSent = 0u;
+	uint32_t ClientCommandReceived = 0u;
+	uint32_t SnapshotSent = 0u;
+	uint32_t SnapshotReceived = 0u;
+	uint32_t UnsupportedReceived = 0u;
+
+	void Clear()
+	{
+		*this = {};
+	}
+};
+
 static uint8_t	CurrentRoomID = 0u;	// Ignore commands not from this room (useful when transitioning levels).
 static int		LastGameUpdate = 0;		// Track the last time the game actually ran the world.
 static uint64_t	MutedClients = 0u;		// Ignore messages from these clients.
+static uint64_t	LastHCDELiveControlMS = 0u;
+static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
 
 static int CutsceneCountdown = 0;	// If enough people are ready, count down the timer. This won't reset between unreadies, only on intermission entrance.
 static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to move to move past it.
@@ -162,6 +267,1977 @@ void D_DoAdvanceDemo(void);
 static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int argn, int always);
 
 extern	bool	 advancedemo;
+
+static size_t GetNetBufferSize();
+static void HSendPacket(int client, size_t size);
+
+static uint32_t HCDELiveReadBE32(const uint8_t* data)
+{
+	return (uint32_t(data[0]) << 24) | (uint32_t(data[1]) << 16) | (uint32_t(data[2]) << 8) | uint32_t(data[3]);
+}
+
+static uint16_t HCDELiveReadBE16(const uint8_t* data)
+{
+	return (uint16_t(data[0]) << 8) | uint16_t(data[1]);
+}
+
+static void HCDELiveWriteBE16(uint8_t* data, uint16_t value)
+{
+	data[0] = uint8_t(value >> 8);
+	data[1] = uint8_t(value);
+}
+
+static void HCDELiveWriteBE32(uint8_t* data, uint32_t value)
+{
+	data[0] = uint8_t(value >> 24);
+	data[1] = uint8_t(value >> 16);
+	data[2] = uint8_t(value >> 8);
+	data[3] = uint8_t(value);
+}
+
+static const char* HCDELiveMessageName(uint8_t type)
+{
+	switch (type)
+	{
+	case HLIVE_CONTROL:
+		return "control";
+	case HLIVE_CLIENT_COMMANDS:
+		return "client commands";
+	case HLIVE_SERVER_SNAPSHOT:
+		return "server snapshot";
+	default:
+		return "unknown";
+	}
+}
+
+static bool HCDELiveBufferLooksLikePacket(const uint8_t* data, size_t length)
+{
+	return length >= HCDELiveHeaderSize
+		&& data[0] == 0u
+		&& memcmp(&data[HCDELiveMagicOffset], HCDELiveMagic, sizeof(HCDELiveMagic)) == 0;
+}
+
+static bool HCDELiveLooksLikePacket()
+{
+	return HCDELiveBufferLooksLikePacket(NetBuffer, NetBufferLength);
+}
+
+static size_t BeginHCDELivePacket(int client, EHCDELiveMessage type)
+{
+	auto& peer = HCDELivePeers[client];
+	++peer.TxSequence;
+	if (peer.TxSequence == 0u)
+		++peer.TxSequence;
+
+	NetBuffer[0] = 0u;
+	memcpy(&NetBuffer[HCDELiveMagicOffset], HCDELiveMagic, sizeof(HCDELiveMagic));
+	NetBuffer[HCDELiveVersionOffset] = HCDELiveProtocolVersion;
+	NetBuffer[HCDELiveTypeOffset] = uint8_t(type);
+	HCDELiveWriteBE32(&NetBuffer[HCDELiveTxSequenceOffset], peer.TxSequence);
+	HCDELiveWriteBE32(&NetBuffer[HCDELiveAckOffset], peer.RxSequence);
+	return HCDELiveHeaderSize;
+}
+
+static bool AcceptHCDELiveSequence(int clientNum, uint32_t sequence)
+{
+	auto& peer = HCDELivePeers[clientNum];
+	if (sequence == 0u)
+	{
+		DebugTrace::Markf("net", "ignored HCDE live packet from client=%d with zero sequence", clientNum);
+		return false;
+	}
+
+	if (sequence <= peer.RxSequence)
+	{
+		++peer.DuplicateCount;
+		DebugTrace::Markf("net", "ignored duplicate HCDE live packet client=%d seq=%u last=%u duplicates=%u",
+			clientNum, sequence, peer.RxSequence, peer.DuplicateCount);
+		return false;
+	}
+
+	peer.RxSequence = sequence;
+	return true;
+}
+
+static bool ShouldWrapHCDEClientCommandPacket(int client)
+{
+	return netgame
+		&& !demoplayback
+		&& consoleplayer != Net_Arbitrator
+		&& client == Net_Arbitrator
+		&& client != consoleplayer
+		&& I_ClientUsesHCDEService(client);
+}
+
+static bool ShouldWrapHCDEServerSnapshotPacket(int client)
+{
+	return netgame
+		&& !demoplayback
+		&& consoleplayer == Net_Arbitrator
+		&& client != consoleplayer
+		&& I_ClientUsesHCDEService(client);
+}
+
+static const char* HCDEGameplayPayloadName(uint8_t kind)
+{
+	switch (kind)
+	{
+	case HGP_RESERVED_LEGACY_CLIENT_COMMANDS:
+		return "reserved legacy client commands";
+	case HGP_RESERVED_LEGACY_SERVER_SNAPSHOT:
+		return "reserved legacy server snapshot";
+	case HGP_CLIENT_INPUTS:
+		return "client inputs";
+	case HGP_SERVER_SNAPSHOT:
+		return "server snapshot";
+	default:
+		return "unknown";
+	}
+}
+
+static void WriteHCDEGameplayEnvelope(uint8_t* data, EHCDEGameplayPayload kind)
+{
+	memcpy(&data[HCDEGameplayMagicOffset], HCDEGameplayMagic, sizeof(HCDEGameplayMagic));
+	data[HCDEGameplayVersionOffset] = HCDEGameplayProtocolVersion;
+	data[HCDEGameplayKindOffset] = uint8_t(kind);
+	data[HCDEGameplayRoomOffset] = CurrentRoomID;
+	data[HCDEGameplayFlagsOffset] = 0u;
+	HCDELiveWriteBE32(&data[HCDEGameplayTicOffset], uint32_t(max<int>(gametic, 0)));
+}
+
+static bool UnwrapHCDEGameplayEnvelope(int clientNum, size_t payloadSize, const char* label, EHCDEGameplayPayload expectedKind, const uint8_t*& payload, size_t& gameplayPayloadSize, uint32_t& remoteGameTic)
+{
+	auto& peer = HCDELivePeers[clientNum];
+	payload = nullptr;
+	gameplayPayloadSize = 0u;
+	remoteGameTic = 0u;
+
+	if (payloadSize < HCDEGameplayHeaderSize || payloadSize > MAX_MSGLEN)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "malformed HCDE live %s payload from client=%d size=%zu",
+			label, clientNum, payloadSize);
+		return false;
+	}
+
+	const uint8_t* envelope = &NetBuffer[HCDELiveHeaderSize];
+	if (memcmp(&envelope[HCDEGameplayMagicOffset], HCDEGameplayMagic, sizeof(HCDEGameplayMagic)) != 0)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE live %s without gameplay envelope from client=%d",
+			label, clientNum);
+		return false;
+	}
+
+	const uint8_t gameplayVersion = envelope[HCDEGameplayVersionOffset];
+	const uint8_t gameplayKind = envelope[HCDEGameplayKindOffset];
+	const uint8_t room = envelope[HCDEGameplayRoomOffset];
+	const uint8_t flags = envelope[HCDEGameplayFlagsOffset];
+	remoteGameTic = HCDELiveReadBE32(&envelope[HCDEGameplayTicOffset]);
+	if (gameplayVersion != HCDEGameplayProtocolVersion || gameplayKind != uint8_t(expectedKind) || flags != 0u)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE live %s envelope from client=%d version=%u kind=%s flags=%u",
+			label, clientNum, unsigned(gameplayVersion), HCDEGameplayPayloadName(gameplayKind), unsigned(flags));
+		return false;
+	}
+
+	if (room != CurrentRoomID)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored stale HCDE live %s envelope from client=%d room=%u current=%u tic=%u",
+			label, clientNum, unsigned(room), unsigned(CurrentRoomID), remoteGameTic);
+		return false;
+	}
+
+	payload = &envelope[HCDEGameplayHeaderSize];
+	gameplayPayloadSize = payloadSize - HCDEGameplayHeaderSize;
+	return true;
+}
+
+static bool RejectHCDEServerSnapshotBuild(int client, const char* reason, size_t legacySize, size_t cursor)
+{
+	DebugTrace::Markf("net", "refused legacy server snapshot for client=%d reason=%s size=%zu cursor=%zu",
+		client, reason != nullptr ? reason : "unknown", legacySize, cursor);
+	return false;
+}
+
+static bool HCDEAppendByte(uint8_t* output, size_t outputCapacity, size_t& cursor, uint8_t value)
+{
+	if (cursor >= outputCapacity)
+		return false;
+	output[cursor++] = value;
+	return true;
+}
+
+static bool HCDEAppendBE16(uint8_t* output, size_t outputCapacity, size_t& cursor, uint16_t value)
+{
+	if (cursor > outputCapacity || outputCapacity - cursor < 2u)
+		return false;
+	HCDELiveWriteBE16(&output[cursor], value);
+	cursor += 2u;
+	return true;
+}
+
+static bool HCDEAppendBE32(uint8_t* output, size_t outputCapacity, size_t& cursor, uint32_t value)
+{
+	if (cursor > outputCapacity || outputCapacity - cursor < 4u)
+		return false;
+	HCDELiveWriteBE32(&output[cursor], value);
+	cursor += 4u;
+	return true;
+}
+
+static bool HCDEAppendBytes(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t size)
+{
+	if (cursor > outputCapacity || size > outputCapacity - cursor)
+		return false;
+	if (size != 0u)
+		memcpy(&output[cursor], data, size);
+	cursor += size;
+	return true;
+}
+
+static bool HCDEReadByteField(const uint8_t* data, size_t dataSize, size_t& cursor, uint8_t& value)
+{
+	if (cursor >= dataSize)
+		return false;
+	value = data[cursor++];
+	return true;
+}
+
+static bool HCDEReadBE16Field(const uint8_t* data, size_t dataSize, size_t& cursor, uint16_t& value)
+{
+	if (cursor > dataSize || dataSize - cursor < 2u)
+		return false;
+	value = HCDELiveReadBE16(&data[cursor]);
+	cursor += 2u;
+	return true;
+}
+
+static bool HCDEAppendFieldBytes(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor, size_t size)
+{
+	if (inputCursor > dataSize || size > dataSize - inputCursor)
+		return false;
+	if (!HCDEAppendBytes(output, outputCapacity, outputCursor, &data[inputCursor], size))
+		return false;
+	inputCursor += size;
+	return true;
+}
+
+static bool HCDEIsAllowedTicEventType(uint8_t type);
+static bool HCDEAppendCanonicalEventPayload(uint8_t eventType, uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor);
+
+static const usercmd_t* HCDEBuildUserCmdBasis(int playerNum, uint32_t sequence)
+{
+	if (sequence == 0u)
+		return nullptr;
+
+	const uint32_t lastTic = sequence - 1u;
+	if (playerNum == consoleplayer)
+	{
+		const size_t ticDup = TicDup > 0 ? size_t(TicDup) : 0u;
+		const size_t realLastTic = (size_t(lastTic) * ticDup) % LOCALCMDTICS;
+		return &LocalCmds[realLastTic];
+	}
+
+	return playerNum >= 0 && playerNum < MAXPLAYERS ? &ClientStates[playerNum].Tics[lastTic % BACKUPTICS].Command : nullptr;
+}
+
+static const usercmd_t* HCDEReceiveUserCmdBasis(int playerNum, uint32_t sequence)
+{
+	if (sequence == 0u || playerNum < 0 || playerNum >= MAXPLAYERS)
+		return nullptr;
+
+	const uint32_t lastTic = sequence - 1u;
+	return &ClientStates[playerNum].Tics[lastTic % BACKUPTICS].Command;
+}
+
+static bool HCDEAppendUserCmdFields(uint8_t* output, size_t outputCapacity, size_t& cursor, const usercmd_t& command)
+{
+	return HCDEAppendBE32(output, outputCapacity, cursor, command.buttons)
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.pitch))
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.yaw))
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.roll))
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.forwardmove))
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.sidemove))
+		&& HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(command.upmove));
+}
+
+static bool HCDEReadUserCmdFields(const uint8_t* data, size_t dataSize, size_t& cursor, usercmd_t& command)
+{
+	if (cursor > dataSize || dataSize - cursor < HCDEExplicitUserCmdBytes)
+		return false;
+
+	command.buttons = HCDELiveReadBE32(&data[cursor]);
+	cursor += 4u;
+	command.pitch = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	command.yaw = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	command.roll = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	command.forwardmove = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	command.sidemove = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	command.upmove = int16_t(HCDELiveReadBE16(&data[cursor]));
+	cursor += 2u;
+	return true;
+}
+
+static bool HCDEDecodeLegacyUserCmdRecord(int playerNum, uint32_t sequence, const uint8_t* data, size_t dataSize, size_t& eventBytes, usercmd_t& command)
+{
+	eventBytes = 0u;
+	size_t inputCursor = 0u;
+	while (inputCursor < dataSize)
+	{
+		const size_t eventStart = inputCursor;
+		uint8_t type = 0u;
+		if (!HCDEReadByteField(data, dataSize, inputCursor, type))
+			return false;
+
+		if (type == DEM_USERCMD)
+		{
+			TArrayView<uint8_t> stream = TArrayView(const_cast<uint8_t*>(&data[inputCursor]), dataSize - inputCursor);
+			UnpackUserCmd(command, HCDEBuildUserCmdBasis(playerNum, sequence), stream);
+			eventBytes = eventStart;
+			return stream.Size() == 0u;
+		}
+		if (type == DEM_EMPTYUSERCMD)
+		{
+			if (const usercmd_t* basis = HCDEBuildUserCmdBasis(playerNum, sequence))
+				memcpy(&command, basis, sizeof(command));
+			else
+				memset(&command, 0, sizeof(command));
+			eventBytes = eventStart;
+			return inputCursor == dataSize;
+		}
+
+		uint8_t canonicalScratch[MAX_MSGLEN];
+		size_t canonicalCursor = 0u;
+		if (!HCDEIsAllowedTicEventType(type)
+			|| !HCDEAppendCanonicalEventPayload(type, canonicalScratch, sizeof(canonicalScratch), canonicalCursor, data, dataSize, inputCursor))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
+static bool HCDEIsAllowedTicEventType(uint8_t type)
+{
+	switch (type)
+	{
+	case DEM_MUSICCHANGE:
+	case DEM_PRINT:
+	case DEM_CENTERPRINT:
+	case DEM_UINFCHANGED:
+	case DEM_SINFCHANGED:
+	case DEM_GENERICCHEAT:
+	case DEM_GIVECHEAT:
+	case DEM_SAY:
+	case DEM_CHANGEMAP:
+	case DEM_SUICIDE:
+	case DEM_ADDBOT:
+	case DEM_KILLBOTS:
+	case DEM_INVUSEALL:
+	case DEM_INVUSE:
+	case DEM_PAUSE:
+	case DEM_SAVEGAME:
+	case DEM_SUMMON:
+	case DEM_FOV:
+	case DEM_MYFOV:
+	case DEM_CHANGEMAP2:
+	case DEM_RUNSCRIPT:
+	case DEM_SINFCHANGEDXOR:
+	case DEM_INVDROP:
+	case DEM_WARPCHEAT:
+	case DEM_CENTERVIEW:
+	case DEM_SUMMONFRIEND:
+	case DEM_SPRAY:
+	case DEM_CROUCH:
+	case DEM_RUNSCRIPT2:
+	case DEM_CHECKAUTOSAVE:
+	case DEM_DOAUTOSAVE:
+	case DEM_MORPHEX:
+	case DEM_SUMMONFOE:
+	case DEM_TAKECHEAT:
+	case DEM_ADDCONTROLLER:
+	case DEM_DELCONTROLLER:
+	case DEM_KILLCLASSCHEAT:
+	case DEM_SUMMON2:
+	case DEM_SUMMONFRIEND2:
+	case DEM_SUMMONFOE2:
+	case DEM_ADDSLOTDEFAULT:
+	case DEM_ADDSLOT:
+	case DEM_SETSLOT:
+	case DEM_SUMMONMBF:
+	case DEM_CONVREPLY:
+	case DEM_CONVCLOSE:
+	case DEM_CONVNULL:
+	case DEM_RUNSPECIAL:
+	case DEM_SETPITCHLIMIT:
+	case DEM_RUNNAMEDSCRIPT:
+	case DEM_REVERTCAMERA:
+	case DEM_SETSLOTPNUM:
+	case DEM_REMOVE:
+	case DEM_FINISHGAME:
+	case DEM_NETEVENT:
+	case DEM_MDK:
+	case DEM_SETINV:
+	case DEM_ENDSCREENJOB:
+	case DEM_ZSC_CMD:
+	case DEM_CHANGESKILL:
+	case DEM_KICK:
+	case DEM_READIED:
+	case DEM_WEAPSELECT:
+	case DEM_USEFLECHETTE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool HCDEAppendCanonicalString(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* stringBytes, size_t stringBytesSize)
+{
+	if (stringBytesSize > UINT16_MAX)
+		return false;
+	return HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(stringBytesSize))
+		&& HCDEAppendBytes(output, outputCapacity, cursor, stringBytes, stringBytesSize);
+}
+
+// Store tic event payloads in a length-prefixed HCDE form so replaying them never depends on raw stream alignment.
+static bool HCDEAppendCanonicalNullString(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	if (inputCursor >= dataSize)
+		return false;
+
+	const size_t remaining = dataSize - inputCursor;
+	const void* terminator = memchr(&data[inputCursor], 0, remaining);
+	if (terminator == nullptr)
+		return false;
+
+	const size_t stringBytes = size_t(static_cast<const uint8_t*>(terminator) - &data[inputCursor]);
+	if (!HCDEAppendCanonicalString(output, outputCapacity, outputCursor, &data[inputCursor], stringBytes))
+		return false;
+	inputCursor += stringBytes + 1u;
+	return true;
+}
+
+static bool HCDEAppendCanonicalWeaponIndex(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	uint8_t first = 0u;
+	if (!HCDEReadByteField(data, dataSize, inputCursor, first))
+		return false;
+
+	uint16_t index = first & 0x7fu;
+	if (first & 0x80u)
+	{
+		uint8_t high = 0u;
+		if (!HCDEReadByteField(data, dataSize, inputCursor, high))
+			return false;
+		index |= uint16_t(high) << 7;
+	}
+
+	return HCDEAppendBE16(output, outputCapacity, outputCursor, index);
+}
+
+static bool HCDEAppendCanonicalCVarChange(uint8_t eventType, uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	uint8_t descriptor = 0u;
+	if (!HCDEReadByteField(data, dataSize, inputCursor, descriptor))
+		return false;
+
+	const uint8_t type = descriptor >> 6;
+	const size_t nameBytes = descriptor & 0x3fu;
+	if (type > CVAR_String || nameBytes == 0u || inputCursor > dataSize || nameBytes > dataSize - inputCursor)
+		return false;
+
+	if (!HCDEAppendByte(output, outputCapacity, outputCursor, type)
+		|| !HCDEAppendCanonicalString(output, outputCapacity, outputCursor, &data[inputCursor], nameBytes))
+	{
+		return false;
+	}
+	inputCursor += nameBytes;
+
+	if (eventType == DEM_SINFCHANGEDXOR)
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+
+	switch (type)
+	{
+	case CVAR_Bool:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+	case CVAR_Int:
+	case CVAR_Float:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+	case CVAR_String:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+	default:
+		return false;
+	}
+}
+
+static bool HCDEAppendCanonicalRunArgs(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor, bool named)
+{
+	uint8_t argCount = 0u;
+	if (named)
+	{
+		if (!HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			|| !HCDEReadByteField(data, dataSize, inputCursor, argCount)
+			|| !HCDEAppendByte(output, outputCapacity, outputCursor, argCount))
+		{
+			return false;
+		}
+		argCount &= 127u;
+	}
+	else
+	{
+		if (!HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 2u)
+			|| !HCDEReadByteField(data, dataSize, inputCursor, argCount)
+			|| !HCDEAppendByte(output, outputCapacity, outputCursor, argCount))
+		{
+			return false;
+		}
+	}
+
+	return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, size_t(argCount) * 4u);
+}
+
+static bool HCDEAppendCanonicalEventPayload(uint8_t eventType, uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	switch (eventType)
+	{
+	case DEM_SUICIDE:
+	case DEM_KILLBOTS:
+	case DEM_INVUSEALL:
+	case DEM_PAUSE:
+	case DEM_CENTERVIEW:
+	case DEM_CROUCH:
+	case DEM_CHECKAUTOSAVE:
+	case DEM_DOAUTOSAVE:
+	case DEM_CONVCLOSE:
+	case DEM_CONVNULL:
+	case DEM_REVERTCAMERA:
+	case DEM_FINISHGAME:
+	case DEM_ENDSCREENJOB:
+	case DEM_READIED:
+	case DEM_USEFLECHETTE:
+		return true;
+
+	case DEM_SAY:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_ADDBOT:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+
+	case DEM_GIVECHEAT:
+	case DEM_TAKECHEAT:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+
+	case DEM_SETINV:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 5u);
+
+	case DEM_NETEVENT:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 14u);
+
+	case DEM_ZSC_CMD:
+		{
+			uint16_t commandBytes = 0u;
+			return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+				&& HCDEReadBE16Field(data, dataSize, inputCursor, commandBytes)
+				&& HCDEAppendBE16(output, outputCapacity, outputCursor, commandBytes)
+				&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, commandBytes);
+		}
+
+	case DEM_SUMMON2:
+	case DEM_SUMMONFRIEND2:
+	case DEM_SUMMONFOE2:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 25u);
+
+	case DEM_CHANGEMAP2:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_MUSICCHANGE:
+	case DEM_PRINT:
+	case DEM_CENTERPRINT:
+	case DEM_UINFCHANGED:
+	case DEM_CHANGEMAP:
+	case DEM_SUMMON:
+	case DEM_SUMMONFRIEND:
+	case DEM_SUMMONFOE:
+	case DEM_SUMMONMBF:
+	case DEM_REMOVE:
+	case DEM_SPRAY:
+	case DEM_MORPHEX:
+	case DEM_KILLCLASSCHEAT:
+	case DEM_MDK:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_WARPCHEAT:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 6u);
+
+	case DEM_INVUSE:
+	case DEM_FOV:
+	case DEM_MYFOV:
+	case DEM_CHANGESKILL:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+
+	case DEM_INVDROP:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 8u);
+
+	case DEM_GENERICCHEAT:
+	case DEM_ADDCONTROLLER:
+	case DEM_DELCONTROLLER:
+	case DEM_KICK:
+	case DEM_WEAPSELECT:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+
+	case DEM_SAVEGAME:
+		return HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_SINFCHANGED:
+	case DEM_SINFCHANGEDXOR:
+		return HCDEAppendCanonicalCVarChange(eventType, output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_RUNSCRIPT:
+	case DEM_RUNSCRIPT2:
+	case DEM_RUNSPECIAL:
+		return HCDEAppendCanonicalRunArgs(output, outputCapacity, outputCursor, data, dataSize, inputCursor, false);
+
+	case DEM_RUNNAMEDSCRIPT:
+		return HCDEAppendCanonicalRunArgs(output, outputCapacity, outputCursor, data, dataSize, inputCursor, true);
+
+	case DEM_CONVREPLY:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 3u);
+
+	case DEM_SETSLOT:
+	case DEM_SETSLOTPNUM:
+		{
+			if (eventType == DEM_SETSLOTPNUM
+				&& !HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u))
+			{
+				return false;
+			}
+			uint8_t slot = 0u;
+			uint8_t count = 0u;
+			if (!HCDEReadByteField(data, dataSize, inputCursor, slot)
+				|| !HCDEReadByteField(data, dataSize, inputCursor, count)
+				|| !HCDEAppendByte(output, outputCapacity, outputCursor, slot)
+				|| !HCDEAppendByte(output, outputCapacity, outputCursor, count))
+			{
+				return false;
+			}
+			for (uint8_t i = 0u; i < count; ++i)
+			{
+				if (!HCDEAppendCanonicalWeaponIndex(output, outputCapacity, outputCursor, data, dataSize, inputCursor))
+					return false;
+			}
+			return true;
+		}
+
+	case DEM_ADDSLOT:
+	case DEM_ADDSLOTDEFAULT:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendCanonicalWeaponIndex(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+
+	case DEM_SETPITCHLIMIT:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 2u);
+
+	default:
+		return false;
+	}
+}
+
+static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t dataSize)
+{
+	if (cursor > outputCapacity || outputCapacity - cursor < 2u)
+		return false;
+
+	const size_t countOffset = cursor;
+	cursor += 2u;
+	uint16_t eventCount = 0u;
+	size_t inputCursor = 0u;
+	while (inputCursor < dataSize)
+	{
+		uint8_t eventType = 0u;
+		if (!HCDEReadByteField(data, dataSize, inputCursor, eventType)
+			|| !HCDEIsAllowedTicEventType(eventType)
+			|| eventCount == UINT16_MAX
+			|| !HCDEAppendByte(output, outputCapacity, cursor, eventType)
+			|| cursor > outputCapacity
+			|| outputCapacity - cursor < 2u)
+		{
+			return false;
+		}
+
+		const size_t payloadSizeOffset = cursor;
+		cursor += 2u;
+		const size_t payloadStart = cursor;
+		if (!HCDEAppendCanonicalEventPayload(eventType, output, outputCapacity, cursor, data, dataSize, inputCursor))
+			return false;
+
+		const size_t payloadBytes = cursor - payloadStart;
+		if (payloadBytes > UINT16_MAX)
+			return false;
+		HCDELiveWriteBE16(&output[payloadSizeOffset], uint16_t(payloadBytes));
+		++eventCount;
+	}
+
+	HCDELiveWriteBE16(&output[countOffset], eventCount);
+	return true;
+}
+
+static bool HCDEReadCanonicalString(const uint8_t* data, size_t dataSize, size_t& cursor, const uint8_t*& stringBytes, size_t& stringBytesSize)
+{
+	uint16_t length = 0u;
+	if (!HCDEReadBE16Field(data, dataSize, cursor, length)
+		|| cursor > dataSize
+		|| length > dataSize - cursor)
+	{
+		return false;
+	}
+
+	stringBytes = &data[cursor];
+	stringBytesSize = length;
+	cursor += length;
+	return true;
+}
+
+static bool HCDEAppendLegacyStringFromCanonical(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	const uint8_t* stringBytes = nullptr;
+	size_t stringBytesSize = 0u;
+	return HCDEReadCanonicalString(data, dataSize, inputCursor, stringBytes, stringBytesSize)
+		&& HCDEAppendBytes(output, outputCapacity, outputCursor, stringBytes, stringBytesSize)
+		&& HCDEAppendByte(output, outputCapacity, outputCursor, 0u);
+}
+
+static bool HCDEAppendLegacyWeaponIndex(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	uint16_t index = 0u;
+	if (!HCDEReadBE16Field(data, dataSize, inputCursor, index) || index > 32767u)
+		return false;
+
+	if (index < 128u)
+		return HCDEAppendByte(output, outputCapacity, outputCursor, uint8_t(index));
+	return HCDEAppendByte(output, outputCapacity, outputCursor, uint8_t(0x80u | (index & 0x7fu)))
+		&& HCDEAppendByte(output, outputCapacity, outputCursor, uint8_t(index >> 7));
+}
+
+static bool HCDEAppendLegacyCVarChange(uint8_t eventType, uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor)
+{
+	uint8_t type = 0u;
+	const uint8_t* nameBytes = nullptr;
+	size_t nameBytesSize = 0u;
+	if (!HCDEReadByteField(data, dataSize, inputCursor, type)
+		|| type > CVAR_String
+		|| !HCDEReadCanonicalString(data, dataSize, inputCursor, nameBytes, nameBytesSize)
+		|| nameBytesSize == 0u
+		|| nameBytesSize > 63u)
+	{
+		return false;
+	}
+
+	if (!HCDEAppendByte(output, outputCapacity, outputCursor, uint8_t(nameBytesSize | (size_t(type) << 6)))
+		|| !HCDEAppendBytes(output, outputCapacity, outputCursor, nameBytes, nameBytesSize))
+	{
+		return false;
+	}
+
+	if (eventType == DEM_SINFCHANGEDXOR)
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+
+	switch (type)
+	{
+	case CVAR_Bool:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+	case CVAR_Int:
+	case CVAR_Float:
+		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+	case CVAR_String:
+		return HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+	default:
+		return false;
+	}
+}
+
+static bool HCDEAppendLegacyRunArgs(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor, bool named)
+{
+	uint8_t argCount = 0u;
+	if (named)
+	{
+		if (!HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			|| !HCDEReadByteField(data, dataSize, inputCursor, argCount)
+			|| !HCDEAppendByte(output, outputCapacity, outputCursor, argCount))
+		{
+			return false;
+		}
+		argCount &= 127u;
+	}
+	else
+	{
+		if (!HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 2u)
+			|| !HCDEReadByteField(data, dataSize, inputCursor, argCount)
+			|| !HCDEAppendByte(output, outputCapacity, outputCursor, argCount))
+		{
+			return false;
+		}
+	}
+
+	return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, size_t(argCount) * 4u);
+}
+
+static bool HCDEAppendLegacyEventPayload(uint8_t eventType, const uint8_t* data, size_t dataSize, uint8_t* output, size_t outputCapacity, size_t& outputCursor)
+{
+	size_t inputCursor = 0u;
+	bool ok = false;
+
+	switch (eventType)
+	{
+	case DEM_SUICIDE:
+	case DEM_KILLBOTS:
+	case DEM_INVUSEALL:
+	case DEM_PAUSE:
+	case DEM_CENTERVIEW:
+	case DEM_CROUCH:
+	case DEM_CHECKAUTOSAVE:
+	case DEM_DOAUTOSAVE:
+	case DEM_CONVCLOSE:
+	case DEM_CONVNULL:
+	case DEM_REVERTCAMERA:
+	case DEM_FINISHGAME:
+	case DEM_ENDSCREENJOB:
+	case DEM_READIED:
+	case DEM_USEFLECHETTE:
+		ok = true;
+		break;
+
+	case DEM_SAY:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_ADDBOT:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+		break;
+
+	case DEM_GIVECHEAT:
+	case DEM_TAKECHEAT:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+		break;
+
+	case DEM_SETINV:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 5u);
+		break;
+
+	case DEM_NETEVENT:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 14u);
+		break;
+
+	case DEM_ZSC_CMD:
+		{
+			uint16_t commandBytes = 0u;
+			ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+				&& HCDEReadBE16Field(data, dataSize, inputCursor, commandBytes)
+				&& HCDEAppendBE16(output, outputCapacity, outputCursor, commandBytes)
+				&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, commandBytes);
+			break;
+		}
+
+	case DEM_SUMMON2:
+	case DEM_SUMMONFRIEND2:
+	case DEM_SUMMONFOE2:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 25u);
+		break;
+
+	case DEM_CHANGEMAP2:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_MUSICCHANGE:
+	case DEM_PRINT:
+	case DEM_CENTERPRINT:
+	case DEM_UINFCHANGED:
+	case DEM_CHANGEMAP:
+	case DEM_SUMMON:
+	case DEM_SUMMONFRIEND:
+	case DEM_SUMMONFOE:
+	case DEM_SUMMONMBF:
+	case DEM_REMOVE:
+	case DEM_SPRAY:
+	case DEM_MORPHEX:
+	case DEM_KILLCLASSCHEAT:
+	case DEM_MDK:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_WARPCHEAT:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 6u);
+		break;
+
+	case DEM_INVUSE:
+	case DEM_FOV:
+	case DEM_MYFOV:
+	case DEM_CHANGESKILL:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 4u);
+		break;
+
+	case DEM_INVDROP:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 8u);
+		break;
+
+	case DEM_GENERICCHEAT:
+	case DEM_ADDCONTROLLER:
+	case DEM_DELCONTROLLER:
+	case DEM_KICK:
+	case DEM_WEAPSELECT:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u);
+		break;
+
+	case DEM_SAVEGAME:
+		ok = HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor)
+			&& HCDEAppendLegacyStringFromCanonical(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_SINFCHANGED:
+	case DEM_SINFCHANGEDXOR:
+		ok = HCDEAppendLegacyCVarChange(eventType, output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_RUNSCRIPT:
+	case DEM_RUNSCRIPT2:
+	case DEM_RUNSPECIAL:
+		ok = HCDEAppendLegacyRunArgs(output, outputCapacity, outputCursor, data, dataSize, inputCursor, false);
+		break;
+
+	case DEM_RUNNAMEDSCRIPT:
+		ok = HCDEAppendLegacyRunArgs(output, outputCapacity, outputCursor, data, dataSize, inputCursor, true);
+		break;
+
+	case DEM_CONVREPLY:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 3u);
+		break;
+
+	case DEM_SETSLOT:
+	case DEM_SETSLOTPNUM:
+		{
+			if (eventType == DEM_SETSLOTPNUM
+				&& !HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u))
+			{
+				return false;
+			}
+			uint8_t slot = 0u;
+			uint8_t count = 0u;
+			if (!HCDEReadByteField(data, dataSize, inputCursor, slot)
+				|| !HCDEReadByteField(data, dataSize, inputCursor, count)
+				|| !HCDEAppendByte(output, outputCapacity, outputCursor, slot)
+				|| !HCDEAppendByte(output, outputCapacity, outputCursor, count))
+			{
+				return false;
+			}
+			for (uint8_t i = 0u; i < count; ++i)
+			{
+				if (!HCDEAppendLegacyWeaponIndex(output, outputCapacity, outputCursor, data, dataSize, inputCursor))
+					return false;
+			}
+			ok = true;
+			break;
+		}
+
+	case DEM_ADDSLOT:
+	case DEM_ADDSLOTDEFAULT:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
+			&& HCDEAppendLegacyWeaponIndex(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
+		break;
+
+	case DEM_SETPITCHLIMIT:
+		ok = HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 2u);
+		break;
+
+	default:
+		ok = false;
+		break;
+	}
+
+	return ok && inputCursor == dataSize;
+}
+
+static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPacket, size_t legacySize, uint8_t* output, size_t outputCapacity, size_t& outputSize)
+{
+	outputSize = 0u;
+	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
+	if (legacySize < 13u || legacySize > MAX_MSGLEN)
+		return RejectHCDEServerSnapshotBuild(client, "malformed-size", legacySize, 0u);
+
+	const uint8_t controlFlags = legacyPacket[0];
+	if (controlFlags & disallowedControlFlags)
+	{
+		DebugTrace::Markf("net", "refused legacy server snapshot for client=%d control flags=%u",
+			client, unsigned(controlFlags & disallowedControlFlags));
+		return false;
+	}
+
+	size_t cursor = 10u;
+	size_t quitterBytes = 0u;
+	if (controlFlags & NCMD_QUITTERS)
+	{
+		if (cursor >= legacySize)
+			return RejectHCDEServerSnapshotBuild(client, "missing-quitter-count", legacySize, cursor);
+		quitterBytes = size_t(legacyPacket[cursor]) + 1u;
+		if (quitterBytes > legacySize - cursor)
+			return RejectHCDEServerSnapshotBuild(client, "truncated-quitters", legacySize, cursor);
+		cursor += quitterBytes;
+	}
+
+	if (cursor > legacySize || legacySize - cursor < 3u)
+		return RejectHCDEServerSnapshotBuild(client, "missing-snapshot-counts", legacySize, cursor);
+
+	const uint8_t playerCount = legacyPacket[cursor++];
+	const uint8_t commandTics = legacyPacket[cursor++];
+	uint32_t baseSequence = 0u;
+	if (commandTics > 0u)
+	{
+		if (commandTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
+			return RejectHCDEServerSnapshotBuild(client, "invalid-command-tics", legacySize, cursor);
+		baseSequence = HCDELiveReadBE32(&legacyPacket[cursor]);
+		cursor += 4u;
+	}
+
+	if (cursor >= legacySize)
+		return RejectHCDEServerSnapshotBuild(client, "missing-consistency-count", legacySize, cursor);
+
+	const uint8_t consistencyTics = legacyPacket[cursor++];
+	uint32_t baseConsistency = 0u;
+	if (consistencyTics > 0u)
+	{
+		if (consistencyTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
+			return RejectHCDEServerSnapshotBuild(client, "invalid-consistency-tics", legacySize, cursor);
+		baseConsistency = HCDELiveReadBE32(&legacyPacket[cursor]);
+		cursor += 4u;
+	}
+
+	if (cursor >= legacySize)
+		return RejectHCDEServerSnapshotBuild(client, "missing-stability-byte", legacySize, cursor);
+
+	const uint8_t stabilityBuffer = legacyPacket[cursor++];
+	const size_t rawSnapshotBytes = legacySize - cursor;
+	if (playerCount > MAXPLAYERS)
+		return RejectHCDEServerSnapshotBuild(client, "too-many-players", legacySize, cursor);
+	if (quitterBytes > 0xffffu)
+		return RejectHCDEServerSnapshotBuild(client, "too-many-quitter-bytes", legacySize, cursor);
+	if ((controlFlags & NCMD_QUITTERS) == 0u && quitterBytes != 0u)
+		return RejectHCDEServerSnapshotBuild(client, "unexpected-quitter-bytes", legacySize, cursor);
+	if ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes == 0u)
+		return RejectHCDEServerSnapshotBuild(client, "missing-quitter-bytes", legacySize, cursor);
+	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u || rawSnapshotBytes != 0u))
+		return RejectHCDEServerSnapshotBuild(client, "invalid-empty-snapshot", legacySize, cursor);
+	if (HCDEServerSnapshotHeaderSize + quitterBytes > outputCapacity)
+		return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, cursor);
+
+	size_t recordCursor = cursor;
+	size_t bodyCursor = HCDEServerSnapshotHeaderSize + quitterBytes;
+	uint64_t playersSeen = 0u;
+	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsMagic, sizeof(HCDEServerSnapshotRecordsMagic))
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsProtocolVersion)
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
+	{
+		return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+	}
+
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		if (recordCursor + 3u > legacySize)
+			return RejectHCDEServerSnapshotBuild(client, "missing-player-record", legacySize, recordCursor);
+
+		const uint8_t playerNum = legacyPacket[recordCursor++];
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u)
+			return RejectHCDEServerSnapshotBuild(client, "invalid-player-record", legacySize, recordCursor);
+
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if (playersSeen & playerMask)
+			return RejectHCDEServerSnapshotBuild(client, "duplicate-player-record", legacySize, recordCursor);
+		playersSeen |= playerMask;
+
+		const uint16_t latency = HCDELiveReadBE16(&legacyPacket[recordCursor]);
+		recordCursor += 2u;
+		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, playerNum)
+			|| !HCDEAppendBE16(output, outputCapacity, bodyCursor, latency)
+			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, consistencyTics)
+			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, commandTics))
+		{
+			return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+		}
+
+		uint64_t consistencyOffsetsSeen = 0u;
+		for (uint8_t r = 0u; r < consistencyTics; ++r)
+		{
+			if (recordCursor + 3u > legacySize)
+				return RejectHCDEServerSnapshotBuild(client, "truncated-consistency-record", legacySize, recordCursor);
+
+			const uint8_t consistencyOffset = legacyPacket[recordCursor];
+			if (consistencyOffset >= consistencyTics)
+				return RejectHCDEServerSnapshotBuild(client, "invalid-consistency-offset", legacySize, recordCursor);
+			const uint64_t consistencyMask = uint64_t(1u) << consistencyOffset;
+			if (consistencyOffsetsSeen & consistencyMask)
+				return RejectHCDEServerSnapshotBuild(client, "duplicate-consistency-offset", legacySize, recordCursor);
+			consistencyOffsetsSeen |= consistencyMask;
+
+			if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], 3u))
+				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+			recordCursor += 3u;
+		}
+
+		uint64_t commandOffsetsSeen = 0u;
+		for (uint8_t t = 0u; t < commandTics; ++t)
+		{
+			if (recordCursor >= legacySize)
+				return RejectHCDEServerSnapshotBuild(client, "truncated-command-record", legacySize, recordCursor);
+
+			const uint8_t commandOffset = legacyPacket[recordCursor++];
+			if (commandOffset >= commandTics)
+				return RejectHCDEServerSnapshotBuild(client, "invalid-command-offset", legacySize, recordCursor);
+			const uint64_t commandMask = uint64_t(1u) << commandOffset;
+			if (commandOffsetsSeen & commandMask)
+				return RejectHCDEServerSnapshotBuild(client, "duplicate-command-offset", legacySize, recordCursor);
+			commandOffsetsSeen |= commandMask;
+
+			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
+			SkipUserCmdMessage(skipper);
+			const uint8_t* commandEnd = skipper.Data();
+			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
+			if (commandPayloadBytes == 0u)
+				return RejectHCDEServerSnapshotBuild(client, "empty-command-record", legacySize, recordCursor);
+
+			size_t eventBytes = 0u;
+			usercmd_t command = {};
+			const uint32_t commandSequence = baseSequence + commandOffset;
+			if (!HCDEDecodeLegacyUserCmdRecord(playerNum, commandSequence, &legacyPacket[recordCursor], commandPayloadBytes, eventBytes, command))
+				return RejectHCDEServerSnapshotBuild(client, "invalid-command-record", legacySize, recordCursor);
+			if (eventBytes > 0xffffu)
+				return RejectHCDEServerSnapshotBuild(client, "too-many-event-bytes", legacySize, recordCursor);
+
+			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, commandOffset))
+				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+			if (!HCDEAppendEventRecords(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], eventBytes))
+				return RejectHCDEServerSnapshotBuild(client, "invalid-event-records", legacySize, recordCursor);
+			if (!HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, command))
+				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+			recordCursor += commandPayloadBytes;
+		}
+	}
+
+	if (recordCursor != legacySize)
+		return RejectHCDEServerSnapshotBuild(client, "trailing-snapshot-bytes", legacySize, recordCursor);
+
+	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
+	if (bodyBytes > 0xffffu)
+		return RejectHCDEServerSnapshotBuild(client, "too-many-record-bytes", legacySize, recordCursor);
+
+	memcpy(&output[HCDEServerSnapshotMagicOffset], HCDEServerSnapshotMagic, sizeof(HCDEServerSnapshotMagic));
+	output[HCDEServerSnapshotVersionOffset] = HCDEServerSnapshotProtocolVersion;
+	output[HCDEServerSnapshotFlagsOffset] = controlFlags;
+	output[HCDEServerSnapshotRoutingOffset] = legacyPacket[1];
+	output[HCDEServerSnapshotPlayerCountOffset] = playerCount;
+	memcpy(&output[HCDEServerSnapshotSequenceAckOffset], &legacyPacket[2], 4u);
+	memcpy(&output[HCDEServerSnapshotConsistencyAckOffset], &legacyPacket[6], 4u);
+	HCDELiveWriteBE16(&output[HCDEServerSnapshotQuitterBytesOffset], uint16_t(quitterBytes));
+	HCDELiveWriteBE32(&output[HCDEServerSnapshotBaseSequenceOffset], baseSequence);
+	HCDELiveWriteBE32(&output[HCDEServerSnapshotBaseConsistencyOffset], baseConsistency);
+	output[HCDEServerSnapshotCommandTicsOffset] = commandTics;
+	output[HCDEServerSnapshotConsistencyTicsOffset] = consistencyTics;
+	output[HCDEServerSnapshotStabilityOffset] = stabilityBuffer;
+	HCDELiveWriteBE16(&output[HCDEServerSnapshotBodyBytesOffset], uint16_t(bodyBytes));
+	if (quitterBytes > 0u)
+		memcpy(&output[HCDEServerSnapshotHeaderSize], &legacyPacket[10], quitterBytes);
+	outputSize = bodyCursor;
+
+	DebugTrace::Markf("net", "HCDE server snapshot payload build client=%d players=%u tics=%u consistencies=%u quitters=%zu records=%zu raw=%zu",
+		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, rawSnapshotBytes);
+	return true;
+}
+
+static bool RejectHCDEClientInputBuild(int client, const char* reason, size_t legacySize, size_t cursor)
+{
+	DebugTrace::Markf("net", "refused legacy client input for client=%d reason=%s size=%zu cursor=%zu",
+		client, reason != nullptr ? reason : "unknown", legacySize, cursor);
+	return false;
+}
+
+static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket, size_t legacySize, uint8_t* output, size_t outputCapacity, size_t& outputSize)
+{
+	outputSize = 0u;
+	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_QUITTERS | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
+	if (legacySize < 13u || legacySize > MAX_MSGLEN)
+		return RejectHCDEClientInputBuild(client, "malformed-size", legacySize, 0u);
+
+	const uint8_t controlFlags = legacyPacket[0];
+	if (controlFlags & disallowedControlFlags)
+	{
+		DebugTrace::Markf("net", "refused legacy client input for client=%d control flags=%u",
+			client, unsigned(controlFlags & disallowedControlFlags));
+		return false;
+	}
+
+	size_t cursor = 10u;
+	const uint8_t playerCount = legacyPacket[cursor++];
+	const uint8_t commandTics = legacyPacket[cursor++];
+	uint32_t baseSequence = 0u;
+	if (commandTics > 0u)
+	{
+		if (commandTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
+			return RejectHCDEClientInputBuild(client, "invalid-command-tics", legacySize, cursor);
+		baseSequence = HCDELiveReadBE32(&legacyPacket[cursor]);
+		cursor += 4u;
+	}
+
+	if (cursor >= legacySize)
+		return RejectHCDEClientInputBuild(client, "missing-consistency-count", legacySize, cursor);
+
+	const uint8_t consistencyTics = legacyPacket[cursor++];
+	uint32_t baseConsistency = 0u;
+	if (consistencyTics > 0u)
+	{
+		if (consistencyTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
+			return RejectHCDEClientInputBuild(client, "invalid-consistency-tics", legacySize, cursor);
+		baseConsistency = HCDELiveReadBE32(&legacyPacket[cursor]);
+		cursor += 4u;
+	}
+
+	if (cursor >= legacySize)
+		return RejectHCDEClientInputBuild(client, "missing-stability-byte", legacySize, cursor);
+
+	const uint8_t stabilityBuffer = legacyPacket[cursor++];
+	const size_t rawCommandBytes = legacySize - cursor;
+	if (playerCount > MAXPLAYERS)
+		return RejectHCDEClientInputBuild(client, "too-many-players", legacySize, cursor);
+	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u || rawCommandBytes != 0u))
+		return RejectHCDEClientInputBuild(client, "invalid-empty-heartbeat", legacySize, cursor);
+	if (HCDEClientInputHeaderSize > outputCapacity)
+		return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, cursor);
+
+	size_t recordCursor = cursor;
+	size_t bodyCursor = HCDEClientInputHeaderSize;
+	uint64_t playersSeen = 0u;
+	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEClientInputRecordsMagic, sizeof(HCDEClientInputRecordsMagic))
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEClientInputRecordsProtocolVersion)
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
+	{
+		return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+	}
+
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		if (recordCursor >= legacySize)
+			return RejectHCDEClientInputBuild(client, "missing-player-record", legacySize, recordCursor);
+
+		const uint8_t playerNum = legacyPacket[recordCursor++];
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u)
+			return RejectHCDEClientInputBuild(client, "invalid-player-record", legacySize, recordCursor);
+
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if (playersSeen & playerMask)
+			return RejectHCDEClientInputBuild(client, "duplicate-player-record", legacySize, recordCursor);
+		playersSeen |= playerMask;
+
+		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, playerNum)
+			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, consistencyTics)
+			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, commandTics))
+		{
+			return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+		}
+
+		uint64_t consistencyOffsetsSeen = 0u;
+		for (uint8_t r = 0u; r < consistencyTics; ++r)
+		{
+			if (recordCursor + 3u > legacySize)
+				return RejectHCDEClientInputBuild(client, "truncated-consistency-record", legacySize, recordCursor);
+
+			const uint8_t consistencyOffset = legacyPacket[recordCursor];
+			if (consistencyOffset >= consistencyTics)
+				return RejectHCDEClientInputBuild(client, "invalid-consistency-offset", legacySize, recordCursor);
+			const uint64_t consistencyMask = uint64_t(1u) << consistencyOffset;
+			if (consistencyOffsetsSeen & consistencyMask)
+				return RejectHCDEClientInputBuild(client, "duplicate-consistency-offset", legacySize, recordCursor);
+			consistencyOffsetsSeen |= consistencyMask;
+
+			if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], 3u))
+				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+			recordCursor += 3u;
+		}
+
+		uint64_t commandOffsetsSeen = 0u;
+		for (uint8_t t = 0u; t < commandTics; ++t)
+		{
+			if (recordCursor >= legacySize)
+				return RejectHCDEClientInputBuild(client, "truncated-command-record", legacySize, recordCursor);
+
+			const uint8_t commandOffset = legacyPacket[recordCursor++];
+			if (commandOffset >= commandTics)
+				return RejectHCDEClientInputBuild(client, "invalid-command-offset", legacySize, recordCursor);
+			const uint64_t commandMask = uint64_t(1u) << commandOffset;
+			if (commandOffsetsSeen & commandMask)
+				return RejectHCDEClientInputBuild(client, "duplicate-command-offset", legacySize, recordCursor);
+			commandOffsetsSeen |= commandMask;
+
+			const uint8_t* commandStart = &legacyPacket[recordCursor];
+			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
+			SkipUserCmdMessage(skipper);
+			const uint8_t* commandEnd = skipper.Data();
+			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
+			if (commandPayloadBytes == 0u)
+				return RejectHCDEClientInputBuild(client, "empty-command-record", legacySize, recordCursor);
+
+			size_t eventBytes = 0u;
+			usercmd_t command = {};
+			const uint32_t commandSequence = baseSequence + commandOffset;
+			if (!HCDEDecodeLegacyUserCmdRecord(playerNum, commandSequence, commandStart, commandPayloadBytes, eventBytes, command))
+				return RejectHCDEClientInputBuild(client, "invalid-command-record", legacySize, recordCursor);
+			if (eventBytes > 0xffffu)
+				return RejectHCDEClientInputBuild(client, "too-many-event-bytes", legacySize, recordCursor);
+
+			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, commandOffset))
+				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+			if (!HCDEAppendEventRecords(output, outputCapacity, bodyCursor, commandStart, eventBytes))
+				return RejectHCDEClientInputBuild(client, "invalid-event-records", legacySize, recordCursor);
+			if (!HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, command))
+				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+			recordCursor += commandPayloadBytes;
+		}
+	}
+
+	if (recordCursor != legacySize)
+		return RejectHCDEClientInputBuild(client, "trailing-input-bytes", legacySize, recordCursor);
+
+	const size_t bodyBytes = bodyCursor - HCDEClientInputHeaderSize;
+	if (bodyBytes > 0xffffu)
+		return RejectHCDEClientInputBuild(client, "too-many-record-bytes", legacySize, recordCursor);
+
+	memcpy(&output[HCDEClientInputMagicOffset], HCDEClientInputMagic, sizeof(HCDEClientInputMagic));
+	output[HCDEClientInputVersionOffset] = HCDEClientInputProtocolVersion;
+	output[HCDEClientInputFlagsOffset] = controlFlags;
+	output[HCDEClientInputRoutingOffset] = legacyPacket[1];
+	output[HCDEClientInputPlayerCountOffset] = playerCount;
+	memcpy(&output[HCDEClientInputSequenceAckOffset], &legacyPacket[2], 4u);
+	memcpy(&output[HCDEClientInputConsistencyAckOffset], &legacyPacket[6], 4u);
+	HCDELiveWriteBE32(&output[HCDEClientInputBaseSequenceOffset], baseSequence);
+	HCDELiveWriteBE32(&output[HCDEClientInputBaseConsistencyOffset], baseConsistency);
+	output[HCDEClientInputCommandTicsOffset] = commandTics;
+	output[HCDEClientInputConsistencyTicsOffset] = consistencyTics;
+	output[HCDEClientInputStabilityOffset] = stabilityBuffer;
+	HCDELiveWriteBE16(&output[HCDEClientInputBodyBytesOffset], uint16_t(bodyBytes));
+	outputSize = HCDEClientInputHeaderSize + bodyBytes;
+
+	DebugTrace::Markf("net", "HCDE client input payload build client=%d players=%u tics=%u consistencies=%u records=%zu raw=%zu",
+		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes, rawCommandBytes);
+	return true;
+}
+
+static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
+{
+	auto& peer = HCDELivePeers[clientNum];
+	const uint8_t* payload = nullptr;
+	size_t inputPayloadSize = 0u;
+	uint32_t remoteGameTic = 0u;
+	if (!UnwrapHCDEGameplayEnvelope(clientNum, payloadSize, "client input", HGP_CLIENT_INPUTS, payload, inputPayloadSize, remoteGameTic))
+		return false;
+
+	if (inputPayloadSize < HCDEClientInputHeaderSize
+		|| memcmp(&payload[HCDEClientInputMagicOffset], HCDEClientInputMagic, sizeof(HCDEClientInputMagic)) != 0)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "malformed HCDE client input from client=%d size=%zu", clientNum, inputPayloadSize);
+		return false;
+	}
+
+	const uint8_t inputVersion = payload[HCDEClientInputVersionOffset];
+	const uint8_t controlFlags = payload[HCDEClientInputFlagsOffset];
+	const uint8_t routingByte = payload[HCDEClientInputRoutingOffset];
+	const uint8_t playerCount = payload[HCDEClientInputPlayerCountOffset];
+	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEClientInputBaseSequenceOffset]);
+	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEClientInputBaseConsistencyOffset]);
+	const uint8_t commandTics = payload[HCDEClientInputCommandTicsOffset];
+	const uint8_t consistencyTics = payload[HCDEClientInputConsistencyTicsOffset];
+	const uint8_t stabilityBuffer = payload[HCDEClientInputStabilityOffset];
+	const size_t bodyBytes = HCDELiveReadBE16(&payload[HCDEClientInputBodyBytesOffset]);
+	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_QUITTERS | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
+	auto rejectClientInput = [&](const char* reason)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE client input from client=%d reason=%s version=%u flags=%u players=%u tics=%u consistencies=%u body=%zu size=%zu",
+			clientNum, reason != nullptr ? reason : "unknown", unsigned(inputVersion), unsigned(controlFlags & disallowedControlFlags),
+			unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes, inputPayloadSize);
+		return false;
+	};
+
+	if (inputVersion != HCDEClientInputProtocolVersion
+		|| (controlFlags & disallowedControlFlags)
+		|| playerCount > MAXPLAYERS
+		|| commandTics > MAXSENDTICS
+		|| consistencyTics > MAXSENDTICS
+		|| (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
+		|| HCDEClientInputHeaderSize + bodyBytes != inputPayloadSize)
+		return rejectClientInput("invalid-header");
+
+	const uint8_t* body = &payload[HCDEClientInputHeaderSize];
+	if (bodyBytes < HCDEClientInputRecordsHeaderSize
+		|| memcmp(&body[HCDEClientInputRecordsMagicOffset], HCDEClientInputRecordsMagic, sizeof(HCDEClientInputRecordsMagic)) != 0)
+		return rejectClientInput("missing-records");
+
+	const uint8_t recordsVersion = body[HCDEClientInputRecordsVersionOffset];
+	const uint8_t recordPlayerCount = body[HCDEClientInputRecordsPlayerCountOffset];
+	if (recordsVersion != HCDEClientInputRecordsProtocolVersion || recordPlayerCount != playerCount)
+		return rejectClientInput("invalid-record-header");
+
+	NetBuffer[0] = controlFlags;
+	NetBuffer[1] = routingByte;
+	memcpy(&NetBuffer[2], &payload[HCDEClientInputSequenceAckOffset], 4u);
+	memcpy(&NetBuffer[6], &payload[HCDEClientInputConsistencyAckOffset], 4u);
+
+	size_t cursor = 10u;
+	NetBuffer[cursor++] = playerCount;
+	NetBuffer[cursor++] = commandTics;
+	if (commandTics > 0u)
+	{
+		HCDELiveWriteBE32(&NetBuffer[cursor], baseSequence);
+		cursor += 4u;
+	}
+	NetBuffer[cursor++] = consistencyTics;
+	if (consistencyTics > 0u)
+	{
+		HCDELiveWriteBE32(&NetBuffer[cursor], baseConsistency);
+		cursor += 4u;
+	}
+	NetBuffer[cursor++] = stabilityBuffer;
+
+	size_t bodyCursor = HCDEClientInputRecordsHeaderSize;
+	uint64_t playersSeen = 0u;
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
+			return rejectClientInput("truncated-player-record");
+
+		const uint8_t playerNum = body[bodyCursor++];
+		const uint8_t consistencyCount = body[bodyCursor++];
+		const uint8_t commandCount = body[bodyCursor++];
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u || consistencyCount != consistencyTics || commandCount != commandTics)
+			return rejectClientInput("invalid-player-record");
+
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if (playersSeen & playerMask)
+			return rejectClientInput("duplicate-player-record");
+		playersSeen |= playerMask;
+
+		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum))
+			return rejectClientInput("packet-overflow");
+
+		uint64_t consistencyOffsetsSeen = 0u;
+		for (uint8_t r = 0u; r < consistencyCount; ++r)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
+				return rejectClientInput("truncated-consistency-record");
+			if (body[bodyCursor] >= consistencyTics)
+				return rejectClientInput("invalid-consistency-offset");
+			const uint64_t consistencyMask = uint64_t(1u) << body[bodyCursor];
+			if (consistencyOffsetsSeen & consistencyMask)
+				return rejectClientInput("duplicate-consistency-offset");
+			consistencyOffsetsSeen |= consistencyMask;
+			if (!HCDEAppendBytes(NetBuffer, MAX_MSGLEN, cursor, &body[bodyCursor], 3u))
+				return rejectClientInput("packet-overflow");
+			bodyCursor += 3u;
+		}
+
+		uint64_t commandOffsetsSeen = 0u;
+		for (uint8_t t = 0u; t < commandCount; ++t)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
+				return rejectClientInput("truncated-command-record");
+
+			const uint8_t commandOffset = body[bodyCursor++];
+			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
+			bodyCursor += 2u;
+			if (commandOffset >= commandTics)
+				return rejectClientInput("invalid-command-record");
+			const uint64_t commandMask = uint64_t(1u) << commandOffset;
+			if (commandOffsetsSeen & commandMask)
+				return rejectClientInput("duplicate-command-offset");
+			commandOffsetsSeen |= commandMask;
+
+			if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, commandOffset))
+				return rejectClientInput("packet-overflow");
+
+			for (size_t e = 0u; e < eventCount; ++e)
+			{
+				if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
+					return rejectClientInput("truncated-event-record");
+
+				const uint8_t eventType = body[bodyCursor++];
+				const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
+				bodyCursor += 2u;
+				if (!HCDEIsAllowedTicEventType(eventType)
+					|| bodyCursor > bodyBytes
+					|| eventPayloadBytes > bodyBytes - bodyCursor
+					|| bodyBytes - bodyCursor - eventPayloadBytes < HCDEExplicitUserCmdBytes)
+				{
+					return rejectClientInput("invalid-event-record");
+				}
+
+				if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, eventType))
+					return rejectClientInput("packet-overflow");
+				if (!HCDEAppendLegacyEventPayload(eventType, &body[bodyCursor], eventPayloadBytes, NetBuffer, MAX_MSGLEN, cursor))
+					return rejectClientInput("invalid-event-payload");
+				bodyCursor += eventPayloadBytes;
+			}
+
+			usercmd_t command = {};
+			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
+				return rejectClientInput("truncated-command-record");
+
+			if (cursor > MAX_MSGLEN || MAX_MSGLEN - cursor < 18u)
+				return rejectClientInput("packet-overflow");
+			uint8_t* commandOutputStart = &NetBuffer[cursor];
+			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
+			WriteUserCmdMessage(command, HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset), commandOutput);
+			cursor += size_t(commandOutput.Data() - commandOutputStart);
+		}
+	}
+
+	if (bodyCursor != bodyBytes)
+		return rejectClientInput("trailing-record-bytes");
+
+	NetBufferLength = cursor;
+
+	const size_t expectedSize = GetNetBufferSize();
+	if (NetBufferLength != expectedSize)
+	{
+		++peer.UnsupportedReceived;
+		DPrintf(DMSG_WARNING, "Malformed HCDE client input from client %d: size %zu (expected %zu)\n",
+			clientNum, NetBufferLength, expectedSize);
+		return false;
+	}
+
+	DebugTrace::Markf("net", "HCDE client input recv client=%d room=%u tic=%u players=%u tics=%u consistencies=%u records=%zu",
+		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes);
+	return true;
+}
+
+static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSize)
+{
+	auto& peer = HCDELivePeers[clientNum];
+	const uint8_t* payload = nullptr;
+	size_t snapshotPayloadSize = 0u;
+	uint32_t remoteGameTic = 0u;
+	if (!UnwrapHCDEGameplayEnvelope(clientNum, payloadSize, "server snapshot", HGP_SERVER_SNAPSHOT, payload, snapshotPayloadSize, remoteGameTic))
+		return false;
+
+	if (snapshotPayloadSize < HCDEServerSnapshotHeaderSize
+		|| memcmp(&payload[HCDEServerSnapshotMagicOffset], HCDEServerSnapshotMagic, sizeof(HCDEServerSnapshotMagic)) != 0)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "malformed HCDE server snapshot from client=%d size=%zu", clientNum, snapshotPayloadSize);
+		return false;
+	}
+
+	const uint8_t snapshotVersion = payload[HCDEServerSnapshotVersionOffset];
+	const uint8_t controlFlags = payload[HCDEServerSnapshotFlagsOffset];
+	const uint8_t routingByte = payload[HCDEServerSnapshotRoutingOffset];
+	const uint8_t playerCount = payload[HCDEServerSnapshotPlayerCountOffset];
+	const size_t quitterBytes = HCDELiveReadBE16(&payload[HCDEServerSnapshotQuitterBytesOffset]);
+	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseSequenceOffset]);
+	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseConsistencyOffset]);
+	const uint8_t commandTics = payload[HCDEServerSnapshotCommandTicsOffset];
+	const uint8_t consistencyTics = payload[HCDEServerSnapshotConsistencyTicsOffset];
+	const uint8_t stabilityBuffer = payload[HCDEServerSnapshotStabilityOffset];
+	const size_t bodyBytes = HCDELiveReadBE16(&payload[HCDEServerSnapshotBodyBytesOffset]);
+	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
+	auto rejectServerSnapshot = [&](const char* reason)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE server snapshot from client=%d reason=%s version=%u flags=%u players=%u tics=%u consistencies=%u quitters=%zu body=%zu size=%zu",
+			clientNum, reason != nullptr ? reason : "unknown", unsigned(snapshotVersion), unsigned(controlFlags & disallowedControlFlags),
+			unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, snapshotPayloadSize);
+		return false;
+	};
+
+	const bool payloadLengthsFit = snapshotPayloadSize >= HCDEServerSnapshotHeaderSize
+		&& quitterBytes <= snapshotPayloadSize - HCDEServerSnapshotHeaderSize
+		&& bodyBytes == snapshotPayloadSize - HCDEServerSnapshotHeaderSize - quitterBytes;
+	const bool quitterLengthMatches = quitterBytes == 0u
+		|| (HCDEServerSnapshotHeaderSize < snapshotPayloadSize && size_t(payload[HCDEServerSnapshotHeaderSize]) + 1u == quitterBytes);
+
+	if (snapshotVersion != HCDEServerSnapshotProtocolVersion
+		|| (controlFlags & disallowedControlFlags)
+		|| playerCount > MAXPLAYERS
+		|| commandTics > MAXSENDTICS
+		|| consistencyTics > MAXSENDTICS
+		|| ((controlFlags & NCMD_QUITTERS) == 0u && quitterBytes != 0u)
+		|| ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes == 0u)
+		|| (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
+		|| !payloadLengthsFit
+		|| !quitterLengthMatches)
+		return rejectServerSnapshot("invalid-header");
+
+	const uint8_t* body = &payload[HCDEServerSnapshotHeaderSize + quitterBytes];
+	if (bodyBytes < HCDEServerSnapshotRecordsHeaderSize
+		|| memcmp(&body[HCDEServerSnapshotRecordsMagicOffset], HCDEServerSnapshotRecordsMagic, sizeof(HCDEServerSnapshotRecordsMagic)) != 0)
+		return rejectServerSnapshot("missing-records");
+
+	const uint8_t recordsVersion = body[HCDEServerSnapshotRecordsVersionOffset];
+	const uint8_t recordPlayerCount = body[HCDEServerSnapshotRecordsPlayerCountOffset];
+	if (recordsVersion != HCDEServerSnapshotRecordsProtocolVersion || recordPlayerCount != playerCount)
+		return rejectServerSnapshot("invalid-record-header");
+
+	NetBuffer[0] = controlFlags;
+	NetBuffer[1] = routingByte;
+	memcpy(&NetBuffer[2], &payload[HCDEServerSnapshotSequenceAckOffset], 4u);
+	memcpy(&NetBuffer[6], &payload[HCDEServerSnapshotConsistencyAckOffset], 4u);
+
+	size_t cursor = 10u;
+	if (quitterBytes > 0u)
+	{
+		memmove(&NetBuffer[cursor], &payload[HCDEServerSnapshotHeaderSize], quitterBytes);
+		cursor += quitterBytes;
+	}
+	NetBuffer[cursor++] = playerCount;
+	NetBuffer[cursor++] = commandTics;
+	if (commandTics > 0u)
+	{
+		HCDELiveWriteBE32(&NetBuffer[cursor], baseSequence);
+		cursor += 4u;
+	}
+	NetBuffer[cursor++] = consistencyTics;
+	if (consistencyTics > 0u)
+	{
+		HCDELiveWriteBE32(&NetBuffer[cursor], baseConsistency);
+		cursor += 4u;
+	}
+	NetBuffer[cursor++] = stabilityBuffer;
+
+	size_t bodyCursor = HCDEServerSnapshotRecordsHeaderSize;
+	uint64_t playersSeen = 0u;
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 5u)
+			return rejectServerSnapshot("truncated-player-record");
+
+		const uint8_t playerNum = body[bodyCursor++];
+		const uint16_t latency = HCDELiveReadBE16(&body[bodyCursor]);
+		bodyCursor += 2u;
+		const uint8_t consistencyCount = body[bodyCursor++];
+		const uint8_t commandCount = body[bodyCursor++];
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u || consistencyCount != consistencyTics || commandCount != commandTics)
+			return rejectServerSnapshot("invalid-player-record");
+
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if (playersSeen & playerMask)
+			return rejectServerSnapshot("duplicate-player-record");
+		playersSeen |= playerMask;
+
+		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum)
+			|| !HCDEAppendBE16(NetBuffer, MAX_MSGLEN, cursor, latency))
+		{
+			return rejectServerSnapshot("packet-overflow");
+		}
+
+		uint64_t consistencyOffsetsSeen = 0u;
+		for (uint8_t r = 0u; r < consistencyCount; ++r)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
+				return rejectServerSnapshot("truncated-consistency-record");
+			if (body[bodyCursor] >= consistencyTics)
+				return rejectServerSnapshot("invalid-consistency-offset");
+			const uint64_t consistencyMask = uint64_t(1u) << body[bodyCursor];
+			if (consistencyOffsetsSeen & consistencyMask)
+				return rejectServerSnapshot("duplicate-consistency-offset");
+			consistencyOffsetsSeen |= consistencyMask;
+			if (!HCDEAppendBytes(NetBuffer, MAX_MSGLEN, cursor, &body[bodyCursor], 3u))
+				return rejectServerSnapshot("packet-overflow");
+			bodyCursor += 3u;
+		}
+
+		uint64_t commandOffsetsSeen = 0u;
+		for (uint8_t t = 0u; t < commandCount; ++t)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
+				return rejectServerSnapshot("truncated-command-record");
+
+			const uint8_t commandOffset = body[bodyCursor++];
+			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
+			bodyCursor += 2u;
+			if (commandOffset >= commandTics)
+				return rejectServerSnapshot("invalid-command-record");
+			const uint64_t commandMask = uint64_t(1u) << commandOffset;
+			if (commandOffsetsSeen & commandMask)
+				return rejectServerSnapshot("duplicate-command-offset");
+			commandOffsetsSeen |= commandMask;
+
+			if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, commandOffset))
+				return rejectServerSnapshot("packet-overflow");
+
+			for (size_t e = 0u; e < eventCount; ++e)
+			{
+				if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
+					return rejectServerSnapshot("truncated-event-record");
+
+				const uint8_t eventType = body[bodyCursor++];
+				const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
+				bodyCursor += 2u;
+				if (!HCDEIsAllowedTicEventType(eventType)
+					|| bodyCursor > bodyBytes
+					|| eventPayloadBytes > bodyBytes - bodyCursor
+					|| bodyBytes - bodyCursor - eventPayloadBytes < HCDEExplicitUserCmdBytes)
+				{
+					return rejectServerSnapshot("invalid-event-record");
+				}
+
+				if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, eventType))
+					return rejectServerSnapshot("packet-overflow");
+				if (!HCDEAppendLegacyEventPayload(eventType, &body[bodyCursor], eventPayloadBytes, NetBuffer, MAX_MSGLEN, cursor))
+					return rejectServerSnapshot("invalid-event-payload");
+				bodyCursor += eventPayloadBytes;
+			}
+
+			usercmd_t command = {};
+			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
+				return rejectServerSnapshot("truncated-command-record");
+
+			if (cursor > MAX_MSGLEN || MAX_MSGLEN - cursor < 18u)
+				return rejectServerSnapshot("packet-overflow");
+			uint8_t* commandOutputStart = &NetBuffer[cursor];
+			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
+			WriteUserCmdMessage(command, HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset), commandOutput);
+			cursor += size_t(commandOutput.Data() - commandOutputStart);
+		}
+	}
+
+	if (bodyCursor != bodyBytes)
+		return rejectServerSnapshot("trailing-record-bytes");
+
+	NetBufferLength = cursor;
+
+	const size_t expectedSize = GetNetBufferSize();
+	if (NetBufferLength != expectedSize)
+	{
+		++peer.UnsupportedReceived;
+		DPrintf(DMSG_WARNING, "Malformed HCDE server snapshot from client %d: size %zu (expected %zu)\n",
+			clientNum, NetBufferLength, expectedSize);
+		return false;
+	}
+
+	DebugTrace::Markf("net", "HCDE server snapshot recv client=%d room=%u tic=%u players=%u tics=%u consistencies=%u quitters=%zu records=%zu",
+		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes);
+	return true;
+}
+
+static bool HandleHCDELivePacket(int clientNum)
+{
+	auto& peer = HCDELivePeers[clientNum];
+	const uint8_t version = NetBuffer[HCDELiveVersionOffset];
+	const uint8_t type = NetBuffer[HCDELiveTypeOffset];
+	const uint32_t sequence = HCDELiveReadBE32(&NetBuffer[HCDELiveTxSequenceOffset]);
+	const uint32_t ack = HCDELiveReadBE32(&NetBuffer[HCDELiveAckOffset]);
+	const size_t payloadSize = NetBufferLength - HCDELiveHeaderSize;
+
+	if (!I_ClientUsesHCDEService(clientNum))
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE live %s from unnegotiated client=%d",
+			HCDELiveMessageName(type), clientNum);
+		return true;
+	}
+
+	if (version != HCDELiveProtocolVersion)
+	{
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored HCDE live %s from client=%d with unsupported version=%u",
+			HCDELiveMessageName(type), clientNum, unsigned(version));
+		return true;
+	}
+
+	if (!AcceptHCDELiveSequence(clientNum, sequence))
+		return true;
+
+	peer.PeerAck = ack;
+	switch (EHCDELiveMessage(type))
+	{
+	case HLIVE_CONTROL:
+	{
+		++peer.ControlReceived;
+		if (peer.ControlReceived == 1u)
+			Printf("%s:: HCDE live channel active with client %d\n", consoleplayer == Net_Arbitrator ? "NetServer" : "NetSession", clientNum);
+		if (payloadSize < 6u)
+		{
+			DebugTrace::Markf("net", "malformed HCDE live control from client=%d payload=%zu", clientNum, payloadSize);
+			return true;
+		}
+
+		const uint32_t remoteGameTic = HCDELiveReadBE32(&NetBuffer[HCDELiveHeaderSize]);
+		const uint8_t remoteConsole = NetBuffer[HCDELiveHeaderSize + 4u];
+		const uint8_t remoteMaxClients = NetBuffer[HCDELiveHeaderSize + 5u];
+		DebugTrace::Markf("net", "HCDE live control recv client=%d seq=%u ack=%u gametic=%u console=%u max=%u",
+			clientNum, sequence, ack, remoteGameTic, remoteConsole, remoteMaxClients);
+		break;
+	}
+	case HLIVE_CLIENT_COMMANDS:
+	{
+		if (consoleplayer != Net_Arbitrator)
+		{
+			++peer.UnsupportedReceived;
+			DebugTrace::Markf("net", "ignored HCDE live client commands from client=%d on non-host peer", clientNum);
+			return true;
+		}
+
+		if (!UnwrapHCDELiveClientInputPayload(clientNum, payloadSize))
+			return true;
+
+		++peer.ClientCommandReceived;
+		if (peer.ClientCommandReceived == 1u)
+			Printf("NetServer:: HCDE live client inputs active with client %d\n", clientNum);
+		DebugTrace::Markf("net", "HCDE live client-input boundary recv client=%d payload=%zu host=%d",
+			clientNum, payloadSize, consoleplayer == Net_Arbitrator);
+		return false;
+	}
+	case HLIVE_SERVER_SNAPSHOT:
+	{
+		if (consoleplayer == Net_Arbitrator || clientNum != Net_Arbitrator)
+		{
+			++peer.UnsupportedReceived;
+			DebugTrace::Markf("net", "ignored HCDE live server snapshot from client=%d on non-client peer", clientNum);
+			return true;
+		}
+
+		if (!UnwrapHCDELiveServerSnapshotPayload(clientNum, payloadSize))
+			return true;
+
+		++peer.SnapshotReceived;
+		if (peer.SnapshotReceived == 1u)
+			Printf("NetSession:: HCDE live server snapshots active with client %d\n", clientNum);
+		DebugTrace::Markf("net", "HCDE live snapshot boundary recv client=%d payload=%zu fromHost=%d",
+			clientNum, payloadSize, clientNum == Net_Arbitrator);
+		return false;
+	}
+	default:
+		++peer.UnsupportedReceived;
+		DebugTrace::Markf("net", "ignored unsupported HCDE live type=%u from client=%d payload=%zu",
+			unsigned(type), clientNum, payloadSize);
+		break;
+	}
+	return true;
+}
+
+static void SendHCDELiveControl()
+{
+	const uint64_t now = I_msTime();
+	if (LastHCDELiveControlMS != 0u && now - LastHCDELiveControlMS < HCDELiveControlIntervalMS)
+		return;
+
+	LastHCDELiveControlMS = now;
+	for (auto client : NetworkClients)
+	{
+		if (client == consoleplayer || !I_ClientUsesHCDEService(client))
+			continue;
+		if (consoleplayer != Net_Arbitrator && client != Net_Arbitrator)
+			continue;
+
+		auto& peer = HCDELivePeers[client];
+		const size_t payloadOffset = BeginHCDELivePacket(client, HLIVE_CONTROL);
+		HCDELiveWriteBE32(&NetBuffer[payloadOffset], uint32_t(max<int>(gametic, 0)));
+		NetBuffer[payloadOffset + 4u] = uint8_t(clamp<int>(consoleplayer, 0, UINT8_MAX));
+		NetBuffer[payloadOffset + 5u] = uint8_t(clamp<int>(MaxClients, 0, UINT8_MAX));
+		++peer.ControlSent;
+		DebugTrace::Markf("net", "HCDE live control send client=%d seq=%u ack=%u gametic=%d sent=%u",
+			client, peer.TxSequence, peer.RxSequence, gametic, peer.ControlSent);
+		HSendPacket(client, HCDELiveHeaderSize + 6u);
+	}
+}
+
+static void HSendLiveGameplayPacket(int client, size_t size)
+{
+	const bool clientCommand = ShouldWrapHCDEClientCommandPacket(client);
+	const bool serverSnapshot = ShouldWrapHCDEServerSnapshotPacket(client);
+	if (!clientCommand && !serverSnapshot)
+	{
+		HSendPacket(client, size);
+		return;
+	}
+	if (size > MAX_MSGLEN)
+	{
+		I_FatalError("HCDE live gameplay packet for client %d exceeded NetBuffer: %zu bytes", client, size);
+	}
+
+	uint8_t legacyPacket[MAX_MSGLEN];
+	memcpy(legacyPacket, NetBuffer, size);
+
+	uint8_t gameplayPayload[MAX_MSGLEN];
+	size_t gameplayPayloadSize = 0u;
+	auto& peer = HCDELivePeers[client];
+	const EHCDELiveMessage type = clientCommand ? HLIVE_CLIENT_COMMANDS : HLIVE_SERVER_SNAPSHOT;
+	const EHCDEGameplayPayload gameplayKind = clientCommand ? HGP_CLIENT_INPUTS : HGP_SERVER_SNAPSHOT;
+	if (clientCommand)
+	{
+		if (!BuildHCDEClientInputPayload(client, legacyPacket, size, gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize))
+		{
+			DPrintf(DMSG_WARNING, "HCDE live client input for client %d could not be encoded: %zu bytes\n", client, size);
+			HSendPacket(client, size);
+			return;
+		}
+	}
+	else
+	{
+		if (!BuildHCDEServerSnapshotPayload(client, legacyPacket, size, gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize))
+		{
+			DPrintf(DMSG_WARNING, "HCDE live server snapshot for client %d could not be encoded: %zu bytes\n", client, size);
+			HSendPacket(client, size);
+			return;
+		}
+	}
+
+	if (gameplayPayloadSize > MAX_MSGLEN - HCDELiveHeaderSize - HCDEGameplayHeaderSize)
+	{
+		DPrintf(DMSG_WARNING, "HCDE live gameplay packet for client %d is too large to wrap: %zu bytes\n", client, gameplayPayloadSize);
+		HSendPacket(client, size);
+		return;
+	}
+
+	const size_t payloadOffset = BeginHCDELivePacket(client, type);
+	WriteHCDEGameplayEnvelope(&NetBuffer[payloadOffset], gameplayKind);
+	memcpy(&NetBuffer[payloadOffset + HCDEGameplayHeaderSize], gameplayPayload, gameplayPayloadSize);
+	if (clientCommand)
+	{
+		++peer.ClientCommandSent;
+		if (peer.ClientCommandSent == 1u)
+			Printf("NetSession:: HCDE live client inputs active with client %d\n", client);
+	}
+	else
+	{
+		++peer.SnapshotSent;
+		if (peer.SnapshotSent == 1u)
+			Printf("NetServer:: HCDE live server snapshots active with client %d\n", client);
+	}
+	DebugTrace::Markf("net", "HCDE live %s send client=%d seq=%u ack=%u payload=%zu sent=%u",
+		HCDELiveMessageName(uint8_t(type)), client, peer.TxSequence, peer.RxSequence, gameplayPayloadSize,
+		clientCommand ? peer.ClientCommandSent : peer.SnapshotSent);
+	HSendPacket(client, payloadOffset + HCDEGameplayHeaderSize + gameplayPayloadSize);
+
+	memcpy(NetBuffer, legacyPacket, size);
+	NetBufferLength = size;
+}
 
 CVAR(Bool, vid_dontdowait, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR(Bool, vid_lowerinbackground, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
@@ -388,6 +2464,8 @@ void Net_ClearBuffers()
 
 		for (int j = 0; j < BACKUPTICS; ++j)
 			state.Tics[j].Data.SetData(nullptr, 0);
+
+		HCDELivePeers[i].Clear();
 	}
 
 	P_ClearPredictionData();
@@ -397,6 +2475,7 @@ void Net_ClearBuffers()
 	consoleplayer = 0;
 	LocalNetBufferSize = 0u;
 	Net_Arbitrator = 0;
+	LastHCDELiveControlMS = 0u;
 
 	LagState = LAG_NONE;
 	MutedClients = 0u;
@@ -593,6 +2672,8 @@ static size_t GetNetBufferSize()
 		return NetBufferLength;
 	if (NetBuffer[0] & (NCMD_LATENCY | NCMD_LATENCYACK))
 		return 2;
+	if (HCDELiveLooksLikePacket())
+		return NetBufferLength;
 
 	if (NetBuffer[0] & NCMD_LEVELREADY)
 	{
@@ -736,6 +2817,8 @@ void Net_ResetClientState(int clientNum)
 
 	for (auto& tic : state.Tics)
 		tic.Data.SetData(nullptr, 0);
+
+	HCDELivePeers[clientNum].Clear();
 }
 
 static void DisconnectClient(int clientNum)
@@ -939,6 +3022,12 @@ static void GetPackets()
 			}
 
 			continue;
+		}
+
+		if (HCDELiveLooksLikePacket())
+		{
+			if (HandleHCDELivePacket(clientNum))
+				continue;
 		}
 
 		if (NetBuffer[0] & NCMD_RETRANSMIT)
@@ -1357,10 +3446,15 @@ void NetUpdate(int tics)
 				FullLatencyCycle = max<int>(FullLatencyCycle - tics, 0);
 
 			SendHeartbeat();
+			SendHCDELiveControl();
 			SV_UpdateMaster();
 
 			if (LastLatencyUpdate >= MAXSENDTICS)
 				LastLatencyUpdate = 0;
+		}
+		else
+		{
+			SendHCDELiveControl();
 		}
 
 		CheckConsistencies();
@@ -1776,9 +3870,9 @@ void NetUpdate(int tics)
 					}
 				}
 
-				HSendPacket(client, int(cmd.Data() - NetBuffer));
+				HSendLiveGameplayPacket(client, int(cmd.Data() - NetBuffer));
 				if (net_extratic && !isSelf)
-					HSendPacket(client, int(cmd.Data() - NetBuffer));
+					HSendLiveGameplayPacket(client, int(cmd.Data() - NetBuffer));
 			}
 		}
 	}
@@ -1974,11 +4068,10 @@ void Net_ReadUserInfo(int client, TArrayView<uint8_t>& stream)
 	D_ReadUserInfoStrings(client, stream, false);
 }
 
-void Net_SetGameInfo(TArrayView<uint8_t>& stream)
+void Net_SetMapLoadInfo(TArrayView<uint8_t>& stream)
 {
 	WriteFString(startmap, stream);
 	WriteInt32(rngseed, stream);
-	C_WriteCVars(stream, CVAR_SERVERINFO, true);
 
 	auto load = Args->CheckValue(FArg_loadgame);
 	if (load != nullptr)
@@ -1992,12 +4085,10 @@ void Net_SetGameInfo(TArrayView<uint8_t>& stream)
 	}
 }
 
-
-void Net_ReadGameInfo(TArrayView<uint8_t>& stream)
+void Net_ReadMapLoadInfo(TArrayView<uint8_t>& stream)
 {
 	startmap = ReadStringConst(stream);
 	rngseed = ReadInt32(stream);
-	C_ReadCVars(stream);
 
 	if (ReadInt8(stream))
 	{
@@ -2013,6 +4104,28 @@ void Net_ReadGameInfo(TArrayView<uint8_t>& stream)
 
 	// Reset this immediately so any further RNG calls the engine has to make will be synced.
 	FRandom::StaticClearRandom();
+}
+
+void Net_SetServerInfo(TArrayView<uint8_t>& stream)
+{
+	C_WriteCVars(stream, CVAR_SERVERINFO, true);
+}
+
+void Net_ReadServerInfo(TArrayView<uint8_t>& stream)
+{
+	C_ReadCVars(stream);
+}
+
+void Net_SetGameInfo(TArrayView<uint8_t>& stream)
+{
+	Net_SetMapLoadInfo(stream);
+	Net_SetServerInfo(stream);
+}
+
+void Net_ReadGameInfo(TArrayView<uint8_t>& stream)
+{
+	Net_ReadMapLoadInfo(stream);
+	Net_ReadServerInfo(stream);
 }
 
 // Connects players to each other if needed.
@@ -3313,7 +5426,7 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 
 		case DEM_ZSC_CMD:
 			skip = strlen((char*)(stream.Data())) + 1;
-			skip += (stream[skip] << 8) | (stream[skip + 1]) + 2;
+			skip += ((stream[skip] << 8) | stream[skip + 1]) + 2;
 			break;
 
 		case DEM_SUMMON2:

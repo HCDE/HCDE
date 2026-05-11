@@ -110,6 +110,9 @@ EXTERN_FARG(doshelp);
 EXTERN_FARG(help_all);
 EXTERN_FARG(version);
 EXTERN_FARG(v);
+EXTERN_FARG(server);
+EXTERN_FARG(nosound);
+EXTERN_FARG(nomusic);
 
 // PUBLIC DATA DEFINITIONS -------------------------------------------------
 
@@ -201,6 +204,22 @@ int DoMain (HINSTANCE hInstance)
 	{
 		Args->AppendRawArg(FString(wargv[i]));
 	}
+
+#ifdef HCDE_DEDICATED_SERVER
+	if (!Args->CheckParm(FArg_server))
+	{
+		Args->AppendArg(FArg_server);
+		Args->AppendRawArg("1");
+	}
+	if (!Args->CheckParm(FArg_nosound))
+	{
+		Args->AppendArg(FArg_nosound);
+	}
+	if (!Args->CheckParm(FArg_nomusic))
+	{
+		Args->AppendArg(FArg_nomusic);
+	}
+#endif
 
 	if (isConsoleApp())
 	{
@@ -429,7 +448,7 @@ void I_ShowFatalError(const char *msg)
 		Printf("%s", CVMAbortException::stacktrace.GetChars());
 	}
 
-	if (!batchrun)
+	if (!batchrun && !isConsoleApp() && (Args == nullptr || !Args->CheckParm(FArg_server)))
 	{
 		mainwindow.ShowErrorPane(msg);
 	}

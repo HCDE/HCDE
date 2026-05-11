@@ -10951,6 +10951,14 @@ VMFunction *FxSequence::GetDirectFunction(PFunction *func, const VersionInfo &ve
 	{
 		return Expressions[0]->GetDirectFunction(func, ver);
 	}
+	if (Expressions.Size() == 2 && Expressions[1]->ExprType == EFX_ReturnStatement)
+	{
+		auto ret = static_cast<FxReturnStatement *>(Expressions[1]);
+		if (ret->IsEmptyReturn())
+		{
+			return Expressions[0]->GetDirectFunction(func, ver);
+		}
+	}
 	return nullptr;
 }
 

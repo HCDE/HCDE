@@ -22,6 +22,7 @@
 
 #include "basics.h"
 #include "debugtrace.h"
+#include "hcde_servermode.h"
 #include "i_net.h"
 #include "netstartwindow.h"
 
@@ -52,6 +53,7 @@ static FString BuildSessionStatusText(const FServerQuerySnapshot& snapshot)
 
 void NetStartWindow::NetInit(const char* message, bool host)
 {
+	HCDE_ServerMode_GuardClientSubsystem("network room window");
 	DebugTrace::Markf("netui", "init host=%d", host ? 1 : 0);
 	Size screenSize = GetScreenSize();
 	double windowWidth = 450.0;

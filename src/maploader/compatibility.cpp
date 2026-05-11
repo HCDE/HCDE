@@ -186,6 +186,32 @@ static const char *const SectorPlanes[] =
 	"floor", "ceil", NULL
 };
 
+static const char *const ZandronumCompatCommands[] =
+{
+	"sectorflooroffset",
+	"setwallyscale",
+	"setlineflags",
+	"clearlineflags",
+	"setactivation",
+	"clearlinespecial",
+	"setlinespecial",
+	"setthingz",
+	"corpsegibs",
+	NULL
+};
+
+static void SkipZandronumCompatCommand(FScanner &sc)
+{
+	while (sc.GetString())
+	{
+		if (sc.Crossed || sc.Compare("}"))
+		{
+			sc.UnGet();
+			return;
+		}
+	}
+}
+
 // CODE --------------------------------------------------------------------
 
 //==========================================================================
@@ -264,6 +290,13 @@ void ParseCompatibility()
 					case SLOT_BCOMPAT: flags.BugCompatFlags |= ELevelBugCompatFlags::FromInt(Options[i].CompatFlags); break;
 					case COMPATSLOT_COUNT: /* noop */ break;
 				}
+			}
+			else if (sc.MatchString(ZandronumCompatCommands) >= 0)
+			{
+				// Zandronum ships command-style map fixes in compatibility.txt.
+				// HCDE applies its own scripted post-processing, so tolerate
+				// these entries as compatibility metadata instead of aborting.
+				SkipZandronumCompatCommand(sc);
 			}
 			else
 			{

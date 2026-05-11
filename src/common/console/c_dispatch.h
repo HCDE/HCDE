@@ -63,7 +63,7 @@ FExecList *C_ParseCmdLineParams(FExecList *exec);
 void AddCommandString (const char *text, int keynum=0);
 
 void C_RunDelayedCommands();
-void C_ClearDelayedCommands();
+int C_ClearDelayedCommands();
 
 // Process a single console command. Does not handle wait.
 void C_DoCommand (const char *cmd, int keynum=0);

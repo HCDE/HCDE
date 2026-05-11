@@ -27,3 +27,5 @@ bool SV_RemoveMaster(const char *masterip);
 void SV_UpdateMasterServers(void);
 void SV_UpdateMaster(bool force = false);
 void SV_ArchiveMasters(FILE *fp);
+bool SV_IsMasterAdvertisingEnabled();
+size_t SV_GetMasterCount();

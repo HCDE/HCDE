@@ -41,8 +41,10 @@
 #include "i_net.h"
 #include "i_system.h"
 #include "i_time.h"
+#include "m_argv.h"
 #include "printf.h"
 #include "sv_master.h"
+#include "hcde_master_protocol.h"
 
 CVAR(Int, sv_natport, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
@@ -63,12 +65,12 @@ static const char* neterror()
 
 namespace
 {
-constexpr u_short MASTERPORT = 15000;
-constexpr uint64_t MASTER_RERESOLVE_MS = 1000ull * 60ull * 60ull * 3ull;
-constexpr uint64_t MASTER_HEARTBEAT_MS = 1000ull * 25ull;
+constexpr u_short MASTERPORT = hcde::master_protocol::DefaultMasterPort;
+constexpr uint64_t MASTER_RERESOLVE_MS = 1000ull * hcde::master_protocol::ServerAddressReresolveIntervalSeconds;
+constexpr uint64_t MASTER_HEARTBEAT_MS = 1000ull * hcde::master_protocol::ServerHeartbeatIntervalSeconds;
 
 static constexpr std::string_view def_masterlist[] = {
-	"hcde.servebeer.com"
+	hcde::master_protocol::DefaultMasterHost
 };
 
 struct masterserver
@@ -148,7 +150,7 @@ static SOCKET CreateMasterSocket()
 	return s;
 }
 
-static void WriteLong(std::array<uint8_t, 6>& packet, size_t& offset, uint32_t value)
+static void WriteLong(std::array<uint8_t, hcde::master_protocol::ServerHeartbeatPacketSize>& packet, size_t& offset, uint32_t value)
 {
 	packet[offset++] = static_cast<uint8_t>(value & 0xffu);
 	packet[offset++] = static_cast<uint8_t>((value >> 8) & 0xffu);
@@ -156,7 +158,7 @@ static void WriteLong(std::array<uint8_t, 6>& packet, size_t& offset, uint32_t v
 	packet[offset++] = static_cast<uint8_t>((value >> 24) & 0xffu);
 }
 
-static void WriteShort(std::array<uint8_t, 6>& packet, size_t& offset, uint16_t value)
+static void WriteShort(std::array<uint8_t, hcde::master_protocol::ServerHeartbeatPacketSize>& packet, size_t& offset, uint16_t value)
 {
 	packet[offset++] = static_cast<uint8_t>(value & 0xffu);
 	packet[offset++] = static_cast<uint8_t>((value >> 8) & 0xffu);
@@ -167,9 +169,9 @@ static void SendHeartbeat(const masterserver& master)
 	if (MasterSocket == INVALID_SOCKET)
 		return;
 
-	std::array<uint8_t, 6> packet = {};
+	std::array<uint8_t, hcde::master_protocol::ServerHeartbeatPacketSize> packet = {};
 	size_t offset = 0;
-	WriteLong(packet, offset, MSG_CHALLENGE);
+	WriteLong(packet, offset, hcde::master_protocol::ServerHeartbeatMarker);
 	WriteShort(packet, offset, sv_natport > 0 ? static_cast<uint16_t>(sv_natport) : I_GetGamePort());
 
 	if (sendto(MasterSocket, reinterpret_cast<const char*>(packet.data()), static_cast<int>(packet.size()), 0,
@@ -225,6 +227,40 @@ static bool MasterMatchesPrefix(const std::string& masterip, const char* needle)
 }
 
 CVAR(Bool, sv_usemasters, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+FARG(master, "Multiplayer", "Adds an HCDE master server for this run.", "host[:port]",
+	"Adds a master server before dedicated-server advertising starts. May be specified multiple times.");
+
+static bool IsMissingStartupMasterValue(int arg)
+{
+	return arg + 1 >= Args->NumArgs()
+		|| Args->GetArg(arg + 1) == nullptr
+		|| Args->GetArg(arg + 1)[0] == '-'
+		|| Args->GetArg(arg + 1)[0] == '+';
+}
+
+static void SV_AddStartupMasters()
+{
+	if (Args == nullptr)
+		return;
+
+	int start = 1;
+	for (;;)
+	{
+		const int arg = Args->CheckParm(FArg_master, start);
+		if (arg == 0)
+			break;
+
+		if (IsMissingStartupMasterValue(arg))
+		{
+			Printf("Missing value for -master; expected host[:port]\n");
+			start = arg + 1;
+			continue;
+		}
+
+		SV_AddMaster(Args->GetArg(arg + 1));
+		start = arg + 2;
+	}
+}
 
 CCMD(addmaster)
 {
@@ -268,6 +304,8 @@ void SV_InitMasters()
 		if (MasterSocket == INVALID_SOCKET)
 			return;
 	}
+
+	SV_AddStartupMasters();
 
 	if (masters.empty())
 	{
@@ -387,4 +425,14 @@ void SV_UpdateMaster(bool force)
 
 		last_keep_alive = current_time;
 	}
+}
+
+bool SV_IsMasterAdvertisingEnabled()
+{
+	return sv_usemasters;
+}
+
+size_t SV_GetMasterCount()
+{
+	return masters.size();
 }

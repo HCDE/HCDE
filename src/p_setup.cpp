@@ -73,6 +73,7 @@
 #include "texturemanager.h"
 #include "p_lnspec.h"
 #include "d_main.h"
+#include "hcde_servermode.h"
 
 extern AActor *SpawnMapThing (int index, FMapThing *mthing, int position);
 
@@ -145,7 +146,7 @@ static void AddToList(uint8_t *hitlist, FTextureID texid, int bitmask)
 
 static void PrecacheLevel(FLevelLocals *Level)
 {
-	if (demoplayback)
+	if (demoplayback || HCDE_ServerMode_IsDedicatedServer())
 		return;
 
 	int i;

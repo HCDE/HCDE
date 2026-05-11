@@ -147,6 +147,7 @@ constexpr uint16_t ODAMEX_QUERY_TAG_ID = 0x0AD0;
 bool I_InitNetwork();
 bool I_IsDedicatedServerMode();
 bool I_UsesDedicatedServerSlot();
+bool I_ClientUsesHCDEService(int client);
 void I_GetLocalServerSnapshot(FServerQuerySnapshot& snapshot);
 bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FString* error = nullptr);
 void I_ClearClient(size_t client);

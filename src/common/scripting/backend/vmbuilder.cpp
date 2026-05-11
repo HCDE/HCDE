@@ -28,6 +28,8 @@
 #include "c_cvars.h"
 #include "jit.h"
 #include "filesystem.h"
+#include "printf.h"
+#include "stats.h"
 
 CVAR(Bool, strictdecorate, false, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
 CVAR(Bool, warningstoerrors, false, CVAR_GLOBALCONFIG | CVAR_ARCHIVE)
@@ -39,6 +41,7 @@ FARG_ADVANCED(dumpdisasm , "Debug", "",
 
 EXTERN_CVAR(Bool, vm_jit)
 EXTERN_CVAR(Bool, vm_jit_aot)
+EXTERN_CVAR(Bool, hcde_startup_profile)
 
 EXTERN_FARG(dumpjit);
 
@@ -849,12 +852,31 @@ VMFunction *FFunctionBuildList::AddFunction(PNamespace *gnspc, const VersionInfo
 void FFunctionBuildList::Build()
 {
 	VMDisassemblyDumper disasmdump(VMDisassemblyDumper::Overwrite);
+	cycle_t resolveTime;
+	cycle_t returnCheckTime;
+	cycle_t emitTime;
+	cycle_t regUseTime;
+	unsigned int builtItems = 0;
+	unsigned int abstractItems = 0;
+	unsigned int decorateItems = 0;
+	unsigned int zscriptItems = 0;
+	resolveTime.Reset();
+	returnCheckTime.Reset();
+	emitTime.Reset();
+	regUseTime.Reset();
 
 	for (auto &item : mItems)
 	{
 		// [Player701] Do not emit code for abstract functions
 		bool isAbstract = item.Func->Variants[0].Implementation->VarFlags & VARF_Abstract;
-		if (isAbstract) continue;
+		if (isAbstract)
+		{
+			abstractItems++;
+			continue;
+		}
+		builtItems++;
+		if (item.FromDecorate) decorateItems++;
+		else zscriptItems++;
 
 		assert(item.Code != NULL);
 
@@ -876,7 +898,9 @@ void FFunctionBuildList::Build()
 		}
 
 		FScriptPosition::StrictErrors = !item.FromDecorate || strictdecorate;
+		if (hcde_startup_profile) resolveTime.Clock();
 		item.Code = item.Code->Resolve(ctx);
+		if (hcde_startup_profile) resolveTime.Unclock();
 		// If we need extra space, load the frame pointer into a register so that we do not have to call the wasteful LFP instruction more than once.
 		if (item.Function->ExtraSpace > 0)
 		{
@@ -888,14 +912,19 @@ void FFunctionBuildList::Build()
 		// Make sure resolving it didn't obliterate it.
 		if (item.Code != nullptr)
 		{
-			if (!item.Code->CheckReturn())
+			if (hcde_startup_profile) returnCheckTime.Clock();
+			bool hasReturn = item.Code->CheckReturn();
+			if (hcde_startup_profile) returnCheckTime.Unclock();
+			if (!hasReturn)
 			{
 				if (ctx.ReturnProto == nullptr || !ctx.ReturnProto->ReturnTypes.Size())
 				{
 					auto newcmpd = new FxCompoundStatement(item.Code->ScriptPosition);
 					newcmpd->Add(item.Code);
 					newcmpd->Add(new FxReturnStatement(nullptr, item.Code->ScriptPosition));
+					if (hcde_startup_profile) resolveTime.Clock();
 					item.Code = newcmpd->Resolve(ctx);
+					if (hcde_startup_profile) resolveTime.Unclock();
 				}
 				else
 				{
@@ -921,6 +950,7 @@ void FFunctionBuildList::Build()
 			}
 
 			// Emit code
+			if (hcde_startup_profile) emitTime.Clock();
 			try
 			{
 				sfunc->SourceFileName = item.Code->ScriptPosition.FileName.GetChars();	// remember the file name for printing error messages if something goes wrong in the VM.
@@ -963,12 +993,21 @@ void FFunctionBuildList::Build()
 				// catch errors from the code generator and pring something meaningful.
 				item.Code->ScriptPosition.Message(MSG_ERROR, "%s in %s", err.GetMessage(), item.PrintableName.GetChars());
 			}
+			if (hcde_startup_profile) emitTime.Unclock();
 		}
 		delete item.Code;
 		disasmdump.Flush();
 	}
+	if (hcde_startup_profile) regUseTime.Clock();
 	VMFunction::CreateRegUseInfo();
+	if (hcde_startup_profile) regUseTime.Unclock();
 	FScriptPosition::StrictErrors = strictdecorate;
+	if (hcde_startup_profile)
+	{
+		Printf("HCDE startup profile: FunctionBuildList items=%u built=%u decorate=%u zscript=%u abstract=%u resolve=%.2f ms returncheck=%.2f ms emit=%.2f ms reguse=%.2f ms\n",
+			unsigned(mItems.Size()), builtItems, decorateItems, zscriptItems, abstractItems,
+			resolveTime.TimeMS(), returnCheckTime.TimeMS(), emitTime.TimeMS(), regUseTime.TimeMS());
+	}
 
 	if (FScriptPosition::ErrorCounter == 0)
 	{

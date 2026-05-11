@@ -51,6 +51,7 @@ static FScriptPosition unknownstatesource("unknown file", 0);
 
 EXTERN_CVAR(Bool, strictdecorate);
 EXTERN_CVAR(Bool, warningstoerrors);
+CVAR(Bool, hcde_startup_profile, false, 0)
 
 //==========================================================================
 //
@@ -449,24 +450,53 @@ void ParseScripts()
 void LoadActors()
 {
 	cycle_t timer;
+	cycle_t phaseTimer;
+
+	auto beginProfilePhase = [&]()
+	{
+		if (hcde_startup_profile)
+		{
+			phaseTimer.Reset();
+			phaseTimer.Clock();
+		}
+	};
+
+	auto endProfilePhase = [&](const char *name)
+	{
+		if (hcde_startup_profile)
+		{
+			phaseTimer.Unclock();
+			Printf("HCDE startup profile: %s took %.2f ms\n", name, phaseTimer.TimeMS());
+		}
+	};
 
 	timer.Reset(); timer.Clock();
 	FScriptPosition::ResetErrorCounter();
 
 	SetDoomCompileEnvironment();
+	beginProfilePhase();
 	InitThingdef();
+	endProfilePhase("InitThingdef");
 	D_StartupProgress();
 	FScriptPosition::StrictErrors = true;
+	beginProfilePhase();
 	ParseScripts();
+	endProfilePhase("ParseScripts");
 	D_StartupProgress();
 
 	FScriptPosition::StrictErrors = strictdecorate;
+	beginProfilePhase();
 	ParseAllDecorate();
+	endProfilePhase("ParseAllDecorate");
 	D_StartupProgress();
+	beginProfilePhase();
 	SynthesizeFlagFields();
+	endProfilePhase("SynthesizeFlagFields");
 	D_StartupProgress();
 
+	beginProfilePhase();
 	FunctionBuildList.Build();
+	endProfilePhase("FunctionBuildList.Build");
 	D_StartupProgress();
 
 	if (FScriptPosition::ErrorCounter > 0)
@@ -494,6 +524,7 @@ void LoadActors()
 
 	FScriptPosition::ResetErrorCounter();
 	// AllActorClasses hasn'T been set up yet.
+	beginProfilePhase();
 	for (int i = PClass::AllClasses.Size() - 1; i >= 0; i--)
 	{
 		if ((i & 31) == 0)
@@ -549,6 +580,7 @@ void LoadActors()
 
 		CheckDropItems(ti);
 	}
+	endProfilePhase("actor postprocessing");
 	if (FScriptPosition::ErrorCounter > 0)
 	{
 		I_Error("%d errors during actor postprocessing", FScriptPosition::ErrorCounter);

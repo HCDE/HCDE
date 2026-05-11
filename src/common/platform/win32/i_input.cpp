@@ -61,6 +61,7 @@
 #include "printf.h"
 #include "c_buttons.h"
 #include "cmdlib.h"
+#include "hcde_servermode.h"
 #include "i_mainwindow.h"
 #include "m_haptics.h"
 
@@ -498,6 +499,8 @@ LRESULT CALLBACK WndProc (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 bool I_InitInput (void *hwnd)
 {
 	HRESULT hr;
+
+	HCDE_ServerMode_GuardClientSubsystem("Windows input devices");
 
 	Printf ("I_InitInput\n");
 

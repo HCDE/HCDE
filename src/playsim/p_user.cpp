@@ -1783,7 +1783,16 @@ void P_PredictClient()
 	if (gamestate != GS_LEVEL)
 		return;
 
+	if (netgame && I_UsesDedicatedServerSlot() && consoleplayer == Net_Arbitrator)
+		return;
+
+	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS)
+		return;
+
 	player_t* player = &players[consoleplayer];
+	if (player->mo == nullptr)
+		return;
+
 	if (!NetworkEntityManager::IsPredicting())
 	{
 		NetworkEntityManager::EnablePrediction();

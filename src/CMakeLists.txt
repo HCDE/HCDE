@@ -1103,6 +1103,7 @@ set (PCH_SOURCES
 	common/engine/sc_man.cpp
 	common/engine/palettecontainer.cpp
 	common/engine/stringtable.cpp
+	common/engine/hcde_servermode.cpp
 	common/engine/i_net.cpp
 	common/engine/sv_master.cpp
 	common/engine/i_protocol.cpp
@@ -1284,10 +1285,14 @@ set( GAME_NONPCH_SOURCES ${GAME_SOURCES} )
 list( REMOVE_ITEM GAME_NONPCH_SOURCES ${PCH_SOURCES} )
 
 add_executable( zdoom WIN32 MACOSX_BUNDLE ${GAME_SOURCES} )
+add_executable( hcdeserv ${GAME_SOURCES} )
 
 target_include_directories( zdoom PRIVATE ${CMAKE_BINARY_DIR} )
+target_include_directories( hcdeserv PRIVATE ${CMAKE_BINARY_DIR} )
 
 target_precompile_headers( zdoom PRIVATE g_pch.h )
+target_precompile_headers( hcdeserv PRIVATE g_pch.h )
+target_compile_definitions( hcdeserv PRIVATE HCDE_DEDICATED_SERVER=1 )
 
 set_source_files_properties( ${FASTMATH_SOURCES} PROPERTIES COMPILE_FLAGS ${ZD_FASTMATH_FLAG} )
 set_source_files_properties( xlat/parse_xlat.cpp PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/xlat_parser.c" )
@@ -1311,6 +1316,7 @@ endif()
 
 if(BUILD_FLATPAK)
 	target_compile_definitions(zdoom PRIVATE IS_FLATPAK=1)
+	target_compile_definitions(hcdeserv PRIVATE IS_FLATPAK=1)
 endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "SunOS")
@@ -1326,6 +1332,7 @@ if( UNIX )
 endif()
 
 target_link_libraries( zdoom ${PROJECT_LIBRARIES} lzma ${ZMUSIC_LIBRARIES} absl::base absl::flat_hash_map absl::strings absl::hash)
+target_link_libraries( hcdeserv ${PROJECT_LIBRARIES} lzma ${ZMUSIC_LIBRARIES} absl::base absl::flat_hash_map absl::strings absl::hash)
 include_directories(
 	BEFORE
 	.
@@ -1390,13 +1397,18 @@ include_directories(
 	../libraries/ZWidget/include
 	../libraries/webp/include
 	../libraries/range_map/include
+	../protocol
 	${SYSTEM_SOURCES_DIR}
 )
 
 add_dependencies( zdoom revision_check )
+add_dependencies( hcdeserv revision_check )
+add_dependencies( zdoom hcdeserv )
 
 set_target_properties( zdoom PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${HCDE_OUTPUT_DIR} )
 set_target_properties( zdoom PROPERTIES OUTPUT_NAME ${HCDE_EXE_NAME} )
+set_target_properties( hcdeserv PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${HCDE_OUTPUT_DIR} )
+set_target_properties( hcdeserv PROPERTIES OUTPUT_NAME hcdeserv )
 
 if(NOT MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	set_target_properties(zdoom PROPERTIES LINK_FLAGS "-z nostart-stop-gc")
@@ -1405,9 +1417,9 @@ endif()
 if( MSVC )
 	option ( CONSOLE_MODE "Compile as a console application" OFF )
 	if ( CONSOLE_MODE )
-		set ( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE /ENTRY:wmainCRTStartup" )
+		set ( ZDOOM_SUBSYSTEM_FLAGS "/SUBSYSTEM:CONSOLE /ENTRY:wmainCRTStartup" )
 	else()
-		set ( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup" )
+		set ( ZDOOM_SUBSYSTEM_FLAGS "/SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup" )
 	endif()
 
 	option( ZDOOM_GENERATE_MAPFILE "Generate .map file for debugging." OFF )
@@ -1416,11 +1428,16 @@ if( MSVC )
 	if( ZDOOM_GENERATE_MAPFILE )
 		set( LINKERSTUFF "${LINKERSTUFF} /MAP" )
 	endif()
-	set_target_properties(zdoom PROPERTIES LINK_FLAGS ${LINKERSTUFF})
+	set_target_properties(zdoom PROPERTIES LINK_FLAGS "${LINKERSTUFF} ${ZDOOM_SUBSYSTEM_FLAGS}")
+	set_target_properties(hcdeserv PROPERTIES LINK_FLAGS "${LINKERSTUFF} /SUBSYSTEM:CONSOLE /ENTRY:wmainCRTStartup")
 
 	add_custom_command(TARGET zdoom POST_BUILD
 		COMMAND "mt.exe" -manifest \"${CMAKE_CURRENT_SOURCE_DIR}\\common\\platform\\win32\\manifest.xml\" -outputresource:\"$<TARGET_FILE:zdoom>\"\;\#1
 		COMMENT "Adding manifest..."
+	)
+	add_custom_command(TARGET hcdeserv POST_BUILD
+		COMMAND "mt.exe" -manifest \"${CMAKE_CURRENT_SOURCE_DIR}\\common\\platform\\win32\\manifest.xml\" -outputresource:\"$<TARGET_FILE:hcdeserv>\"\;\#1
+		COMMENT "Adding server manifest..."
 	)
 
 endif()
@@ -1464,17 +1481,11 @@ add_custom_command(TARGET zdoom POST_BUILD
 	VERBATIM
 )
 
-if(WIN32)
-	add_custom_command(TARGET zdoom POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			$<TARGET_FILE:zdoom> "${HCDE_RESOURCE_DIR}/hcdeserv.exe"
-		COMMENT "Publishing hcdeserv.exe..."
-	)
-else()
-	add_custom_command(TARGET zdoom POST_BUILD
+if(NOT WIN32)
+	add_custom_command(TARGET hcdeserv POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E create_symlink
-			$<TARGET_FILE_NAME:zdoom> "${HCDE_RESOURCE_DIR}/hcdeserv"
-		WORKING_DIRECTORY $<TARGET_FILE_DIR:zdoom>
+			$<TARGET_FILE_NAME:hcdeserv> "${HCDE_RESOURCE_DIR}/hcdeserv"
+		WORKING_DIRECTORY $<TARGET_FILE_DIR:hcdeserv>
 		COMMENT "Publishing hcdeserv..."
 	)
 endif()
@@ -1496,7 +1507,7 @@ if ( NOT ZMUSIC_SYSTEM_INSTALL AND (NOT DEFINED BUILD_SHARED_LIBS OR BUILD_SHARE
 endif()
 
 if (VCPKG_TOOLCHAIN)
-	x_vcpkg_install_local_dependencies(TARGETS zdoom DESTINATION ".")
+	x_vcpkg_install_local_dependencies(TARGETS zdoom hcdeserv DESTINATION ".")
 endif()
 
 if( WIN32 )
@@ -1581,7 +1592,7 @@ if( WIN32 )
 else()
 	set( INSTALL_PATH bin CACHE STRING "Directory where the executable will be placed during install." )
 endif()
-install(TARGETS zdoom
+install(TARGETS zdoom hcdeserv
 		DESTINATION ${INSTALL_PATH}
 		COMPONENT "Game executable")
 

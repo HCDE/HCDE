@@ -73,7 +73,11 @@ Current project license: HCDE is GPL-3.0-or-later.
 
    Shared protocol documentation is allowed. Shared generated constants or
    schemas are allowed only when they are clearly protocol descriptions, not
-   copied engine implementation.
+   copied engine implementation. For master-server work, Doom Connector may
+   share packet IDs, field layouts, ports, DNS names, and neutral generated
+   protocol constants with HCDE and the standalone master server. It must not
+   share socket loops, storage logic, launcher behavior, engine headers, or
+   gameplay implementation across the boundary.
 
 10. HCDE must work without Doom Connector.
 
