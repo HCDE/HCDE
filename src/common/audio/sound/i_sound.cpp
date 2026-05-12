@@ -267,6 +267,10 @@ void I_InitSound ()
 			{
 				GSnd = new OpenALSoundRenderer;
 			}
+			else
+			{
+				Printf(TEXTCOLOR_ORANGE "OpenAL runtime not found. Put soft_oal.dll or OpenAL32.dll next to hcde.exe.\n");
+			}
 		#endif
 	}
 	if (!GSnd || !GSnd->IsValid ())

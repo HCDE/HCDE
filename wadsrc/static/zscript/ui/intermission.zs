@@ -24,6 +24,7 @@ extend class ScreenJobRunner
 
 	native static int GetReadyTimer();
 	native static bool IsPlayerReady(int pNum);
+	native static bool IsPlayerReadyParticipant(int pNum);
 
 	bool ConsumedInput(InputEvent evt)
 	{
@@ -48,7 +49,7 @@ extend class ScreenJobRunner
 			int totalClients, readyClients;
 			for (int i; i < MAXPLAYERS; ++i)
 			{
-				if (!playerInGame[i] || players[i].Bot)
+				if (!IsPlayerReadyParticipant(i))
 					continue;
 
 				++totalClients;

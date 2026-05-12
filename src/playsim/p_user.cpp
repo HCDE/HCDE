@@ -1783,7 +1783,7 @@ void P_PredictClient()
 	if (gamestate != GS_LEVEL)
 		return;
 
-	if (netgame && I_UsesDedicatedServerSlot() && consoleplayer == Net_Arbitrator)
+	if (netgame && I_IsServerReservedSlot(consoleplayer))
 		return;
 
 	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS)

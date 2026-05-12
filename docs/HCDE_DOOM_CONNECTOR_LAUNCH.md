@@ -62,7 +62,7 @@ with:
 
 - mode and executable type
 - requested, visible, and internal slot counts
-- hidden server slot state
+- reserved server authority slot state
 - UDP port
 - IWAD argument and selected IWAD
 - map argument
@@ -384,3 +384,55 @@ The `HCSR` command record now stores:
 The client validates the record counts, offsets, event schemas, and fixed
 command fields before rebuilding the temporary inherited snapshot packet for the
 current gameplay parser.
+
+## Stage 22 Update
+
+Dedicated HCDE hosts now enforce client input ownership before rebuilding the
+temporary inherited input packet. A negotiated dedicated client may submit either
+an empty input heartbeat or one `HCIR` player record for its own assigned slot.
+Packets that try to carry another player's input, or multiple player records,
+are rejected at the live-input boundary.
+
+Doom Connector does not need new command-line arguments for this stage. Keep
+using the dedicated launch pair:
+
+```powershell
+hcdeserv -server <visible-player-count> -port <port> -iwad <iwad-path> -file <mods...> +map <map>
+hcde -join <host:port> -dedicatedjoin -netwaitsilent -iwad <iwad-path> -file <mods...>
+```
+
+## Stage 23 Update
+
+Host-to-client live server snapshots now include an `HCDW` server-authored
+world-delta section after the `HCSR` command records. The first delta stream
+carries authoritative player pose records for the players represented in the
+snapshot. Clients validate this section before the temporary inherited snapshot
+packet is rebuilt.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 24 Update
+
+Clients now consume validated `HCDW` player pose records for baseline-repair
+telemetry. Remote player baseline drift is detected from the server-authored
+snapshot, but direct correction is deferred while inherited lockstep
+consistency still owns playsim state.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 25 Update
+
+Clients now validate the local predicted player against `HCDW` player pose
+records and report reconciliation drift. The actual playsim mutation path is
+guarded off until live replication replaces inherited lockstep consistency.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 26 Update
+
+Dedicated server sessions now hide the reserved server slot behind explicit
+slot-mapping helpers. Public player counts, server-query snapshots, pregame
+progress, status logging, and prediction gating now use the slotless boundary
+instead of exposing the inherited slot-zero arbitrator as a playable client.
+
+Doom Connector does not need new command-line arguments for this stage.

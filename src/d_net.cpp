@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <string.h>
+#include <math.h>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -190,7 +191,7 @@ constexpr size_t HCDEServerSnapshotConsistencyTicsOffset = 27u;
 constexpr size_t HCDEServerSnapshotStabilityOffset = 28u;
 constexpr size_t HCDEServerSnapshotBodyBytesOffset = 29u;
 constexpr size_t HCDEServerSnapshotHeaderSize = 31u;
-constexpr uint8_t HCDEServerSnapshotProtocolVersion = 3u;
+constexpr uint8_t HCDEServerSnapshotProtocolVersion = 4u;
 constexpr uint8_t HCDEServerSnapshotMagic[4] = { 'H', 'C', 'S', 'N' };
 constexpr size_t HCDEServerSnapshotRecordsMagicOffset = 0u;
 constexpr size_t HCDEServerSnapshotRecordsVersionOffset = 4u;
@@ -198,6 +199,23 @@ constexpr size_t HCDEServerSnapshotRecordsPlayerCountOffset = 5u;
 constexpr size_t HCDEServerSnapshotRecordsHeaderSize = 6u;
 constexpr uint8_t HCDEServerSnapshotRecordsProtocolVersion = 2u;
 constexpr uint8_t HCDEServerSnapshotRecordsMagic[4] = { 'H', 'C', 'S', 'R' };
+// HCDW is a validated, server-authored pose stream that rides behind the
+// inherited snapshot records until live replication owns world state directly.
+constexpr size_t HCDEServerWorldDeltaMagicOffset = 0u;
+constexpr size_t HCDEServerWorldDeltaVersionOffset = 4u;
+constexpr size_t HCDEServerWorldDeltaFlagsOffset = 5u;
+constexpr size_t HCDEServerWorldDeltaTicOffset = 6u;
+constexpr size_t HCDEServerWorldDeltaCountOffset = 10u;
+constexpr size_t HCDEServerWorldDeltaHeaderSize = 11u;
+constexpr size_t HCDEServerWorldDeltaRecordSize = 60u;
+constexpr uint8_t HCDEServerWorldDeltaProtocolVersion = 1u;
+constexpr uint8_t HCDEServerWorldDeltaMagic[4] = { 'H', 'C', 'D', 'W' };
+constexpr uint8_t HCDEServerWorldDeltaPoseHasActor = 1u << 0;
+constexpr uint8_t HCDEServerWorldDeltaPoseLive = 1u << 1;
+constexpr uint8_t HCDEServerWorldDeltaPoseOnGround = 1u << 2;
+constexpr double HCDEServerBaselineRepairDistance = 128.0;
+constexpr double HCDEServerReconcileDistance = 20.0;
+constexpr double HCDEServerReconcileHardDistance = 384.0;
 
 enum EHCDELiveMessage : uint8_t
 {
@@ -227,6 +245,12 @@ struct FHCDELivePeerState
 	uint32_t SnapshotSent = 0u;
 	uint32_t SnapshotReceived = 0u;
 	uint32_t UnsupportedReceived = 0u;
+	uint32_t AuthorityRejected = 0u;
+	uint32_t WorldDeltaReceived = 0u;
+	uint32_t BaselineRepairs = 0u;
+	uint32_t BaselineLocalDrift = 0u;
+	uint32_t Reconciliations = 0u;
+	uint32_t HardReconciliations = 0u;
 
 	void Clear()
 	{
@@ -263,6 +287,7 @@ static int	SkipCommandAmount = 0;	// Amount of commands to skip. Try and batch s
 void D_ProcessEvents(void);
 void G_BuildTiccmd(usercmd_t *cmd);
 void D_DoAdvanceDemo(void);
+void P_ClearPredictionData();
 
 static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int argn, int always);
 
@@ -281,6 +306,12 @@ static uint16_t HCDELiveReadBE16(const uint8_t* data)
 	return (uint16_t(data[0]) << 8) | uint16_t(data[1]);
 }
 
+static uint64_t HCDELiveReadBE64(const uint8_t* data)
+{
+	return (uint64_t(data[0]) << 56) | (uint64_t(data[1]) << 48) | (uint64_t(data[2]) << 40) | (uint64_t(data[3]) << 32)
+		| (uint64_t(data[4]) << 24) | (uint64_t(data[5]) << 16) | (uint64_t(data[6]) << 8) | uint64_t(data[7]);
+}
+
 static void HCDELiveWriteBE16(uint8_t* data, uint16_t value)
 {
 	data[0] = uint8_t(value >> 8);
@@ -293,6 +324,18 @@ static void HCDELiveWriteBE32(uint8_t* data, uint32_t value)
 	data[1] = uint8_t(value >> 16);
 	data[2] = uint8_t(value >> 8);
 	data[3] = uint8_t(value);
+}
+
+static void HCDELiveWriteBE64(uint8_t* data, uint64_t value)
+{
+	data[0] = uint8_t(value >> 56);
+	data[1] = uint8_t(value >> 48);
+	data[2] = uint8_t(value >> 40);
+	data[3] = uint8_t(value >> 32);
+	data[4] = uint8_t(value >> 24);
+	data[5] = uint8_t(value >> 16);
+	data[6] = uint8_t(value >> 8);
+	data[7] = uint8_t(value);
 }
 
 static const char* HCDELiveMessageName(uint8_t type)
@@ -376,6 +419,30 @@ static bool ShouldWrapHCDEServerSnapshotPacket(int client)
 		&& consoleplayer == Net_Arbitrator
 		&& client != consoleplayer
 		&& I_ClientUsesHCDEService(client);
+}
+
+static bool HCDEEnforcesDedicatedInputAuthority()
+{
+	return netgame
+		&& !demoplayback
+		&& consoleplayer == Net_Arbitrator
+		&& I_UsesDedicatedServerSlot();
+}
+
+static bool HCDEInputRecordAuthorized(int senderClient, int playerNum, uint8_t playerCount)
+{
+	if (!HCDEEnforcesDedicatedInputAuthority())
+		return true;
+
+	return playerCount <= 1u && playerNum == senderClient;
+}
+
+static bool HCDEWorldDeltasCanMutatePlaysim()
+{
+	// The inherited netcode still verifies deterministic lockstep state. Applying
+	// side-band pose corrections here can make the checker report a desync, so
+	// HCDW remains validation/telemetry-only until live replication owns the loop.
+	return false;
 }
 
 static const char* HCDEGameplayPayloadName(uint8_t kind)
@@ -465,15 +532,26 @@ static bool RejectHCDEServerSnapshotBuild(int client, const char* reason, size_t
 static bool HCDEAppendByte(uint8_t* output, size_t outputCapacity, size_t& cursor, uint8_t value)
 {
 	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append byte failed: cursor=%zu outputCapacity=%zu reason=cursor_ge_capacity", cursor, outputCapacity);
 		return false;
+	}
 	output[cursor++] = value;
 	return true;
 }
 
 static bool HCDEAppendBE16(uint8_t* output, size_t outputCapacity, size_t& cursor, uint16_t value)
 {
-	if (cursor > outputCapacity || outputCapacity - cursor < 2u)
+	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append BE16 failed: cursor=%zu outputCapacity=%zu required=2 reason=cursor_ge_capacity", cursor, outputCapacity);
 		return false;
+	}
+	if (outputCapacity - cursor < 2u)
+	{
+		DebugTrace::Markf("net", "HCDE append BE16 failed: cursor=%zu outputCapacity=%zu required=2 reason=insufficient_capacity", cursor, outputCapacity);
+		return false;
+	}
 	HCDELiveWriteBE16(&output[cursor], value);
 	cursor += 2u;
 	return true;
@@ -481,17 +559,62 @@ static bool HCDEAppendBE16(uint8_t* output, size_t outputCapacity, size_t& curso
 
 static bool HCDEAppendBE32(uint8_t* output, size_t outputCapacity, size_t& cursor, uint32_t value)
 {
-	if (cursor > outputCapacity || outputCapacity - cursor < 4u)
+	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append BE32 failed: cursor=%zu outputCapacity=%zu required=4 reason=cursor_ge_capacity", cursor, outputCapacity);
 		return false;
+	}
+	if (outputCapacity - cursor < 4u)
+	{
+		DebugTrace::Markf("net", "HCDE append BE32 failed: cursor=%zu outputCapacity=%zu required=4 reason=insufficient_capacity", cursor, outputCapacity);
+		return false;
+	}
 	HCDELiveWriteBE32(&output[cursor], value);
 	cursor += 4u;
 	return true;
 }
 
+static bool HCDEAppendBE64(uint8_t* output, size_t outputCapacity, size_t& cursor, uint64_t value)
+{
+	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append BE64 failed: cursor=%zu outputCapacity=%zu required=8 reason=cursor_ge_capacity", cursor, outputCapacity);
+		return false;
+	}
+	if (outputCapacity - cursor < 8u)
+	{
+		DebugTrace::Markf("net", "HCDE append BE64 failed: cursor=%zu outputCapacity=%zu required=8 reason=insufficient_capacity", cursor, outputCapacity);
+		return false;
+	}
+	HCDELiveWriteBE64(&output[cursor], value);
+	cursor += 8u;
+	return true;
+}
+
+static bool HCDEAppendDouble(uint8_t* output, size_t outputCapacity, size_t& cursor, double value)
+{
+	if (isfinite(value) == 0)
+	{
+		DebugTrace::Markf("net", "HCDE append double failed: cursor=%zu reason=not_finite_value", cursor);
+		return false;
+	}
+	uint64_t bits = 0u;
+	memcpy(&bits, &value, sizeof(bits));
+	return HCDEAppendBE64(output, outputCapacity, cursor, bits);
+}
+
 static bool HCDEAppendBytes(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t size)
 {
-	if (cursor > outputCapacity || size > outputCapacity - cursor)
+	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append bytes failed: cursor=%zu outputCapacity=%zu reason=cursor_ge_capacity", cursor, outputCapacity);
 		return false;
+	}
+	if (size > outputCapacity - cursor)
+	{
+		DebugTrace::Markf("net", "HCDE append bytes failed: cursor=%zu outputCapacity=%zu size=%zu reason=insufficient_capacity", cursor, outputCapacity, size);
+		return false;
+	}
 	if (size != 0u)
 		memcpy(&output[cursor], data, size);
 	cursor += size;
@@ -501,26 +624,88 @@ static bool HCDEAppendBytes(uint8_t* output, size_t outputCapacity, size_t& curs
 static bool HCDEReadByteField(const uint8_t* data, size_t dataSize, size_t& cursor, uint8_t& value)
 {
 	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read byte failed: cursor=%zu dataSize=%zu", cursor, dataSize);
 		return false;
+	}
 	value = data[cursor++];
 	return true;
 }
 
 static bool HCDEReadBE16Field(const uint8_t* data, size_t dataSize, size_t& cursor, uint16_t& value)
 {
-	if (cursor > dataSize || dataSize - cursor < 2u)
+	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read BE16 failed: cursor=%zu dataSize=%zu required=2 reason=cursor_ge_size", cursor, dataSize);
 		return false;
+	}
+	if (dataSize - cursor < 2u)
+	{
+		DebugTrace::Markf("net", "HCDE read BE16 failed: cursor=%zu dataSize=%zu required=2 reason=insufficient_data", cursor, dataSize);
+		return false;
+	}
 	value = HCDELiveReadBE16(&data[cursor]);
 	cursor += 2u;
 	return true;
 }
 
+static bool HCDEReadBE32Field(const uint8_t* data, size_t dataSize, size_t& cursor, uint32_t& value)
+{
+	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read BE32 failed: cursor=%zu dataSize=%zu required=4 reason=cursor_ge_size", cursor, dataSize);
+		return false;
+	}
+	if (dataSize - cursor < 4u)
+	{
+		DebugTrace::Markf("net", "HCDE read BE32 failed: cursor=%zu dataSize=%zu required=4 reason=insufficient_data", cursor, dataSize);
+		return false;
+	}
+	value = HCDELiveReadBE32(&data[cursor]);
+	cursor += 4u;
+	return true;
+}
+
+static bool HCDEReadDoubleField(const uint8_t* data, size_t dataSize, size_t& cursor, double& value)
+{
+	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read double failed: cursor=%zu dataSize=%zu required=8 reason=cursor_ge_size", cursor, dataSize);
+		return false;
+	}
+	if (dataSize - cursor < 8u)
+	{
+		DebugTrace::Markf("net", "HCDE read double failed: cursor=%zu dataSize=%zu required=8 reason=insufficient_data", cursor, dataSize);
+		return false;
+	}
+	const uint64_t bits = HCDELiveReadBE64(&data[cursor]);
+	memcpy(&value, &bits, sizeof(value));
+	cursor += 8u;
+	if (isfinite(value) == 0)
+	{
+		DebugTrace::Markf("net", "HCDE read double failed: cursor=%zu reason=not_finite_value", cursor);
+		return false;
+	}
+	return true;
+}
+
 static bool HCDEAppendFieldBytes(uint8_t* output, size_t outputCapacity, size_t& outputCursor, const uint8_t* data, size_t dataSize, size_t& inputCursor, size_t size)
 {
-	if (inputCursor > dataSize || size > dataSize - inputCursor)
+	if (inputCursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE append field failed: inputCursor=%zu dataSize=%zu reason=input_ge_size", inputCursor, dataSize);
 		return false;
+	}
+	if (size > dataSize - inputCursor)
+	{
+		DebugTrace::Markf("net", "HCDE append field failed: inputCursor=%zu dataSize=%zu size=%zu reason=insufficient_data", inputCursor, dataSize, size);
+		return false;
+	}
 	if (!HCDEAppendBytes(output, outputCapacity, outputCursor, &data[inputCursor], size))
+	{
+		DebugTrace::Markf("net", "HCDE append field failed: outputCursor=%zu outputCapacity=%zu size=%zu reason=append_failed", outputCursor, outputCapacity, size);
 		return false;
+	}
 	inputCursor += size;
 	return true;
 }
@@ -566,8 +751,16 @@ static bool HCDEAppendUserCmdFields(uint8_t* output, size_t outputCapacity, size
 
 static bool HCDEReadUserCmdFields(const uint8_t* data, size_t dataSize, size_t& cursor, usercmd_t& command)
 {
-	if (cursor > dataSize || dataSize - cursor < HCDEExplicitUserCmdBytes)
+	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read usercmd failed: cursor=%zu dataSize=%zu required=%zu reason=cursor_ge_size", cursor, dataSize, size_t(HCDEExplicitUserCmdBytes));
 		return false;
+	}
+	if (dataSize - cursor < HCDEExplicitUserCmdBytes)
+	{
+		DebugTrace::Markf("net", "HCDE read usercmd failed: cursor=%zu dataSize=%zu required=%zu reason=insufficient_data", cursor, dataSize, size_t(HCDEExplicitUserCmdBytes));
+		return false;
+	}
 
 	command.buttons = HCDELiveReadBE32(&data[cursor]);
 	cursor += 4u;
@@ -583,6 +776,225 @@ static bool HCDEReadUserCmdFields(const uint8_t* data, size_t dataSize, size_t& 
 	cursor += 2u;
 	command.upmove = int16_t(HCDELiveReadBE16(&data[cursor]));
 	cursor += 2u;
+	return true;
+}
+
+static bool HCDEAppendServerWorldDeltas(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* playerNums, size_t playerCount)
+{
+	if (playerCount > MAXPLAYERS || playerCount > UINT8_MAX)
+		return false;
+
+	if (!HCDEAppendBytes(output, outputCapacity, cursor, HCDEServerWorldDeltaMagic, sizeof(HCDEServerWorldDeltaMagic))
+		|| !HCDEAppendByte(output, outputCapacity, cursor, HCDEServerWorldDeltaProtocolVersion)
+		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max<int>(gametic, 0)))
+		|| !HCDEAppendByte(output, outputCapacity, cursor, uint8_t(playerCount)))
+	{
+		return false;
+	}
+
+	for (size_t i = 0u; i < playerCount; ++i)
+	{
+		const uint8_t playerNum = playerNums[i];
+		if (playerNum >= MAXPLAYERS)
+			return false;
+
+		const player_t& player = players[playerNum];
+		const AActor* mo = player.mo;
+		uint8_t flags = 0u;
+		int health = player.health;
+		DVector3 pos = {};
+		DVector3 vel = {};
+		uint32_t yaw = 0u;
+		uint32_t pitch = 0u;
+		if (mo != nullptr)
+		{
+			flags |= HCDEServerWorldDeltaPoseHasActor;
+			if (player.playerstate == PST_LIVE)
+				flags |= HCDEServerWorldDeltaPoseLive;
+			if (player.onground)
+				flags |= HCDEServerWorldDeltaPoseOnGround;
+			health = mo->health;
+			pos = mo->Pos();
+			vel = mo->Vel;
+			yaw = mo->Angles.Yaw.BAMs();
+			pitch = mo->Angles.Pitch.BAMs();
+		}
+
+		if (!HCDEAppendByte(output, outputCapacity, cursor, playerNum)
+			|| !HCDEAppendByte(output, outputCapacity, cursor, flags)
+			|| !HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(clamp<int>(health, INT16_MIN, INT16_MAX)))
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.X)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.Y)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.Z)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.X)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.Y)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.Z)
+			|| !HCDEAppendBE32(output, outputCapacity, cursor, yaw)
+			|| !HCDEAppendBE32(output, outputCapacity, cursor, pitch))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, size_t bodyBytes, size_t& bodyCursor, uint8_t playerCount, uint64_t snapshotPlayers)
+{
+	if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < HCDEServerWorldDeltaHeaderSize)
+		return false;
+	if (memcmp(&body[bodyCursor + HCDEServerWorldDeltaMagicOffset], HCDEServerWorldDeltaMagic, sizeof(HCDEServerWorldDeltaMagic)) != 0)
+		return false;
+
+	size_t cursor = bodyCursor + HCDEServerWorldDeltaHeaderSize;
+	const uint8_t version = body[bodyCursor + HCDEServerWorldDeltaVersionOffset];
+	const uint8_t flags = body[bodyCursor + HCDEServerWorldDeltaFlagsOffset];
+	const uint8_t deltaCount = body[bodyCursor + HCDEServerWorldDeltaCountOffset];
+	if (version != HCDEServerWorldDeltaProtocolVersion || flags != 0u || deltaCount != playerCount)
+		return false;
+
+	uint64_t deltaPlayers = 0u;
+	uint32_t serverTic = 0u;
+	size_t ticCursor = bodyCursor + HCDEServerWorldDeltaTicOffset;
+	if (!HCDEReadBE32Field(body, bodyBytes, ticCursor, serverTic))
+		return false;
+
+	for (uint8_t i = 0u; i < deltaCount; ++i)
+	{
+		if (cursor > bodyBytes || bodyBytes - cursor < HCDEServerWorldDeltaRecordSize)
+			return false;
+
+		uint8_t playerNum = 0u;
+		uint8_t poseFlags = 0u;
+		uint16_t healthBits = 0u;
+		uint32_t yaw = 0u;
+		uint32_t pitch = 0u;
+		double values[6] = {};
+		if (!HCDEReadByteField(body, bodyBytes, cursor, playerNum)
+			|| !HCDEReadByteField(body, bodyBytes, cursor, poseFlags)
+			|| !HCDEReadBE16Field(body, bodyBytes, cursor, healthBits))
+		{
+			return false;
+		}
+		for (double& value : values)
+		{
+			if (!HCDEReadDoubleField(body, bodyBytes, cursor, value))
+				return false;
+		}
+		if (!HCDEReadBE32Field(body, bodyBytes, cursor, yaw)
+			|| !HCDEReadBE32Field(body, bodyBytes, cursor, pitch))
+		{
+			return false;
+		}
+
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u || (poseFlags & ~(HCDEServerWorldDeltaPoseHasActor | HCDEServerWorldDeltaPoseLive | HCDEServerWorldDeltaPoseOnGround)) != 0u)
+			return false;
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if ((snapshotPlayers & playerMask) == 0u || (deltaPlayers & playerMask) != 0u)
+			return false;
+		deltaPlayers |= playerMask;
+
+		if ((poseFlags & HCDEServerWorldDeltaPoseHasActor) == 0u)
+			continue;
+
+		player_t& player = players[playerNum];
+		AActor* mo = player.mo;
+		if (mo == nullptr)
+			continue;
+
+		auto& peer = HCDELivePeers[clientNum];
+		++peer.WorldDeltaReceived;
+		const DVector3 serverPos = { values[0], values[1], values[2] };
+		const DVector3 serverVel = { values[3], values[4], values[5] };
+		DVector3 delta = mo->Pos() - serverPos;
+		if (mo->Level != nullptr && mo->Sector != nullptr)
+		{
+			sector_t* serverSector = mo->Level->PointInSector(serverPos);
+			if (serverSector != nullptr)
+				delta += mo->Level->Displacements.getOffset(mo->Sector->PortalGroup, serverSector->PortalGroup);
+		}
+		const double drift = delta.LengthSquared();
+		const int serverHealth = int(int16_t(healthBits));
+		const bool canMutatePlaysim = HCDEWorldDeltasCanMutatePlaysim();
+		if (playerNum == consoleplayer)
+		{
+			const bool needsReconciliation = drift > HCDEServerReconcileDistance * HCDEServerReconcileDistance
+				|| mo->health != serverHealth
+				|| player.health != serverHealth
+				|| player.onground != ((poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u);
+			if (!needsReconciliation)
+				continue;
+
+			++peer.BaselineLocalDrift;
+			if (!canMutatePlaysim)
+			{
+				DebugTrace::Markf("net", "HCDE client reconciliation deferred from=%d player=%u drift=%.2f health=%d local-health=%d",
+					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, player.health);
+				continue;
+			}
+
+			const bool hardReconciliation = HCDEServerReconcileHardDistance > 0.0
+				&& drift > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance;
+			const DVector3 oldPos = mo->Pos();
+			const int oldPortalGroup = mo->Sector != nullptr ? mo->Sector->PortalGroup : mo->PrevPortalGroup;
+			const double viewZOffset = player.viewz - mo->Z();
+			mo->SetOrigin(serverPos, false);
+			mo->Vel = serverVel;
+			mo->SetAngle(DAngle::fromBam(yaw), 0);
+			mo->SetPitch(DAngle::fromBam(pitch), 0);
+			mo->health = serverHealth;
+			player.health = serverHealth;
+			player.onground = (poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u;
+			player.viewz = serverPos.Z + viewZOffset;
+			if (hardReconciliation)
+			{
+				mo->renderflags |= RF_NOINTERPOLATEVIEW;
+				mo->ClearInterpolation();
+				++peer.HardReconciliations;
+			}
+			else
+			{
+				mo->Prev = oldPos;
+				mo->PrevPortalGroup = oldPortalGroup;
+			}
+			P_ClearPredictionData();
+			++peer.Reconciliations;
+			DebugTrace::Markf("net", "HCDE client reconciliation from=%d player=%u drift=%.2f hard=%d health=%d reconciliations=%u",
+				clientNum, unsigned(playerNum), sqrt(drift), hardReconciliation ? 1 : 0, serverHealth, peer.Reconciliations);
+			continue;
+		}
+
+		const bool needsPoseRepair = drift > HCDEServerBaselineRepairDistance * HCDEServerBaselineRepairDistance;
+		const bool needsStateRepair = mo->health != serverHealth || player.health != serverHealth || player.onground != ((poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u);
+		if (needsPoseRepair || needsStateRepair)
+		{
+			if (!canMutatePlaysim)
+			{
+				DebugTrace::Markf("net", "HCDE baseline repair deferred client=%d player=%u drift=%.2f health=%d local-health=%d",
+					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, player.health);
+				continue;
+			}
+
+			mo->SetOrigin(serverPos, false);
+			mo->Vel = serverVel;
+			mo->SetAngle(DAngle::fromBam(yaw), 0);
+			mo->SetPitch(DAngle::fromBam(pitch), 0);
+			mo->health = serverHealth;
+			player.health = serverHealth;
+			player.onground = (poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u;
+			mo->ClearInterpolation();
+			++peer.BaselineRepairs;
+			DebugTrace::Markf("net", "HCDE baseline repair client=%d player=%u drift=%.2f health=%d repairs=%u",
+				clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.BaselineRepairs);
+		}
+	}
+
+	if (deltaPlayers != snapshotPlayers)
+		return false;
+
+	bodyCursor = cursor;
+	DebugTrace::Markf("net", "HCDE server world delta recv tic=%u players=%u bytes=%zu",
+		serverTic, unsigned(deltaCount), size_t(deltaCount) * HCDEServerWorldDeltaRecordSize + HCDEServerWorldDeltaHeaderSize);
 	return true;
 }
 
@@ -690,6 +1102,47 @@ static bool HCDEIsAllowedTicEventType(uint8_t type)
 	case DEM_ZSC_CMD:
 	case DEM_CHANGESKILL:
 	case DEM_KICK:
+	case DEM_READIED:
+	case DEM_WEAPSELECT:
+	case DEM_USEFLECHETTE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool HCDEIsAllowedClientInputEventType(uint8_t type)
+{
+	// Client inputs are a narrower trust boundary than server snapshots. Keep
+	// player/mod-authored requests here and leave authoritative world changes
+	// to the server snapshot path.
+	switch (type)
+	{
+	case DEM_UINFCHANGED:
+	case DEM_SAY:
+	case DEM_SUICIDE:
+	case DEM_INVUSEALL:
+	case DEM_INVUSE:
+	case DEM_PAUSE:
+	case DEM_MYFOV:
+	case DEM_RUNSCRIPT:
+	case DEM_INVDROP:
+	case DEM_CENTERVIEW:
+	case DEM_SPRAY:
+	case DEM_CROUCH:
+	case DEM_RUNSCRIPT2:
+	case DEM_CONVREPLY:
+	case DEM_CONVCLOSE:
+	case DEM_CONVNULL:
+	case DEM_RUNSPECIAL:
+	case DEM_SETPITCHLIMIT:
+	case DEM_RUNNAMEDSCRIPT:
+	case DEM_REVERTCAMERA:
+	case DEM_SETSLOT:
+	case DEM_ADDSLOT:
+	case DEM_ADDSLOTDEFAULT:
+	case DEM_NETEVENT:
+	case DEM_ZSC_CMD:
 	case DEM_READIED:
 	case DEM_WEAPSELECT:
 	case DEM_USEFLECHETTE:
@@ -960,8 +1413,16 @@ static bool HCDEAppendCanonicalEventPayload(uint8_t eventType, uint8_t* output, 
 
 static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t dataSize)
 {
-	if (cursor > outputCapacity || outputCapacity - cursor < 2u)
+	if (cursor >= outputCapacity)
+	{
+		DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu reason=cursor_ge_capacity", cursor, outputCapacity);
 		return false;
+	}
+	if (outputCapacity - cursor < 2u)
+	{
+		DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu required=2 reason=insufficient_capacity", cursor, outputCapacity);
+		return false;
+	}
 
 	const size_t countOffset = cursor;
 	cursor += 2u;
@@ -970,13 +1431,34 @@ static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_
 	while (inputCursor < dataSize)
 	{
 		uint8_t eventType = 0u;
-		if (!HCDEReadByteField(data, dataSize, inputCursor, eventType)
-			|| !HCDEIsAllowedTicEventType(eventType)
-			|| eventCount == UINT16_MAX
-			|| !HCDEAppendByte(output, outputCapacity, cursor, eventType)
-			|| cursor > outputCapacity
-			|| outputCapacity - cursor < 2u)
+		if (!HCDEReadByteField(data, dataSize, inputCursor, eventType))
 		{
+			DebugTrace::Markf("net", "HCDE append event records failed: inputCursor=%zu dataSize=%zu reason= EventType_read_failed", inputCursor, dataSize);
+			return false;
+		}
+		if (!HCDEIsAllowedTicEventType(eventType))
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: eventType=%u reason=disallowed_event_type", eventType);
+			return false;
+		}
+		if (eventCount == UINT16_MAX)
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: eventCount=%u reason=event_count_overflow", unsigned(eventCount));
+			return false;
+		}
+		if (!HCDEAppendByte(output, outputCapacity, cursor, eventType))
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu eventType=%u reason=EventType_append_failed", cursor, outputCapacity, eventType);
+			return false;
+		}
+		if (cursor >= outputCapacity)
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu reason=cursor_ge_capacity", cursor, outputCapacity);
+			return false;
+		}
+		if (outputCapacity - cursor < 2u)
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu required=2 reason=insufficient_capacity", cursor, outputCapacity);
 			return false;
 		}
 
@@ -984,11 +1466,17 @@ static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_
 		cursor += 2u;
 		const size_t payloadStart = cursor;
 		if (!HCDEAppendCanonicalEventPayload(eventType, output, outputCapacity, cursor, data, dataSize, inputCursor))
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: eventType=%u reason=payload_append_failed", eventType);
 			return false;
+		}
 
 		const size_t payloadBytes = cursor - payloadStart;
 		if (payloadBytes > UINT16_MAX)
+		{
+			DebugTrace::Markf("net", "HCDE append event records failed: payloadBytes=%zu reason=payload_too_large", payloadBytes);
 			return false;
+		}
 		HCDELiveWriteBE16(&output[payloadSizeOffset], uint16_t(payloadBytes));
 		++eventCount;
 	}
@@ -1000,10 +1488,19 @@ static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_
 static bool HCDEReadCanonicalString(const uint8_t* data, size_t dataSize, size_t& cursor, const uint8_t*& stringBytes, size_t& stringBytesSize)
 {
 	uint16_t length = 0u;
-	if (!HCDEReadBE16Field(data, dataSize, cursor, length)
-		|| cursor > dataSize
-		|| length > dataSize - cursor)
+	if (!HCDEReadBE16Field(data, dataSize, cursor, length))
 	{
+		DebugTrace::Markf("net", "HCDE read canonical string failed: cursor=%zu reason=length_read_failed", cursor);
+		return false;
+	}
+	if (cursor >= dataSize)
+	{
+		DebugTrace::Markf("net", "HCDE read canonical string failed: cursor=%zu dataSize=%zu length=%zu reason=cursor_ge_size", cursor, dataSize, length);
+		return false;
+	}
+	if (length > dataSize - cursor)
+	{
+		DebugTrace::Markf("net", "HCDE read canonical string failed: cursor=%zu dataSize=%zu length=%zu reason=insufficient_data", cursor, dataSize, length);
 		return false;
 	}
 
@@ -1354,6 +1851,8 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 	size_t recordCursor = cursor;
 	size_t bodyCursor = HCDEServerSnapshotHeaderSize + quitterBytes;
 	uint64_t playersSeen = 0u;
+	uint8_t snapshotPlayers[MAXPLAYERS] = {};
+	size_t snapshotPlayerCount = 0u;
 	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsMagic, sizeof(HCDEServerSnapshotRecordsMagic))
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsProtocolVersion)
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
@@ -1374,6 +1873,9 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		if (playersSeen & playerMask)
 			return RejectHCDEServerSnapshotBuild(client, "duplicate-player-record", legacySize, recordCursor);
 		playersSeen |= playerMask;
+		if (snapshotPlayerCount >= MAXPLAYERS)
+			return RejectHCDEServerSnapshotBuild(client, "too-many-world-delta-players", legacySize, recordCursor);
+		snapshotPlayers[snapshotPlayerCount++] = playerNum;
 
 		const uint16_t latency = HCDELiveReadBE16(&legacyPacket[recordCursor]);
 		recordCursor += 2u;
@@ -1446,9 +1948,20 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 	if (recordCursor != legacySize)
 		return RejectHCDEServerSnapshotBuild(client, "trailing-snapshot-bytes", legacySize, recordCursor);
 
+	if (!HCDEAppendServerWorldDeltas(output, outputCapacity, bodyCursor, snapshotPlayers, snapshotPlayerCount))
+		return RejectHCDEServerSnapshotBuild(client, "world-delta-overflow", legacySize, recordCursor);
+
 	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
 	if (bodyBytes > 0xffffu)
 		return RejectHCDEServerSnapshotBuild(client, "too-many-record-bytes", legacySize, recordCursor);
+
+	// Explicit bounds validation before accessing offsets
+	if (legacySize < 2u)
+		return RejectHCDEServerSnapshotBuild(client, "insufficient-offset-bounds", legacySize, cursor);
+	if (legacySize < 6u)
+		return RejectHCDEServerSnapshotBuild(client, "insufficient-offset-bounds", legacySize, cursor);
+	if (legacySize < 10u + quitterBytes)
+		return RejectHCDEServerSnapshotBuild(client, "insufficient-quitter-bytes", legacySize, cursor);
 
 	memcpy(&output[HCDEServerSnapshotMagicOffset], HCDEServerSnapshotMagic, sizeof(HCDEServerSnapshotMagic));
 	output[HCDEServerSnapshotVersionOffset] = HCDEServerSnapshotProtocolVersion;
@@ -1468,8 +1981,8 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		memcpy(&output[HCDEServerSnapshotHeaderSize], &legacyPacket[10], quitterBytes);
 	outputSize = bodyCursor;
 
-	DebugTrace::Markf("net", "HCDE server snapshot payload build client=%d players=%u tics=%u consistencies=%u quitters=%zu records=%zu raw=%zu",
-		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, rawSnapshotBytes);
+	DebugTrace::Markf("net", "HCDE server snapshot payload build client=%d players=%u tics=%u consistencies=%u quitters=%zu records=%zu deltas=%zu raw=%zu",
+		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, snapshotPlayerCount, rawSnapshotBytes);
 	return true;
 }
 
@@ -1629,6 +2142,12 @@ static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket,
 	if (bodyBytes > 0xffffu)
 		return RejectHCDEClientInputBuild(client, "too-many-record-bytes", legacySize, recordCursor);
 
+	// Explicit bounds validation before accessing offsets
+	if (legacySize < 2u)
+		return RejectHCDEClientInputBuild(client, "insufficient-offset-bounds", legacySize, recordCursor);
+	if (legacySize < 6u)
+		return RejectHCDEClientInputBuild(client, "insufficient-offset-bounds", legacySize, recordCursor);
+
 	memcpy(&output[HCDEClientInputMagicOffset], HCDEClientInputMagic, sizeof(HCDEClientInputMagic));
 	output[HCDEClientInputVersionOffset] = HCDEClientInputProtocolVersion;
 	output[HCDEClientInputFlagsOffset] = controlFlags;
@@ -1684,6 +2203,13 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 			clientNum, reason != nullptr ? reason : "unknown", unsigned(inputVersion), unsigned(controlFlags & disallowedControlFlags),
 			unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes, inputPayloadSize);
 		return false;
+	};
+	auto rejectClientAuthority = [&](int playerNum)
+	{
+		++peer.AuthorityRejected;
+		DebugTrace::Markf("net", "ignored HCDE client input from client=%d reason=unauthorized-player-record player=%d players=%u authority-rejected=%u",
+			clientNum, playerNum, unsigned(playerCount), peer.AuthorityRejected);
+		return rejectClientInput("unauthorized-player-record");
 	};
 
 	if (inputVersion != HCDEClientInputProtocolVersion
@@ -1743,6 +2269,8 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 		if (playersSeen & playerMask)
 			return rejectClientInput("duplicate-player-record");
 		playersSeen |= playerMask;
+		if (!HCDEInputRecordAuthorized(clientNum, playerNum, playerCount))
+			return rejectClientAuthority(playerNum);
 
 		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum))
 			return rejectClientInput("packet-overflow");
@@ -1790,7 +2318,7 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 				const uint8_t eventType = body[bodyCursor++];
 				const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
 				bodyCursor += 2u;
-				if (!HCDEIsAllowedTicEventType(eventType)
+				if (!HCDEIsAllowedClientInputEventType(eventType)
 					|| bodyCursor > bodyBytes
 					|| eventPayloadBytes > bodyBytes - bodyCursor
 					|| bodyBytes - bodyCursor - eventPayloadBytes < HCDEExplicitUserCmdBytes)
@@ -2025,6 +2553,9 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 			cursor += size_t(commandOutput.Data() - commandOutputStart);
 		}
 	}
+
+	if (!HCDEValidateServerWorldDeltas(clientNum, body, bodyBytes, bodyCursor, playerCount, playersSeen))
+		return rejectServerSnapshot("invalid-world-deltas");
 
 	if (bodyCursor != bodyBytes)
 		return rejectServerSnapshot("trailing-record-bytes");
@@ -2440,8 +2971,6 @@ public:
 	}
 } NetEvents;
 
-void P_ClearPredictionData();
-
 void Net_ClearBuffers()
 {
 	CloseNetwork();
@@ -2506,9 +3035,36 @@ void Net_ClearBuffers()
 	NetworkClients += 0;
 }
 
+static bool Net_IsCutsceneReadyParticipant(int player)
+{
+	return player >= 0 && player < MAXPLAYERS && playeringame[player] && !I_IsServerReservedSlot(player);
+}
+
+static bool Net_IsGameplayConsistencyParticipant(int player)
+{
+	return player >= 0 && player < MAXPLAYERS && playeringame[player] && !I_IsServerReservedSlot(player);
+}
+
+static int Net_GetCutsceneReadyHost()
+{
+	if (Net_IsCutsceneReadyParticipant(Net_Arbitrator))
+		return Net_Arbitrator;
+
+	for (auto client : NetworkClients)
+	{
+		if (Net_IsCutsceneReadyParticipant(client))
+			return client;
+	}
+
+	return -1;
+}
+
 bool Net_IsPlayerReady(int player)
 {
 	if (demoplayback || net_cutscenereadytype != RT_VOTE)
+		return false;
+
+	if (!Net_IsCutsceneReadyParticipant(player))
 		return false;
 
 	if (cutscene.runner)
@@ -2556,24 +3112,46 @@ bool Net_CheckCutsceneReady()
 		return false;
 
 	if (net_cutscenereadytype == RT_ANYONE)
-		return CutsceneReady != 0;
-
-	if (net_cutscenereadytype == RT_HOST_ONLY)
-		return (CutsceneReady & ((uint64_t)1u << Net_Arbitrator));
-
-	uint64_t mask = 0u;
-	int totalReady = 0;
-	// Bots will be automatically assumed to be ready, so we don't include them.
-	for (auto client : NetworkClients)
 	{
-		mask |= (uint64_t)1u << client;
-		totalReady += Net_IsPlayerReady(client);
+		for (auto client : NetworkClients)
+		{
+			if (Net_IsCutsceneReadyParticipant(client) && (CutsceneReady & ((uint64_t)1u << client)))
+				return true;
+		}
+		return false;
 	}
 
-	if ((CutsceneReady & mask) == mask)
+	if (net_cutscenereadytype == RT_HOST_ONLY)
+	{
+		const int readyHost = Net_GetCutsceneReadyHost();
+		return readyHost >= 0 && (CutsceneReady & ((uint64_t)1u << readyHost));
+	}
+
+	uint64_t mask = 0u;
+	uint64_t readyMask = 0u;
+	int totalReady = 0;
+	int totalClients = 0;
+	for (auto client : NetworkClients)
+	{
+		if (!Net_IsCutsceneReadyParticipant(client))
+			continue;
+
+		mask |= (uint64_t)1u << client;
+		++totalClients;
+		if (Net_IsPlayerReady(client))
+		{
+			readyMask |= (uint64_t)1u << client;
+			++totalReady;
+		}
+	}
+
+	if (totalClients <= 0)
+		return false;
+
+	if ((readyMask & mask) == mask)
 		return true;
 
-	if ((float)totalReady / NetworkClients.Size() < net_cutscenereadypercent)
+	if ((float)totalReady / totalClients < net_cutscenereadypercent)
 		return false;
 
 	if (CutsceneCountdown <= 0)
@@ -3198,7 +3776,10 @@ static void SendHeartbeat()
 			{
 				const int tic = (startTic + i) % MAXSENDTICS;
 				const uint64_t high = state.RecvTime[tic] < state.SentTime[tic] ? time : state.RecvTime[tic];
-				delta += high - state.SentTime[tic];
+				const uint64_t rawDelta = high - state.SentTime[tic];
+					// Clamp latency to a reasonable maximum (5 seconds) to prevent overflow
+					// from corrupted or out-of-order timestamps
+				delta += (rawDelta > 5000) ? 5000 : rawDelta;
 			}
 
 			state.AverageLatency = delta / MAXSENDTICS;
@@ -3225,6 +3806,12 @@ static void CheckConsistencies()
 	for (auto client : NetworkClients)
 	{
 		auto& clientState = ClientStates[client];
+		if (!Net_IsGameplayConsistencyParticipant(client))
+		{
+			clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
+			continue;
+		}
+
 		// If previously inconsistent, always mark it as such going forward. We don't want this to
 		// accidentally go away at some point since the game state is already completely broken.
 		if (players[client].inconsistant)
@@ -3241,6 +3828,12 @@ static void CheckConsistencies()
 				const int tic = clientState.LastVerifiedConsistency % BACKUPTICS;
 				if (clientState.LocalConsistency[tic] != clientState.NetConsistency[tic])
 				{
+					Printf(PRINT_BOLD, "Net consistency mismatch for player %d at consistency %d (local=%d net=%d)\n",
+						client, clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic]);
+					DebugTrace::Warningf("net", "consistency mismatch player=%d consistency=%d local=%d net=%d current=%d remote=%d",
+						client, clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic],
+						CurrentConsistency, clientState.CurrentNetConsistency);
+					DebugTrace::Dump("net");
 					players[client].inconsistant = true;
 					clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
 					break;
@@ -3298,7 +3891,16 @@ static void MakeConsistencies()
 	for (auto client : NetworkClients)
 	{
 		auto& clientState = ClientStates[client];
-		clientState.LocalConsistency[CurrentConsistency % BACKUPTICS] = CalculateConsistency(client, rngSum);
+		const int consistencyIndex = CurrentConsistency % BACKUPTICS;
+		if (!Net_IsGameplayConsistencyParticipant(client))
+		{
+			// Transport-only slots still need a nonzero marker so resend parsing
+			// does not treat the consistency stream as missing.
+			clientState.LocalConsistency[consistencyIndex] = 1;
+			continue;
+		}
+
+		clientState.LocalConsistency[consistencyIndex] = CalculateConsistency(client, rngSum);
 	}
 
 	++CurrentConsistency;
@@ -4140,21 +4742,21 @@ bool D_CheckNetGame()
 	players[Net_Arbitrator].settings_controller = true;
 	for (auto client : NetworkClients)
 	{
-		if (I_UsesDedicatedServerSlot() && client == Net_Arbitrator)
+		if (I_IsServerReservedSlot(client))
 			continue;
 		playeringame[client] = true;
 	}
 
 	if (MaxClients > 1u)
 	{
-		const int visibleClients = I_UsesDedicatedServerSlot() ? MaxClients - 1 : MaxClients;
+		const int visibleClients = I_GetVisibleMaxClients();
 		if (I_IsDedicatedServerMode())
 		{
 			Printf("Dedicated server for %d player%s\n", visibleClients, visibleClients == 1 ? "" : "s");
 		}
 		else
 		{
-			const int visiblePlayer = I_UsesDedicatedServerSlot() ? consoleplayer : consoleplayer + 1;
+			const int visiblePlayer = I_ToVisibleClientSlot(consoleplayer) + 1;
 			Printf("Player %d of %d\n", visiblePlayer, visibleClients);
 		}
 	}
@@ -5585,6 +6187,18 @@ DEFINE_ACTION_FUNCTION_NATIVE(_ScreenJobRunner, IsPlayerReady, IsPlayerReady)
 	PARAM_PROLOGUE;
 	PARAM_INT(player);
 	ACTION_RETURN_BOOL(IsPlayerReady(player));
+}
+
+static int IsPlayerReadyParticipant(int player)
+{
+	return Net_IsCutsceneReadyParticipant(player) && players[player].Bot == nullptr;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(_ScreenJobRunner, IsPlayerReadyParticipant, IsPlayerReadyParticipant)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(player);
+	ACTION_RETURN_BOOL(IsPlayerReadyParticipant(player));
 }
 
 static void ReadyPlayer()

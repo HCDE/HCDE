@@ -39,7 +39,7 @@ struct FHCDEServerRuntime
 	bool JoinMode = false;
 	bool DedicatedJoin = false;
 	bool NetWaitSilent = false;
-	bool HiddenServerSlot = false;
+	bool ReservedServerSlot = false;
 	bool MasterStateKnown = false;
 	bool MasterAdvertisingEnabled = false;
 	size_t ConfiguredMasters = 0;
@@ -153,13 +153,13 @@ void HCDE_ServerMode_SetSelectedIWAD(const char* iwadName)
 	Runtime.SelectedIWAD = iwadName != nullptr ? iwadName : "";
 }
 
-void HCDE_ServerMode_SetNetworkDetails(int visibleSlots, int internalSlots, int gamePort, bool hiddenServerSlot, const char* flowState)
+void HCDE_ServerMode_SetNetworkDetails(int visibleSlots, int internalSlots, int gamePort, bool reservedServerSlot, const char* flowState)
 {
 	HCDE_ServerMode_InitFromArgs();
 	Runtime.VisibleSlots = visibleSlots;
 	Runtime.InternalSlots = internalSlots;
 	Runtime.GamePort = gamePort;
-	Runtime.HiddenServerSlot = hiddenServerSlot;
+	Runtime.ReservedServerSlot = reservedServerSlot;
 	Runtime.FlowState = flowState != nullptr ? flowState : "";
 }
 
@@ -189,12 +189,12 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 		YesNo(Runtime.JoinMode),
 		YesNo(Runtime.DedicatedJoin),
 		YesNo(HCDE_ServerMode_ShouldSuppressRoomUI()));
-	Printf("HCDE server runtime [%s]: requested-slots=%d visible-slots=%d internal-slots=%d hidden-server-slot=%s port=%s flow=%s\n",
+	Printf("HCDE server runtime [%s]: requested-slots=%d visible-slots=%d internal-slots=%d reserved-server-slot=%s port=%s flow=%s\n",
 		phase != nullptr ? phase : "unknown",
 		Runtime.RequestedServerSlots,
 		Runtime.VisibleSlots,
 		Runtime.InternalSlots,
-		YesNo(Runtime.HiddenServerSlot),
+		YesNo(Runtime.ReservedServerSlot),
 		Runtime.GamePort > 0 ? FStringf("%d", Runtime.GamePort).GetChars() : "default",
 		TextOr(Runtime.FlowState, "unknown"));
 	Printf("HCDE server runtime [%s]: iwad-arg=%s selected-iwad=%s map=%s join-address=%s master=%s masters=%zu startup-ui=%s\n",

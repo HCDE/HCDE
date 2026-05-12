@@ -73,6 +73,7 @@
 #include "gameconfigfile.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_mod_compat.h"
 #include "hcde_servermode.h"
 #include "hu_stuff.h"
 #include "hw_clock.h"
@@ -1434,6 +1435,8 @@ void D_DoomLoop ()
 {
 	int lasttic = 0;
 
+	DebugTrace::Info("main", "entered D_DoomLoop");
+
 	// Clamp the timer to TICRATE until the playloop has been entered.
 	r_NoInterpolate = true;
 	Page.SetInvalid();
@@ -1470,12 +1473,14 @@ void D_DoomLoop ()
 
 			if (wantToRestart)
 			{
+				DebugTrace::Info("main", "restart request detected, exiting D_DoomLoop");
 				wantToRestart = false;
 				return;
 			}
 		}
 		catch (const CRecoverableError &error)
 		{
+			DebugTrace::Errorf("main", "CRecoverableError: %s", error.GetMessage() ? error.GetMessage() : "unknown");
 			if (error.GetMessage ())
 			{
 				Printf (static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "\n%s\n", error.GetMessage());
@@ -1484,6 +1489,7 @@ void D_DoomLoop ()
 		}
 		catch (const FileSystemException& error) // in case this propagates up to here it should be treated as a recoverable error.
 		{
+			DebugTrace::Errorf("main", "FileSystemException: %s", error.what() ? error.what() : "unknown");
 			if (error.what())
 			{
 				Printf(static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "\n%s\n", error.what());
@@ -1492,6 +1498,7 @@ void D_DoomLoop ()
 		}
 		catch (CVMAbortException &error)
 		{
+			DebugTrace::Error("main", "CVMAbortException occurred - stacktrace available");
 			error.MaybePrintMessage();
 			Printf(static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "%s", error.stacktrace.GetChars());
 			D_ErrorCleanup();
@@ -4235,6 +4242,7 @@ static int D_DoomMain_Internal (void)
 		GetCmdLineFiles(pwads, false); // [RL0] Update with files passed on the launcher extra args
 		// For now these need to remain verifiable over the network.
 		GetCmdLineFiles(pwads, true);
+		HCDE_ModCompat_AppendFiles(pwads, GameConfig);
 
 		if (!iwad_info) return 0;	// user exited the selection popup via cancel button.
 		if ((iwad_info->flags & GI_SHAREWARE) && pwads.size() > 0)
@@ -4310,7 +4318,7 @@ static int D_DoomMain_Internal (void)
 		}
 
 		D_DoomLoop ();		// this only returns if a 'restart' CCMD is given.
-		DebugTrace::Mark("startup", "left D_DoomLoop");
+		DebugTrace::Info("main", "exited D_DoomLoop (restart)");
 		//
 		// Clean up after a restart
 		//

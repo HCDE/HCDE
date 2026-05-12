@@ -71,6 +71,7 @@ $runtimeFiles = @(
     "hcdeserv.exe",
     "hcdemaster.exe",
     "hcde.pk3",
+    "hcde_mod_compat.pk3",
     "game_support.pk3",
     "brightmaps.pk3",
     "lights.pk3",
@@ -90,7 +91,7 @@ $soundfontsDir = Join-Path $stageDir "soundfonts"
 New-Item -Path $soundfontsDir -ItemType Directory | Out-Null
 Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir "soundfonts/hcde.sf2")) -Destination $soundfontsDir
 
-$docFiles = @("README.md", "LICENSE", "SECURITY.md", "docs/HCDE_GOLDEN_RULES.md", "docs/HCDE_MASTER_PROTOCOL.md", "docs/HCDE_MASTER_BOUNDARY_STAGE1_AUDIT.md", "docs/HCDE_NETCODE_STAGE15_SERVER_SNAPSHOT_PAYLOAD.md", "docs/HCDE_NETCODE_STAGE16_CLIENT_INPUT_RECORDS.md", "docs/HCDE_NETCODE_STAGE17_SERVER_SNAPSHOT_RECORDS.md", "docs/HCDE_NETCODE_STAGE18_CLIENT_INPUT_COMMAND_FIELDS.md", "docs/HCDE_NETCODE_STAGE19_CLIENT_INPUT_EVENT_RECORDS.md", "docs/HCDE_NETCODE_STAGE20_CLIENT_INPUT_EVENT_PAYLOADS.md", "docs/HCDE_NETCODE_STAGE21_SERVER_SNAPSHOT_COMMAND_RECORDS.md")
+$docFiles = @("README.md", "LICENSE", "SECURITY.md", "docs/HCDE_GOLDEN_RULES.md", "docs/HCDE_MASTER_PROTOCOL.md", "docs/HCDE_MASTER_BOUNDARY_STAGE1_AUDIT.md", "docs/HCDE_NETCODE_STAGE15_SERVER_SNAPSHOT_PAYLOAD.md", "docs/HCDE_NETCODE_STAGE16_CLIENT_INPUT_RECORDS.md", "docs/HCDE_NETCODE_STAGE17_SERVER_SNAPSHOT_RECORDS.md", "docs/HCDE_NETCODE_STAGE18_CLIENT_INPUT_COMMAND_FIELDS.md", "docs/HCDE_NETCODE_STAGE19_CLIENT_INPUT_EVENT_RECORDS.md", "docs/HCDE_NETCODE_STAGE20_CLIENT_INPUT_EVENT_PAYLOADS.md", "docs/HCDE_NETCODE_STAGE21_SERVER_SNAPSHOT_COMMAND_RECORDS.md", "docs/HCDE_NETCODE_STAGE22_DEDICATED_INPUT_AUTHORITY.md", "docs/HCDE_NETCODE_STAGE23_SERVER_WORLD_DELTAS.md", "docs/HCDE_NETCODE_STAGE24_BASELINE_REPAIR.md", "docs/HCDE_NETCODE_STAGE25_CLIENT_RECONCILIATION.md", "docs/HCDE_NETCODE_STAGE26_SLOTLESS_DEDICATED_BOUNDARY.md")
 foreach ($file in $docFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $repoRoot $file)) -Destination $stageDir
 }

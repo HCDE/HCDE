@@ -460,6 +460,7 @@ add_subdirectory( wadsrc )
 add_subdirectory( wadsrc_bm )
 add_subdirectory( wadsrc_lights )
 add_subdirectory( wadsrc_extra )
+add_subdirectory( wadsrc_mod_compat )
 add_subdirectory( wadsrc_widepix )
 
 if( ZMUSIC_SYSTEM_INSTALL )

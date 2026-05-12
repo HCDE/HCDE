@@ -48,6 +48,7 @@
 #include "hu_stuff.h"
 #include "p_saveg.h"
 #include "p_acs.h"
+#include "debugtrace.h"
 #include "d_protocol.h"
 #include "v_text.h"
 #include "s_sndseq.h"
@@ -562,12 +563,18 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 	bool wantFast;
 	unsigned int i;
 
+	DebugTrace::Infof("level", "G_InitNew: map=%s title=%s savegame=%d",
+		mapname, bTitleLevel ? "yes" : "no", savegamerestore);
+
 	primaryLevel->lightlists.wall_dlist.Clear();
 	primaryLevel->lightlists.flat_dlist.Clear();
 
 	// did we have any level before?
 	if (primaryLevel->info != nullptr)
+	{
+		DebugTrace::Debug("level", "unloading previous level before init");
 		staticEventManager.WorldUnloaded(FString());	// [MK] don't pass the new map, as it's not a level transition
+	}
 
 	UnlatchCVars ();
 	if (!savegamerestore)
@@ -608,6 +615,7 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 	// [RH] If this map doesn't exist, bomb out
 	if (!P_CheckMapData(mapname))
 	{
+		DebugTrace::Errorf("level", "map data not found: %s", mapname);
 		I_Error ("Could not find map %s\n", mapname);
 	}
 
@@ -665,6 +673,8 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 
 	if (!savegamerestore)
 		startpos = laststartpos = 0;
+
+	DebugTrace::Debugf("level", "calling G_DoLoadLevel: map=%s startpos=%d", mapname, startpos);
 	G_DoLoadLevel (mapname, startpos, false, !savegamerestore);
 
 	if (!savegamerestore && (gameinfo.gametype == GAME_Strife || (SBarInfoScript[SCRIPT_CUSTOM] != nullptr && SBarInfoScript[SCRIPT_CUSTOM]->GetGameType() == GAME_Strife)))
@@ -676,6 +686,8 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 				players[i].SetLogText("$TXT_FINDHELP");
 		}
 	}
+
+	DebugTrace::Info("level", "G_InitNew completed");
 }
 
 //

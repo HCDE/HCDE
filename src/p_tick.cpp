@@ -32,7 +32,9 @@
 #include "actorinlines.h"
 #include "g_game.h"
 #include "am_map.h"
+#include "hcde_servermode.h"
 #include "i_interface.h"
+#include "i_net.h"
 
 extern gamestate_t wipegamestate;
 extern uint8_t globalfreeze, globalchangefreeze;
@@ -53,6 +55,13 @@ void D_RunCutscene();
 
 void P_RunClientSideLogic()
 {
+	// Dedicated servers have no local HUD/view actor; modded status bars can
+	// dereference those client-only objects while ticking.
+	if (HCDE_ServerMode_IsDedicatedServer() || I_IsDedicatedServerMode())
+	{
+		return;
+	}
+
 	C_Ticker();
 	M_Ticker();
 

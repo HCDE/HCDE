@@ -71,6 +71,7 @@ CUSTOM_CVAR (Float, snd_superstereowidth, 0.45f, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 
 #ifdef _WIN32
 #define OPENALLIB "soft_oal.dll"
+#define OPENALLIB_ALT "OpenAL32.dll"
 #elif defined(__OpenBSD__)
 #define OPENALLIB "libopenal.so"
 #else
@@ -82,6 +83,11 @@ CUSTOM_CVAR (Float, snd_superstereowidth, 0.45f, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 // over Apple's OpenAL framework which lacks several important features
 #define OPENALLIB1 "libopenal.1.dylib"
 #define OPENALLIB2 "OpenAL.framework/OpenAL"
+#elif defined(_WIN32)
+#define OPENALLIB1 NicePath("$PROGDIR/" OPENALLIB).GetChars()
+#define OPENALLIB2 NicePath("$PROGDIR/" OPENALLIB_ALT).GetChars()
+#define OPENALLIB3 OPENALLIB
+#define OPENALLIB4 OPENALLIB_ALT
 #else // !__APPLE__
 #define OPENALLIB1 NicePath("$PROGDIR/" OPENALLIB).GetChars()
 #define OPENALLIB2 OPENALLIB
@@ -100,7 +106,11 @@ bool IsOpenALPresent()
 	if (!done)
 	{
 		done = true;
+#ifdef _WIN32
+		cached_result = OpenALModule.Load({OPENALLIB1, OPENALLIB2, OPENALLIB3, OPENALLIB4});
+#else
 		cached_result = OpenALModule.Load({OPENALLIB1, OPENALLIB2});
+#endif
 	}
 	return cached_result;
 #endif
@@ -605,7 +615,7 @@ ALCdevice *OpenALSoundRenderer::InitDevice()
 	}
 	else
 	{
-		Printf(TEXTCOLOR_ORANGE"Failed to load soft_oal.dll\n");
+		Printf(TEXTCOLOR_ORANGE"Failed to load OpenAL runtime\n");
 	}
 	return device;
 }

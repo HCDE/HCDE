@@ -107,7 +107,7 @@ FARG(server, "Multiplayer", "Starts a dedicated multiplayer server without the s
 FARG(netwaitsilent, "Multiplayer", "Suppresses the multiplayer connection status window.", "",
 	"Run the pregame network handshake without showing the old room/session window. Launchers use"
 	" this when starting a local client for a separate dedicated server.");
-FARG(dedicatedjoin, "Multiplayer", "Connects to a dedicated server with a hidden server slot.", "",
+FARG(dedicatedjoin, "Multiplayer", "Connects to a dedicated server with a reserved server authority slot.", "",
 	"Treat the network arbitrator as a transport-only slot. This is used by launchers when joining"
 	" HCDE's separate dedicated server executable so the server does not appear as an in-game player.");
 FARG(dup, "Multiplayer", "Send less player movement commands over the network.", "x",
@@ -551,7 +551,7 @@ static const char* ConnectFlowName(ENetConnectFlow flow)
 static int CountConnectedClients()
 {
 	int count = 0;
-	const int firstClient = DedicatedServerMode ? 1 : 0;
+	const int firstClient = I_GetFirstPlayableClientSlot();
 	for (int i = firstClient; i < MaxClients; ++i)
 	{
 		if (Connected[i].Status != CSTAT_NONE)
@@ -568,7 +568,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	snapshot.SessionState = ConnectFlowName(NetConnectFlowState);
 	snapshot.Version = GetVersionString();
 	snapshot.GitHash = GetGitHash();
-	snapshot.MaxPlayers = uint8_t(clamp<int>(DedicatedServerMode ? MaxClients - 1 : MaxClients, 0, UINT8_MAX));
+	snapshot.MaxPlayers = uint8_t(clamp<int>(I_GetVisibleMaxClients(), 0, UINT8_MAX));
 	snapshot.PlayerCount = uint8_t(clamp<int>(CountConnectedClients(), 0, UINT8_MAX));
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
@@ -581,7 +581,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	}
 
 	snapshot.Players.Reserve(snapshot.PlayerCount);
-	const int firstClient = DedicatedServerMode ? 1 : 0;
+	const int firstClient = I_GetFirstPlayableClientSlot();
 	for (int i = firstClient; i < MaxClients; ++i)
 	{
 		if (playeringame[i])
@@ -1174,9 +1174,9 @@ static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 // A new client has just entered the game, so add them to the player list.
 static void I_NetClientConnected(int client, unsigned int charLimit = 0u)
 {
-	if ((DedicatedServerMode || DedicatedJoinMode) && client == Net_Arbitrator)
+	if (I_IsServerReservedSlot(client))
 	{
-		Printf("%s:: Dedicated server slot ready.\n", DedicatedServerMode ? "NetServer" : "NetSession");
+		Printf("%s:: Dedicated server authority slot ready.\n", DedicatedServerMode ? "NetServer" : "NetSession");
 		return;
 	}
 
@@ -1184,7 +1184,7 @@ static void I_NetClientConnected(int client, unsigned int charLimit = 0u)
 
 	const char* name = Net_GetClientName(client, charLimit);
 	unsigned int flags = CFL_NONE;
-	if (client == 0)
+	if (client == Net_Arbitrator && !I_IsServerReservedSlot(client))
 		flags |= CFL_HOST;
 	if (client == consoleplayer)
 		flags |= CFL_CONSOLEPLAYER;
@@ -1206,6 +1206,11 @@ static void I_NetClientDisconnected(int client)
 
 static void I_NetUpdatePlayers(int current, int limit)
 {
+	if (I_UsesDedicatedServerSlot())
+	{
+		current = max(current - 1, 0);
+		limit = max(limit - 1, 0);
+	}
 	NetStartWindow::NetProgress(current, limit);
 }
 
@@ -2232,7 +2237,7 @@ static bool HostGame(int arg)
 	if ((unsigned)MaxClients > MAXPLAYERS)
 		I_FatalError("Cannot host a game with %u players. The limit is currently %lu", MaxClients, MAXPLAYERS);
 
-	HCDE_ServerMode_SetNetworkDetails(DedicatedServerMode ? MaxClients - 1 : MaxClients, MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-init" : "host-init");
+	HCDE_ServerMode_SetNetworkDetails(I_GetVisibleMaxClients(), MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-init" : "host-init");
 
 	GenerateGameID();
 	NetworkClients += 0;
@@ -2251,7 +2256,7 @@ static bool HostGame(int arg)
 	DebugTrace::Markf("net", "host network ready port=%u", static_cast<unsigned>(GamePort));
 	SV_InitMasters();
 	HCDE_ServerMode_SetMasterState(SV_IsMasterAdvertisingEnabled(), SV_GetMasterCount());
-	HCDE_ServerMode_SetNetworkDetails(DedicatedServerMode ? MaxClients - 1 : MaxClients, MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-waiting" : "host-waiting");
+	HCDE_ServerMode_SetNetworkDetails(I_GetVisibleMaxClients(), MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-waiting" : "host-waiting");
 	HCDE_ServerMode_PrintDiagnostics(DedicatedServerMode ? "dedicated-host" : "host");
 	SetConnectFlow(NCF_SERVER_WAITING);
 	I_NetInit(DedicatedServerMode ? "Starting dedicated server..." : "Hosting game...", true);
@@ -2271,7 +2276,7 @@ static bool HostGame(int arg)
 
 	// Now go
 	SetConnectFlow(NCF_SYNCING);
-	HCDE_ServerMode_SetNetworkDetails(DedicatedServerMode ? MaxClients - 1 : MaxClients, MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-syncing" : "syncing");
+	HCDE_ServerMode_SetNetworkDetails(I_GetVisibleMaxClients(), MaxClients, GamePort, DedicatedServerMode, DedicatedServerMode ? "server-syncing" : "syncing");
 	I_NetMessage(DedicatedServerMode ? "Starting dedicated game" : "Starting game");
 
 	// If the player force started with only themselves in the session, start the session
@@ -2316,7 +2321,7 @@ static bool HostGame(int arg)
 	}
 
 	I_NetDone();
-	I_NetLog("Total players: %d", DedicatedServerMode ? connectedPlayers - 1 : connectedPlayers);
+	I_NetLog("Total players: %d", I_UsesDedicatedServerSlot() ? max(connectedPlayers - 1, 0) : connectedPlayers);
 
 	return true;
 }
@@ -2905,9 +2910,9 @@ static bool JoinGame(int arg)
 	}
 
 	SetConnectFlow(NCF_SYNCING);
-	HCDE_ServerMode_SetNetworkDetails(DedicatedJoinMode ? MaxClients - 1 : MaxClients, MaxClients, GamePort, DedicatedJoinMode, DedicatedJoinMode ? "client-syncing" : "syncing");
+	HCDE_ServerMode_SetNetworkDetails(I_GetVisibleMaxClients(), MaxClients, GamePort, DedicatedJoinMode, DedicatedJoinMode ? "client-syncing" : "syncing");
 	HCDE_ServerMode_PrintDiagnostics(DedicatedJoinMode ? "dedicated-join" : "join");
-	I_NetLog("Total players: %u", DedicatedJoinMode ? MaxClients - 1 : MaxClients);
+	I_NetLog("Total players: %d", I_GetVisibleMaxClients());
 	I_NetDone();
 
 	return true;
@@ -2979,6 +2984,37 @@ bool I_IsDedicatedServerMode()
 bool I_UsesDedicatedServerSlot()
 {
 	return DedicatedServerMode || DedicatedJoinMode;
+}
+
+bool I_IsServerReservedSlot(int client)
+{
+	return I_UsesDedicatedServerSlot() && client == Net_Arbitrator;
+}
+
+int I_GetFirstPlayableClientSlot()
+{
+	// Slot zero remains the inherited server authority internally, but callers
+	// that enumerate playable clients should not rediscover that offset.
+	return I_UsesDedicatedServerSlot() ? Net_Arbitrator + 1 : 0;
+}
+
+int I_GetVisibleMaxClients()
+{
+	return I_UsesDedicatedServerSlot() ? max(MaxClients - 1, 0) : MaxClients;
+}
+
+int I_ToVisibleClientSlot(int client)
+{
+	if (I_UsesDedicatedServerSlot() && client > Net_Arbitrator)
+		return client - 1;
+	return client;
+}
+
+int I_ToInternalClientSlot(int visibleClient)
+{
+	if (I_UsesDedicatedServerSlot() && visibleClient >= 0)
+		return visibleClient + 1;
+	return visibleClient;
 }
 
 bool I_ClientUsesHCDEService(int client)

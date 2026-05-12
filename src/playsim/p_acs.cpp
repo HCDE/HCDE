@@ -42,6 +42,8 @@
 #include "g_levellocals.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_mod_compat.h"
+#include "i_net.h"
 #include "m_png.h"
 #include "p_acs.h"
 #include "p_effect.h"
@@ -4591,12 +4593,36 @@ int DLevelScript::GetPlayerInput(int playernum, int inputnum)
 		}
 		p = activator->player;
 	}
-	else if (playernum >= MAXPLAYERS || !Level->PlayerInGame(playernum))
-	{
-		return 0;
-	}
 	else
 	{
+		// Aliens Eradication hardcodes player 0 for its skip/use prompt. In
+		// HCDE dedicated games slot 0 is the server authority, so map it to
+		// the first real player only while that mod compatibility is active.
+		if (playernum == Net_Arbitrator
+			&& I_IsServerReservedSlot(playernum)
+			&& HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT))
+		{
+			int firstPlayable = I_GetFirstPlayableClientSlot();
+			if (firstPlayable >= 0 && firstPlayable < MAXPLAYERS && Level->PlayerInGame(firstPlayable))
+			{
+				playernum = firstPlayable;
+			}
+			else
+			{
+				for (int i = 0; i < MAXPLAYERS; ++i)
+				{
+					if (i != playernum && !I_IsServerReservedSlot(i) && Level->PlayerInGame(i))
+					{
+						playernum = i;
+						break;
+					}
+				}
+			}
+		}
+		if (playernum >= MAXPLAYERS || !Level->PlayerInGame(playernum))
+		{
+			return 0;
+		}
 		p = Level->Players[playernum];
 	}
 	if (p == NULL)
@@ -9885,11 +9911,13 @@ scriptwait:
 			break;
 
 		case PCD_GETSCREENWIDTH:
-			PushToStack (SCREENWIDTH);
+			PushToStack (screen != nullptr ? SCREENWIDTH : 320);
 			break;
 
 		case PCD_GETSCREENHEIGHT:
-			PushToStack (SCREENHEIGHT);
+			// Dedicated servers do not create a framebuffer, but ACS HUD helper
+			// opcodes can still run as part of gameplay scripts.
+			PushToStack (screen != nullptr ? SCREENHEIGHT : 200);
 			break;
 
 		case PCD_THING_PROJECTILE2:

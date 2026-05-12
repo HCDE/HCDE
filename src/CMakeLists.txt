@@ -1104,6 +1104,7 @@ set (PCH_SOURCES
 	common/engine/palettecontainer.cpp
 	common/engine/stringtable.cpp
 	common/engine/hcde_servermode.cpp
+	common/engine/hcde_mod_compat.cpp
 	common/engine/i_net.cpp
 	common/engine/sv_master.cpp
 	common/engine/i_protocol.cpp
