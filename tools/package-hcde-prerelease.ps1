@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.2.1",
+    [string]$Version = "0.2.2",
     [string]$Configuration = "RelWithDebInfo",
     [string]$OpenALSoftVersion = "1.25.2",
     [switch]$Build,
