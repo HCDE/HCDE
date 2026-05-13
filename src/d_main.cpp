@@ -27,6 +27,7 @@
 #include "i_net.h"
 #include "i_soundinternal.h"
 #include "debugtrace.h"
+#include "printf.h"
 
 #ifdef _WIN32
 #include <direct.h>
@@ -38,6 +39,8 @@
 
 #include <math.h>
 #include <assert.h>
+#include <stdarg.h>
+#include <string.h>
 
 #include "a_dynlight.h"
 #include "am_map.h"
@@ -3179,48 +3182,96 @@ void System_LanguageChanged(const char* lang)
 //
 //==========================================================================
 
+static void AppendCrashText(char*& cursor, char* end, const char* format, ...)
+{
+	if (cursor == nullptr || end == nullptr)
+		return;
+
+	if (cursor >= end)
+	{
+		*end = '\0';
+		cursor = end;
+		return;
+	}
+
+	const size_t remaining = static_cast<size_t>(end - cursor);
+	va_list args;
+	va_start(args, format);
+	const int result = myvsnprintf(cursor, remaining, format != nullptr ? format : "", args);
+	va_end(args);
+
+	if (result < 0)
+	{
+		*cursor = '\0';
+		return;
+	}
+
+	const size_t written = static_cast<size_t>(result);
+	if (written >= remaining)
+	{
+		cursor = end;
+		*cursor = '\0';
+		return;
+	}
+
+	cursor += written;
+}
+
 void System_CrashInfo(char* buffer, size_t bufflen, const char *lfstr)
 {
 	const char* arg;
-	char* const buffend = buffer + bufflen - 2;	// -2 for CRLF at end
 	int i;
 
-	buffer += mysnprintf(buffer, buffend - buffer, GAMENAME " version %s (%s)", GetVersionString(), GetGitHash());
+	if (buffer == nullptr || bufflen == 0)
+		return;
 
-	buffer += snprintf(buffer, buffend - buffer, "%sCommand line:", lfstr);
-	for (i = 0; i < Args->NumArgs(); ++i)
+	buffer[0] = '\0';
+	if (bufflen < 3)
+		return;
+
+	const char* const linefeed = lfstr != nullptr ? lfstr : "\n";
+	char* const buffend = buffer + bufflen - 2;	// -2 for CRLF at end
+
+	AppendCrashText(buffer, buffend, GAMENAME " version %s (%s)", GetVersionString(), GetGitHash());
+
+	AppendCrashText(buffer, buffend, "%sCommand line:", linefeed);
+	if (Args != nullptr)
 	{
-		buffer += snprintf(buffer, buffend - buffer, " %s", Args->GetArg(i));
+		for (i = 0; i < Args->NumArgs(); ++i)
+		{
+			AppendCrashText(buffer, buffend, " %s", Args->GetArg(i));
+		}
 	}
 
 	for (i = 0; (arg = fileSystem.GetResourceFileName(i)) != NULL; ++i)
 	{
-		buffer += mysnprintf(buffer, buffend - buffer, "%sWad %d: %s", lfstr, i, arg);
+		AppendCrashText(buffer, buffend, "%sWad %d: %s", linefeed, i, arg);
 	}
 
 	if (gamestate != GS_LEVEL && gamestate != GS_TITLELEVEL)
 	{
-		buffer += mysnprintf(buffer, buffend - buffer, "%s%sNot in a level.", lfstr, lfstr);
+		AppendCrashText(buffer, buffend, "%s%sNot in a level.", linefeed, linefeed);
 	}
 	else
 	{
-		buffer += mysnprintf(buffer, buffend - buffer, "%s%sCurrent map: %s", lfstr, lfstr, primaryLevel->MapName.GetChars());
+		AppendCrashText(buffer, buffend, "%s%sCurrent map: %s", linefeed, linefeed, primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<unknown>");
 
 		if (!viewactive)
 		{
-			buffer += mysnprintf(buffer, buffend - buffer, "%s%sView not active.", lfstr, lfstr);
+			AppendCrashText(buffer, buffend, "%s%sView not active.", linefeed, linefeed);
 		}
 		else
 		{
 			auto& vp = r_viewpoint;
-			buffer += mysnprintf(buffer, buffend - buffer, "%s%sviewx = %f", lfstr, lfstr, vp.Pos.X);
-			buffer += mysnprintf(buffer, buffend - buffer, "%sviewy = %f", lfstr, vp.Pos.Y);
-			buffer += mysnprintf(buffer, buffend - buffer, "%sviewz = %f", lfstr, vp.Pos.Z);
-			buffer += mysnprintf(buffer, buffend - buffer, "%sviewangle = %f", lfstr, vp.Angles.Yaw.Degrees());
+			AppendCrashText(buffer, buffend, "%s%sviewx = %f", linefeed, linefeed, vp.Pos.X);
+			AppendCrashText(buffer, buffend, "%sviewy = %f", linefeed, vp.Pos.Y);
+			AppendCrashText(buffer, buffend, "%sviewz = %f", linefeed, vp.Pos.Z);
+			AppendCrashText(buffer, buffend, "%sviewangle = %f", linefeed, vp.Angles.Yaw.Degrees());
 		}
 	}
-	DebugTrace::WriteCrashInfo(buffer, buffend - buffer, lfstr);
-	buffer += mysnprintf(buffer, buffend - buffer, "%s", lfstr);
+	DebugTrace::WriteCrashInfo(buffer, buffend - buffer, linefeed);
+	buffer += strlen(buffer);
+	AppendCrashText(buffer, buffend, "%s", linefeed);
 	*buffer = 0;
 }
 

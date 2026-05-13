@@ -1,6 +1,7 @@
 param(
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.2.1",
     [string]$Configuration = "RelWithDebInfo",
+    [string]$OpenALSoftVersion = "1.25.2",
     [switch]$Build,
     [switch]$IncludeSymbols
 )
@@ -35,6 +36,40 @@ function Assert-ChildPath {
     }
 
     return $resolvedChild
+}
+
+function Resolve-OpenALSoftRuntime {
+    param(
+        [string]$BuildRoot,
+        [string]$Version
+    )
+
+    $depsDir = Join-Path $BuildRoot "deps"
+    if (-not (Test-Path -LiteralPath $depsDir)) {
+        New-Item -Path $depsDir -ItemType Directory | Out-Null
+    }
+    $depsDir = Resolve-RequiredPath $depsDir
+
+    $archiveName = "openal-soft-$Version-bin.zip"
+    $archivePath = Join-Path $depsDir $archiveName
+    $extractDir = Join-Path $depsDir "openal-soft-$Version-bin"
+    $archiveUrl = "https://openal-soft.org/openal-binaries/$archiveName"
+
+    if (-not (Test-Path -LiteralPath $archivePath)) {
+        Write-Host "Downloading OpenAL Soft $Version..."
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath
+    }
+
+    if (-not (Test-Path -LiteralPath $extractDir)) {
+        New-Item -Path $extractDir -ItemType Directory | Out-Null
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+    }
+
+    $payloadRoot = Join-Path $extractDir "openal-soft-$Version-bin"
+    [pscustomobject]@{
+        Dll = Resolve-RequiredPath (Join-Path $payloadRoot "bin/Win64/soft_oal.dll")
+        License = Resolve-RequiredPath (Join-Path $payloadRoot "COPYING")
+    }
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
@@ -94,6 +129,10 @@ foreach ($file in $docFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $repoRoot $file)) -Destination $stageDir
 }
 
+$openALSoft = Resolve-OpenALSoftRuntime -BuildRoot $buildRoot -Version $OpenALSoftVersion
+Copy-Item -LiteralPath $openALSoft.Dll -Destination $stageDir
+Copy-Item -LiteralPath $openALSoft.License -Destination (Join-Path $stageDir "OPENAL-SOFT-COPYING.txt")
+
 @"
 HCDE $Version
 
@@ -104,6 +143,7 @@ Included:
 - hcdeserv.exe
 - HCDE runtime PK3 files
 - FM bank and soundfont assets
+- OpenAL Soft runtime for client audio
 
 Bring your own IWAD, such as DOOM2.WAD.
 

@@ -102,6 +102,7 @@ static bool ChannelMatchesFilter(const char* channel, const char* channelFilter)
 
 	// Supports multiple channels separated by commas, matching debugtrace_filter.
 	const char* start = channelFilter;
+	bool hadFilter = false;
 	while (*start != '\0')
 	{
 		const char* end = start;
@@ -116,7 +117,12 @@ static bool ChannelMatchesFilter(const char* channel, const char* channelFilter)
 		}
 
 		if (filterChannel.IsEmpty())
-			return true;
+		{
+			start = (*end != '\0') ? end + 1 : end;
+			continue;
+		}
+
+		hadFilter = true;
 
 		if (channel != nullptr && filterChannel.CompareNoCase(channel) == 0)
 			return true;
@@ -124,7 +130,7 @@ static bool ChannelMatchesFilter(const char* channel, const char* channelFilter)
 		start = (*end != '\0') ? end + 1 : end;
 	}
 
-	return false;
+	return !hadFilter;
 }
 
 static bool ShouldChannelBeLogged(const char* channel)
@@ -141,8 +147,8 @@ static bool ShouldSeverityBeLogged(DebugTrace::Severity severity)
 	if (!debugtrace_enable)
 		return false;
 
-	const int minSeverity = debugtrace_minseverity;
-	return static_cast<int>(severity) >= max(minSeverity, 0);
+	const int minSeverity = clamp<int>(debugtrace_minseverity, 0, 3);
+	return static_cast<int>(severity) >= minSeverity;
 }
 
 static void UpdateStatistics(const char* channel, DebugTrace::Severity severity)
@@ -226,6 +232,41 @@ static void PrintEntry(uint64_t serial, const char* channelFilter, DebugTrace::S
 		SeverityName(snapshot.SeverityLevel),
 		snapshot.Channel,
 		snapshot.Message);
+}
+
+static void AppendTraceText(char*& cursor, char* end, const char* format, ...)
+{
+	if (cursor == nullptr || end == nullptr)
+		return;
+
+	if (cursor >= end)
+	{
+		*end = '\0';
+		cursor = end;
+		return;
+	}
+
+	const size_t remaining = static_cast<size_t>(end - cursor);
+	va_list args;
+	va_start(args, format);
+	const int result = myvsnprintf(cursor, remaining, format != nullptr ? format : "", args);
+	va_end(args);
+
+	if (result < 0)
+	{
+		*cursor = '\0';
+		return;
+	}
+
+	const size_t written = static_cast<size_t>(result);
+	if (written >= remaining)
+	{
+		cursor = end;
+		*cursor = '\0';
+		return;
+	}
+
+	cursor += written;
 }
 }
 
@@ -440,21 +481,21 @@ void WriteCrashInfo(char* buffer, size_t bufflen, const char* lfstr)
 	const uint64_t lastSerial = NextSerial.load(std::memory_order_acquire) - 1u;
 	if (lastSerial == 0u)
 	{
-		buffer += mysnprintf(buffer, end - buffer, "%sRecent engine trace: <empty>", lfstr);
+		AppendTraceText(buffer, end, "%sRecent engine trace: <empty>", lfstr != nullptr ? lfstr : "\n");
 		*buffer = 0;
 		return;
 	}
 
 	const uint64_t firstSerial = (lastSerial > TraceCapacity) ? (lastSerial - TraceCapacity + 1u) : 1u;
-	buffer += mysnprintf(buffer, end - buffer, "%sRecent engine trace:", lfstr);
+	AppendTraceText(buffer, end, "%sRecent engine trace:", lfstr != nullptr ? lfstr : "\n");
 	for (uint64_t serial = firstSerial; serial <= lastSerial && buffer < end; ++serial)
 	{
 		TraceSnapshot snapshot;
 		if (!ReadEntrySnapshot(serial, nullptr, Severity::Debug, snapshot))
 			continue;
 
-		buffer += mysnprintf(buffer, end - buffer, "%s[%10llu ms][0x%08llX][%5s] %s: %s",
-			lfstr,
+		AppendTraceText(buffer, end, "%s[%10llu ms][0x%08llX][%5s] %s: %s",
+			lfstr != nullptr ? lfstr : "\n",
 			static_cast<unsigned long long>(snapshot.Milliseconds),
 			static_cast<unsigned long long>(snapshot.ThreadStamp & 0xffffffffull),
 			SeverityName(snapshot.SeverityLevel),
