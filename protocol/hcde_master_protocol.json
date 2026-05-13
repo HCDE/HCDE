@@ -1,6 +1,6 @@
 {
   "name": "HCDE master discovery protocol",
-  "version": 1,
+  "version": 2,
   "byteOrder": "little",
   "defaultMasterHost": "hcde.servebeer.com",
   "defaultMasterPort": 15000,
@@ -33,6 +33,107 @@
         { "name": "serverAddress", "offset": 6, "size": 4, "type": "ipv4", "endian": "network", "repeat": "serverCount" },
         { "name": "serverPort", "offset": 10, "size": 2, "type": "uint16", "endian": "little", "repeat": "serverCount" }
       ]
+    }
+  },
+  "nms1": {
+    "magic": "NMS1",
+    "version": 1,
+    "byteOrder": "big",
+    "maxPacketSize": 1200,
+    "headerSize": 16,
+    "challengeTokenSize": 32,
+    "entryTokenSize": 32,
+    "defaultProtocolFamily": "raw",
+    "maxProtocolFamilyBytes": 32,
+    "maxBuildLabelBytes": 64,
+    "maxDisplayNameBytes": 96,
+    "header": [
+      { "name": "magic", "offset": 0, "size": 4, "type": "ascii" },
+      { "name": "version", "offset": 4, "size": 1, "type": "uint8" },
+      { "name": "messageType", "offset": 5, "size": 1, "type": "uint8" },
+      { "name": "flags", "offset": 6, "size": 2, "type": "uint16", "endian": "big" },
+      { "name": "requestId", "offset": 8, "size": 4, "type": "uint32", "endian": "big" },
+      { "name": "payloadLength", "offset": 12, "size": 2, "type": "uint16", "endian": "big" },
+      { "name": "reserved", "offset": 14, "size": 2, "type": "uint16", "endian": "big" }
+    ],
+    "messageTypes": {
+      "challengeRequest": 1,
+      "challengeResponse": 2,
+      "register": 3,
+      "registerAck": 4,
+      "heartbeat": 5,
+      "heartbeatAck": 6,
+      "unregister": 7,
+      "unregisterAck": 8,
+      "listRequest": 9,
+      "listResponse": 10,
+      "error": 11
+    },
+    "challengePurposes": {
+      "registration": 1,
+      "listQuery": 2
+    },
+    "fields": {
+      "purpose": 1,
+      "challengeIssuedUnix": 2,
+      "challengeToken": 3,
+      "protocolFamily": 16,
+      "gamePort": 17,
+      "queryPort": 18,
+      "entryToken": 19,
+      "currentPlayers": 20,
+      "maxPlayers": 21,
+      "serverFlags": 22,
+      "publicIp": 23,
+      "buildLabel": 24,
+      "displayName": 25,
+      "cursor": 31,
+      "pageSize": 32,
+      "entryCount": 33,
+      "totalCount": 34,
+      "ttlSeconds": 35,
+      "errorCode": 100,
+      "errorText": 101,
+      "entries": 200
+    },
+    "errorCodes": {
+      "badPacket": 1,
+      "unsupportedVersion": 2,
+      "unknownMessage": 3,
+      "missingField": 4,
+      "invalidField": 5,
+      "challengeRequired": 6,
+      "challengeInvalid": 7,
+      "rateLimited": 8,
+      "privateAddress": 9,
+      "entryLimit": 10,
+      "staleEntry": 11,
+      "tokenInvalid": 12,
+      "serverBusy": 13
+    },
+    "serverAdvertiser": {
+      "challengeRequestFields": ["purpose"],
+      "registerFields": [
+        "challengeIssuedUnix",
+        "challengeToken",
+        "protocolFamily",
+        "gamePort",
+        "queryPort",
+        "currentPlayers",
+        "maxPlayers",
+        "serverFlags",
+        "buildLabel",
+        "displayName"
+      ],
+      "heartbeatFields": [
+        "protocolFamily",
+        "gamePort",
+        "entryToken",
+        "currentPlayers",
+        "maxPlayers",
+        "serverFlags"
+      ],
+      "unregisterFields": ["protocolFamily", "gamePort", "entryToken"]
     }
   },
   "boundary": {

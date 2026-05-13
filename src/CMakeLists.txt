@@ -1107,6 +1107,7 @@ set (PCH_SOURCES
 	common/engine/hcde_mod_compat.cpp
 	common/engine/i_net.cpp
 	common/engine/sv_master.cpp
+	common/engine/sv_master_nms1.cpp
 	common/engine/i_protocol.cpp
 	common/engine/i_interface.cpp
 	common/engine/renderstyle.cpp
