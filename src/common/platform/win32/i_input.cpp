@@ -573,10 +573,14 @@ void I_GetWindowEvent()
 		if (mess.message == WM_QUIT)
 			throw CExitEvent(mess.wParam);
 
+#ifdef HCDE_DEDICATED_SERVER
+		TranslateMessage (&mess);
+#else
 		if (GUICapture)
 		{
 			TranslateMessage (&mess);
 		}
+#endif
 		DispatchMessage (&mess);
 	}
 }

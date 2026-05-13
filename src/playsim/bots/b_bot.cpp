@@ -151,7 +151,7 @@ CCMD (addbot)
 		return;
 	}
 
-	if (!players[consoleplayer].settings_controller)
+	if (!Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can add bots\n");
 		return;
@@ -197,7 +197,7 @@ void FCajunMaster::ClearPlayer (int i, bool keepTeam)
 
 CCMD (removebots)
 {
-	if (!players[consoleplayer].settings_controller)
+	if (!Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can remove bots\n");
 		return;
@@ -211,7 +211,7 @@ CCMD (freeze)
 	if (CheckCheatmode ())
 		return;
 
-	if (netgame && !players[consoleplayer].settings_controller)
+	if (netgame && !Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can use freeze mode\n");
 		return;

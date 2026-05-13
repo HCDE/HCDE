@@ -37,6 +37,7 @@
 #include "am_map.h"
 #include "c_dispatch.h"
 #include "i_interface.h"
+#include "i_net.h"
 
 #include "p_setup.h"
 #include "p_local.h"
@@ -1580,7 +1581,7 @@ void FLevelLocals::WorldDone (void)
 	//Added by mc
 	if (deathmatch)
 	{
-		BotInfo.RemoveAllBots(this, consoleplayer != Net_Arbitrator);
+		BotInfo.RemoveAllBots(this, !I_IsLocalHCDEServiceAuthority());
 	}
 
 }

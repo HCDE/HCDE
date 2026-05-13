@@ -651,7 +651,7 @@ bool D_SendServerInfoChange (FBaseCVar *cvar, UCVarValue value, ECVarType type)
 {
 	if (gamestate != GS_STARTUP && !demoplayback && !savegamerestore)
 	{
-		if (netgame && !players[consoleplayer].settings_controller)
+		if (netgame && !Net_LocalCanControlSettings())
 		{
 			Printf("Only setting controllers can change server CVAR %s\n", cvar->GetName());
 			cvar->MarkSafe();
@@ -681,7 +681,7 @@ bool D_SendServerFlagChange (FBaseCVar *cvar, int bitnum, bool set, bool silent)
 {
 	if (gamestate != GS_STARTUP && !demoplayback && !savegamerestore)
 	{
-		if (netgame && !players[consoleplayer].settings_controller)
+		if (netgame && !Net_LocalCanControlSettings())
 		{
 			if (!silent)
 			{
@@ -1020,17 +1020,18 @@ CCMD(playerinfo)
 	{
 		for (auto i : inGame)
 		{
+			const bool isAuthority = I_IsHCDEServiceAuthoritySlot(i);
 			Printf("%d. %s", i, players[i].userinfo.GetName());
-			if (i == consoleplayer || i == Net_Arbitrator || players[i].Bot != nullptr || players[i].settings_controller)
+			if (i == consoleplayer || isAuthority || players[i].Bot != nullptr || players[i].settings_controller)
 			{
 				Printf(" [");
 				if (i == consoleplayer)
 					Printf("*");
-				if (i == Net_Arbitrator)
-					Printf("H");
+				if (isAuthority)
+					Printf("A");
 				if (players[i].Bot != nullptr)
 					Printf("B");
-				else if (players[i].settings_controller && i != Net_Arbitrator)
+				else if (players[i].settings_controller && !isAuthority)
 					Printf("C");
 				Printf("]");
 			}
@@ -1058,9 +1059,10 @@ CCMD(playerinfo)
 		}
 
 		const userinfo_t& info = players[i].userinfo;
+		const bool isAuthority = I_IsHCDEServiceAuthoritySlot(i);
 
 		// Print special info
-		Printf("%20s: %s\n",	  "Host", i == Net_Arbitrator ? "Yes" : "No");
+		Printf("%20s: %s\n",	  "Authority", isAuthority ? "Yes" : "No");
 		Printf("%20s: %s\n",	  "Console Player", i == consoleplayer ? "Yes" : "No");
 		Printf("%20s: %s\n",	  "Bot", players[i].Bot != nullptr ? "Yes" : "No");
 		Printf("%20s: %s\n",	  "Settings Controller", players[i].settings_controller && players[i].Bot == nullptr ? "Yes" : "No");

@@ -1430,7 +1430,7 @@ if( MSVC )
 		set( LINKERSTUFF "${LINKERSTUFF} /MAP" )
 	endif()
 	set_target_properties(zdoom PROPERTIES LINK_FLAGS "${LINKERSTUFF} ${ZDOOM_SUBSYSTEM_FLAGS}")
-	set_target_properties(hcdeserv PROPERTIES LINK_FLAGS "${LINKERSTUFF} /SUBSYSTEM:CONSOLE /ENTRY:wmainCRTStartup")
+	set_target_properties(hcdeserv PROPERTIES LINK_FLAGS "${LINKERSTUFF} /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup")
 
 	add_custom_command(TARGET zdoom POST_BUILD
 		COMMAND "mt.exe" -manifest \"${CMAKE_CURRENT_SOURCE_DIR}\\common\\platform\\win32\\manifest.xml\" -outputresource:\"$<TARGET_FILE:zdoom>\"\;\#1

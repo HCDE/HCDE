@@ -334,7 +334,7 @@ CCMD (changemap)
 		return;
 	}
 
-	if (!players[consoleplayer].settings_controller && netgame)
+	if (netgame && !Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can change the map.\n");
 		return;
@@ -396,7 +396,7 @@ CCMD (changeskill)
 		return;
 	}
 
-	if (!players[consoleplayer].settings_controller && netgame)
+	if (netgame && !Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can change the skill.\n");
 		return;

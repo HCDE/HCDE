@@ -39,9 +39,19 @@ client IDs without re-deriving the dedicated-server offset each time.
 
 ## Remaining Work
 
-- Migrate live packet routing away from the inherited `Net_Arbitrator` player
-  index.
-- Replace server-owned `players[Net_Arbitrator]` state with non-player server
-  session state.
+- Stage 27 migrated live packet routing behind explicit HCDE authority-route
+  helpers.
+- Stage 28 moved dedicated-server-owned settings authority state into
+  non-player server session state.
+- Stage 29 moved HCDE service/live authority lookups behind a separate service
+  authority identity boundary.
+- Stage 30 moved the packet-size, receive, disconnect, and level-start boundary
+  onto that service authority identity.
+- Stage 31 moved packet building and tic balancing onto service-authority
+  helpers.
+- Stage 32 moved local quit and host-migration packet emission onto
+  service-authority helpers.
+- Stage 33 moved read-only status text, cutscene ready ownership, and ping
+  visibility onto service-authority helpers.
 - Drop the reserved internal slot once startup, sync, host migration, and live
   replication no longer need a player-backed arbitrator.

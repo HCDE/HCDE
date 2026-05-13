@@ -532,10 +532,6 @@
 		PLAYERINFO_FVIEWBOB,
 	};
 
-
-
-extern int Net_Arbitrator;
-
 FRandom pr_acs ("ACS");
 FCRandom pr_csacs("CSACS");
 
@@ -4598,7 +4594,7 @@ int DLevelScript::GetPlayerInput(int playernum, int inputnum)
 		// Aliens Eradication hardcodes player 0 for its skip/use prompt. In
 		// HCDE dedicated games slot 0 is the server authority, so map it to
 		// the first real player only while that mod compatibility is active.
-		if (playernum == Net_Arbitrator
+		if (I_IsHCDEServiceAuthoritySlot(playernum)
 			&& I_IsServerReservedSlot(playernum)
 			&& HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT))
 		{
@@ -5019,10 +5015,10 @@ void DLevelScript::DoSetCVar(FBaseCVar *cvar, int value, bool is_string, bool fo
 	UCVarValue val;
 	ECVarType type;
 
-	// For serverinfo variables, only the arbitrator should set it.
+	// For serverinfo variables, only the service authority should set it.
 	// The actual change to this cvar will not show up until it's
 	// been replicated to all peers.
-	if ((cvar->GetFlags() & CVAR_SERVERINFO) && consoleplayer != Net_Arbitrator)
+	if ((cvar->GetFlags() & CVAR_SERVERINFO) && !I_IsLocalHCDEServiceAuthority())
 	{
 		return;
 	}
@@ -10648,7 +10644,7 @@ int P_StartScript (FLevelLocals *Level, AActor *who, line_t *where, int script, 
 				{
 					Printf(PRINT_BOLD, "Non-net scripts are currently not requestable\n");
 				}
-				else if (consoleplayer == Net_Arbitrator && !IsClientSideScript(*scriptdata))
+				else if (I_IsLocalHCDEServiceAuthority() && !IsClientSideScript(*scriptdata))
 				{
 					Printf(PRINT_BOLD, "%s tried to puke %s (\n",
 						who->player->userinfo.GetName(), ScriptPresentation(script).GetChars());

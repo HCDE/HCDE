@@ -28,11 +28,11 @@
 
 /** Lots of different version numbers **/
 
-#define VERSIONSTR "5.0.0-pre"
+#define VERSIONSTR "0.2.0"
 
 // The version as seen in the Windows resource
-#define RC_FILEVERSION 4,9999,9999,0
-#define RC_PRODUCTVERSION 4,9999,9999,0
+#define RC_FILEVERSION 0,2,0,0
+#define RC_PRODUCTVERSION 0,2,0,0
 #define RC_PRODUCTVERSION2 VERSIONSTR
 // These are for content versioning.
 #define VER_MAJOR 5

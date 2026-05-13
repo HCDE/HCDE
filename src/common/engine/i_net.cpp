@@ -66,8 +66,26 @@
 #include "playsim/d_player.h"
 #include "filesystem.h"
 
+#if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
+extern void I_PumpDedicatedServerConsoleWindow();
+extern void I_SetDedicatedServerConsoleStatus(const char* status);
+#endif
+
 EXTERN_CVAR(Int, fraglimit)
 EXTERN_CVAR(Float, timelimit)
+CVAR(String, sv_hostname, GAMENAME " server", CVAR_ARCHIVE | CVAR_SERVERINFO)
+CVAR(String, sv_motd, "Welcome to " GAMENAME, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CUSTOM_CVAR(Int, sv_maxplayers, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 0)
+	{
+		self = 0;
+	}
+	else if (self > MAXPLAYERS - 1)
+	{
+		self = MAXPLAYERS - 1;
+	}
+}
 
 /* [Petteri] Get more portable: */
 #ifndef _WIN32
@@ -285,6 +303,8 @@ static ENetConnectFlow NetConnectFlowState = NCF_IDLE;
 static bool DedicatedServerMode = false;
 static bool SilentNetStartMode = false;
 static bool DedicatedJoinMode = false;
+static bool DedicatedServerStartRequested = false;
+static bool DedicatedServerAbortRequested = false;
 
 bool netgame = false;
 bool multiplayer = false;
@@ -563,13 +583,17 @@ static int CountConnectedClients()
 static FServerQuerySnapshot BuildServerQuerySnapshot()
 {
 	FServerQuerySnapshot snapshot = {};
-	snapshot.HostName = FString(GAMENAME " server");
+	const char* hostname = sv_hostname;
+	snapshot.HostName = hostname != nullptr && hostname[0] != 0 ? FString(hostname) : FString(GAMENAME " server");
 	snapshot.MapName = level.LevelName.IsNotEmpty() ? level.LevelName : FString("unknown");
 	snapshot.SessionState = ConnectFlowName(NetConnectFlowState);
 	snapshot.Version = GetVersionString();
 	snapshot.GitHash = GetGitHash();
-	snapshot.MaxPlayers = uint8_t(clamp<int>(I_GetVisibleMaxClients(), 0, UINT8_MAX));
-	snapshot.PlayerCount = uint8_t(clamp<int>(CountConnectedClients(), 0, UINT8_MAX));
+	const int connectedClients = CountConnectedClients();
+	const int visibleMaxClients = I_GetVisibleMaxClients();
+	const int advertisedMaxClients = sv_maxplayers > 0 ? clamp<int>(sv_maxplayers, connectedClients, visibleMaxClients) : visibleMaxClients;
+	snapshot.MaxPlayers = uint8_t(clamp<int>(advertisedMaxClients, 0, UINT8_MAX));
+	snapshot.PlayerCount = uint8_t(clamp<int>(connectedClients, 0, UINT8_MAX));
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
 	snapshot.Teamplay = teamplay;
@@ -1139,6 +1163,12 @@ static void I_NetError(const char* error)
 static void I_NetInit(const char* msg, bool host)
 {
 	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
+#if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
+	if (DedicatedServerMode)
+	{
+		I_SetDedicatedServerConsoleStatus(msg);
+	}
+#endif
 	if (!DedicatedServerMode && !SilentNetStartMode)
 	{
 		HCDE_ServerMode_GuardClientSubsystem("network session window");
@@ -1151,6 +1181,12 @@ static void I_NetInit(const char* msg, bool host)
 static void I_NetMessage(const char* msg)
 {
 	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
+#if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
+	if (DedicatedServerMode)
+	{
+		I_SetDedicatedServerConsoleStatus(msg);
+	}
+#endif
 	if (!DedicatedServerMode && !SilentNetStartMode)
 	{
 		HCDE_ServerMode_GuardClientSubsystem("network session message");
@@ -1165,8 +1201,24 @@ static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 	if (DedicatedServerMode || SilentNetStartMode)
 	{
 		while (!loopCallback(data))
+		{
+#if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
+			if (DedicatedServerMode)
+			{
+				I_PumpDedicatedServerConsoleWindow();
+				if (DedicatedServerAbortRequested)
+					return false;
+			}
+#endif
 			Sleep(1);
-		return true;
+		}
+#if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
+		if (DedicatedServerMode)
+		{
+			I_PumpDedicatedServerConsoleWindow();
+		}
+#endif
+		return !DedicatedServerAbortRequested;
 	}
 	return NetStartWindow::NetLoop(loopCallback, data);
 }
@@ -1184,7 +1236,7 @@ static void I_NetClientConnected(int client, unsigned int charLimit = 0u)
 
 	const char* name = Net_GetClientName(client, charLimit);
 	unsigned int flags = CFL_NONE;
-	if (client == Net_Arbitrator && !I_IsServerReservedSlot(client))
+	if (I_IsHCDEServiceAuthoritySlot(client) && !I_IsServerReservedSlot(client))
 		flags |= CFL_HOST;
 	if (client == consoleplayer)
 		flags |= CFL_CONSOLEPLAYER;
@@ -1216,6 +1268,8 @@ static void I_NetUpdatePlayers(int current, int limit)
 
 static bool I_ShouldStartNetGame()
 {
+	if (DedicatedServerMode)
+		return DedicatedServerStartRequested;
 	return NetStartWindow::ShouldStartNet();
 }
 
@@ -1398,10 +1452,10 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 			}
 			else
 			{
-				// The remote node aborted unexpectedly, so pretend it sent an exit packet. If it was the host,
-				// just consider the game too bricked to continue since the host has to determine the new host properly.
-				if (client == Net_Arbitrator)
-					I_NetError("Host unexpectedly disconnected");
+				// The remote node aborted unexpectedly, so pretend it sent an exit packet. If it was the
+				// authority, the game is too bricked to continue because authority migration owns recovery.
+				if (I_IsHCDEServiceAuthoritySlot(client))
+					I_NetError("Authority unexpectedly disconnected");
 
 				NetBuffer[0] = NCMD_EXIT;
 				msgSize = 1;
@@ -1680,7 +1734,7 @@ static bool DropClientForHCDETimeout(int client, int* connectedPlayers, const ch
 
 void HandleIncomingConnection()
 {
-	if (consoleplayer != Net_Arbitrator || RemoteClient == -1)
+	if (!I_IsLocalHCDEServiceAuthority() || RemoteClient == -1)
 		return;
 
 	if (Connected[RemoteClient].Status == CSTAT_READY)
@@ -1703,9 +1757,15 @@ void HandleIncomingConnection()
 
 static bool Host_CheckForConnections(void* connected)
 {
-	const bool forceStarting = I_ShouldStartNetGame();
 	const bool hasPassword = strlen(net_password) > 0;
 	int* connectedPlayers = (int*)connected;
+	bool forceStarting = I_ShouldStartNetGame();
+	if (DedicatedServerMode && forceStarting && *connectedPlayers <= 1)
+	{
+		DedicatedServerStartRequested = false;
+		forceStarting = false;
+		Printf("NetServer:: Start requested, but no playable clients are connected yet.\n");
+	}
 
 	TArray<int> toBoot = {};
 	I_GetKickClients(toBoot);
@@ -2125,7 +2185,12 @@ static bool Host_CheckForConnections(void* connected)
 		}
 	}
 
-	return ready && (*connectedPlayers >= MaxClients || forceStarting);
+	const bool shouldStart = ready && (*connectedPlayers >= MaxClients || forceStarting);
+	if (shouldStart && forceStarting)
+	{
+		DedicatedServerStartRequested = false;
+	}
+	return shouldStart;
 }
 
 static bool Host_CheckStartGameAcks(void* connected)
@@ -2220,6 +2285,12 @@ static void SendAbort()
 static bool HostGame(int arg)
 {
 	DebugTrace::Markf("net", "host request arg=%d", arg);
+	DedicatedServerStartRequested = false;
+	if (DedicatedServerAbortRequested)
+	{
+		DebugTrace::Mark("net", "host request cancelled before network start");
+		throw CExitEvent(0);
+	}
 	int requestedClients = (arg < Args->NumArgs()) ? atoi(Args->GetArg(arg)) : 0;
 	if (DedicatedServerMode)
 	{
@@ -2560,7 +2631,8 @@ static bool Guest_ContactHost(void* unused)
 				const int assigned = NetBuffer[HCDEServiceHeaderSize];
 				const int connectedPlayers = NetBuffer[HCDEServiceHeaderSize + 1u];
 				const int announcedMaxClients = NetBuffer[HCDEServiceHeaderSize + 2u];
-				if (assigned <= Net_Arbitrator || assigned >= announcedMaxClients || announcedMaxClients > int(MAXPLAYERS))
+				const int firstPlayable = I_GetFirstPlayableClientSlot();
+				if (assigned < firstPlayable || assigned >= announcedMaxClients || announcedMaxClients > int(MAXPLAYERS))
 				{
 					DebugTrace::Markf("net", "ignored invalid HCDE console player assignment slot=%d max=%d", assigned, announcedMaxClients);
 					break;
@@ -2981,6 +3053,27 @@ bool I_IsDedicatedServerMode()
 	return DedicatedServerMode;
 }
 
+void I_DedicatedServerRequestStart()
+{
+	if (!DedicatedServerMode)
+	{
+		Printf("NetServer:: Start request ignored because this is not a dedicated server.\n");
+		return;
+	}
+	DedicatedServerStartRequested = true;
+}
+
+void I_DedicatedServerRequestAbort()
+{
+	if (!DedicatedServerMode)
+	{
+		DedicatedServerAbortRequested = true;
+		Printf("NetServer:: Stop request queued while dedicated server mode initializes.\n");
+		return;
+	}
+	DedicatedServerAbortRequested = true;
+}
+
 bool I_UsesDedicatedServerSlot()
 {
 	return DedicatedServerMode || DedicatedJoinMode;
@@ -2988,14 +3081,13 @@ bool I_UsesDedicatedServerSlot()
 
 bool I_IsServerReservedSlot(int client)
 {
-	return I_UsesDedicatedServerSlot() && client == Net_Arbitrator;
+	return I_UsesDedicatedServerSlot() && client == I_GetHCDEServiceAuthoritySlot();
 }
 
 int I_GetFirstPlayableClientSlot()
 {
-	// Slot zero remains the inherited server authority internally, but callers
-	// that enumerate playable clients should not rediscover that offset.
-	return I_UsesDedicatedServerSlot() ? Net_Arbitrator + 1 : 0;
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	return I_UsesDedicatedServerSlot() ? authoritySlot + 1 : 0;
 }
 
 int I_GetVisibleMaxClients()
@@ -3005,14 +3097,16 @@ int I_GetVisibleMaxClients()
 
 int I_ToVisibleClientSlot(int client)
 {
-	if (I_UsesDedicatedServerSlot() && client > Net_Arbitrator)
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (I_UsesDedicatedServerSlot() && client > authoritySlot)
 		return client - 1;
 	return client;
 }
 
 int I_ToInternalClientSlot(int visibleClient)
 {
-	if (I_UsesDedicatedServerSlot() && visibleClient >= 0)
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (I_UsesDedicatedServerSlot() && visibleClient >= authoritySlot)
 		return visibleClient + 1;
 	return visibleClient;
 }
@@ -3020,6 +3114,92 @@ int I_ToInternalClientSlot(int visibleClient)
 bool I_ClientUsesHCDEService(int client)
 {
 	return client >= 0 && client < MaxClients && Connected[client].bHCDEConnect;
+}
+
+int I_GetHCDEServiceAuthoritySlot()
+{
+	return I_UsesDedicatedServerSlot() && HCDE_ServerMode_HasAuthorityState()
+		? HCDE_ServerMode_GetAuthoritySlot()
+		: Net_Arbitrator;
+}
+
+bool I_IsLocalHCDEServiceAuthority()
+{
+	if (DedicatedServerMode && HCDE_ServerMode_HasAuthorityState() && !HCDE_ServerMode_IsAuthorityPlayerBacked())
+		return true;
+
+	return consoleplayer == I_GetHCDEServiceAuthoritySlot();
+}
+
+bool I_IsHCDEServiceAuthoritySlot(int client)
+{
+	return client >= 0 && client < MaxClients && client == I_GetHCDEServiceAuthoritySlot();
+}
+
+bool I_IsRemoteHCDEServiceAuthority(int client)
+{
+	return !I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(client);
+}
+
+int I_GetHCDELiveAuthoritySlot()
+{
+	return I_GetHCDEServiceAuthoritySlot();
+}
+
+bool I_IsLocalHCDELiveAuthority()
+{
+	return I_IsLocalHCDEServiceAuthority();
+}
+
+bool I_IsHCDELiveAuthoritySlot(int client)
+{
+	return I_IsHCDEServiceAuthoritySlot(client);
+}
+
+static bool I_IsHCDELiveRoutablePeer(int client)
+{
+	return client >= 0
+		&& client < MaxClients
+		&& client != consoleplayer
+		&& I_ClientUsesHCDEService(client);
+}
+
+bool I_ShouldSendHCDELiveControlTo(int client)
+{
+	if (!I_IsHCDELiveRoutablePeer(client))
+		return false;
+
+	return I_IsLocalHCDELiveAuthority()
+		? !I_IsHCDELiveAuthoritySlot(client)
+		: I_IsHCDELiveAuthoritySlot(client);
+}
+
+bool I_ShouldSendHCDELiveClientInputTo(int client)
+{
+	return I_IsHCDELiveRoutablePeer(client)
+		&& !I_IsLocalHCDELiveAuthority()
+		&& I_IsHCDELiveAuthoritySlot(client);
+}
+
+bool I_ShouldSendHCDELiveServerSnapshotTo(int client)
+{
+	return I_IsHCDELiveRoutablePeer(client)
+		&& I_IsLocalHCDELiveAuthority()
+		&& !I_IsHCDELiveAuthoritySlot(client);
+}
+
+bool I_ShouldAcceptHCDELiveClientInputFrom(int client)
+{
+	return I_IsHCDELiveRoutablePeer(client)
+		&& I_IsLocalHCDELiveAuthority()
+		&& !I_IsHCDELiveAuthoritySlot(client);
+}
+
+bool I_ShouldAcceptHCDELiveServerSnapshotFrom(int client)
+{
+	return I_IsHCDELiveRoutablePeer(client)
+		&& !I_IsLocalHCDELiveAuthority()
+		&& I_IsHCDELiveAuthoritySlot(client);
 }
 
 #ifdef _WIN32

@@ -147,6 +147,8 @@ constexpr uint16_t ODAMEX_QUERY_TAG_ID = 0x0AD0;
 bool I_InitNetwork();
 bool I_IsDedicatedServerMode();
 bool I_UsesDedicatedServerSlot();
+void I_DedicatedServerRequestStart();
+void I_DedicatedServerRequestAbort();
 // Dedicated sessions still reserve an internal arbitrator slot; these helpers
 // keep that slot out of public player counts and UI-facing client numbering.
 bool I_IsServerReservedSlot(int client);
@@ -155,6 +157,18 @@ int I_GetVisibleMaxClients();
 int I_ToVisibleClientSlot(int client);
 int I_ToInternalClientSlot(int visibleClient);
 bool I_ClientUsesHCDEService(int client);
+int I_GetHCDEServiceAuthoritySlot();
+bool I_IsLocalHCDEServiceAuthority();
+bool I_IsHCDEServiceAuthoritySlot(int client);
+bool I_IsRemoteHCDEServiceAuthority(int client);
+int I_GetHCDELiveAuthoritySlot();
+bool I_IsLocalHCDELiveAuthority();
+bool I_IsHCDELiveAuthoritySlot(int client);
+bool I_ShouldSendHCDELiveControlTo(int client);
+bool I_ShouldSendHCDELiveClientInputTo(int client);
+bool I_ShouldSendHCDELiveServerSnapshotTo(int client);
+bool I_ShouldAcceptHCDELiveClientInputFrom(int client);
+bool I_ShouldAcceptHCDELiveServerSnapshotFrom(int client);
 void I_GetLocalServerSnapshot(FServerQuerySnapshot& snapshot);
 bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FString* error = nullptr);
 void I_ClearClient(size_t client);

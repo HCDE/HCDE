@@ -36,6 +36,7 @@
 #include "g_levellocals.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "i_net.h"
 #include "p_acs.h"
 #include "r_utility.h"
 #include "s_sound.h"
@@ -1225,10 +1226,10 @@ double DBaseStatusBar::DrawConsistancy(double yOfs) const
 		if (players[client].inconsistant)
 		{
 			desync = true;
-			// Fell out of sync with the host in packet server mode. Which specific user it is doesn't really matter.
-			if (consoleplayer != Net_Arbitrator)
+			// Fell out of sync with the authority in packet server mode. Which specific user it is doesn't really matter.
+			if (!I_IsLocalHCDEServiceAuthority())
 			{
-				text = "Out of sync with host";
+				text = "Out of sync with authority";
 				break;
 			}
 			else
@@ -1267,9 +1268,9 @@ double DBaseStatusBar::DrawWaiting(double yOfs) const
 		if (players[client].waiting)
 		{
 			isWaiting = true;
-			if (consoleplayer != Net_Arbitrator)
+			if (!I_IsLocalHCDEServiceAuthority())
 			{
-				text = "Waiting for host";
+				text = "Waiting for authority";
 				break;
 			}
 			else

@@ -24,9 +24,12 @@
 
 #include "RuntimeEvents.h"
 
+#include <atomic>
 #include <cassert>
+#include <mutex>
 #include <dap/protocol.h>
 #include "GameInterfaces.h"
+#include "debugtrace.h"
 #include "common/scripting/vm/vmintern.h"
 
 namespace DebugServer
@@ -34,23 +37,30 @@ namespace DebugServer
 namespace RuntimeEvents
 {
 #define EVENT_WRAPPER_IMPL(NAME, HANDLER_SIGNATURE)                               \
-	bool g_## NAME## EventActive = false;																    \
-	std::function<HANDLER_SIGNATURE> g_## NAME## Event;                     \
+	static std::atomic_bool g_##NAME##EventActive = false;                        \
+	static std::mutex g_##NAME##EventMutex;                                       \
+	static std::function<HANDLER_SIGNATURE> g_##NAME##Event;                      \
 																				  \
 	NAME##EventHandle SubscribeTo##NAME(std::function<HANDLER_SIGNATURE> handler) \
 	{                                                                             \
-		g_## NAME## Event = handler;\
-		g_## NAME## EventActive = true;                                               \
-		return handler;\
-	}\
-	\
-	bool UnsubscribeFrom## NAME(NAME## EventHandle handle)\
-	{\
-		if (!handle)																															\
+		std::lock_guard<std::mutex> lock(g_##NAME##EventMutex);                   \
+		g_##NAME##Event = handler;                                                \
+		g_##NAME##EventActive.store(!!g_##NAME##Event, std::memory_order_release); \
+		DebugTrace::Debugf("debugger", "subscribed runtime event %s", #NAME);    \
+		return handler;                                                          \
+	}                                                                            \
+	                                                                             \
+	bool UnsubscribeFrom##NAME(NAME##EventHandle handle)                          \
+	{                                                                            \
+		if (!handle)                                                             \
 			return false;                                                         \
-		g_## NAME## EventActive = false;                                               \
-		g_## NAME## Event  = nullptr;\
-		return true;\
+		std::lock_guard<std::mutex> lock(g_##NAME##EventMutex);                   \
+		if (!g_##NAME##EventActive.load(std::memory_order_acquire))               \
+			return false;                                                         \
+		g_##NAME##EventActive.store(false, std::memory_order_release);            \
+		g_##NAME##Event = nullptr;                                                \
+		DebugTrace::Debugf("debugger", "unsubscribed runtime event %s", #NAME);  \
+		return true;                                                             \
 	}
 
 	EVENT_WRAPPER_IMPL(InstructionExecution, void(VMFrameStack *stack, VMReturn *ret, int numret, const VMOP *pc))
@@ -66,39 +76,81 @@ namespace RuntimeEvents
 
 	void EmitBreakpointChangedEvent(const dap::Breakpoint &bpoint, const std::string &what)
 	{
-		if (g_BreakpointChangedEventActive)
+		BreakpointChangedEventHandle handler;
+		if (!g_BreakpointChangedEventActive.load(std::memory_order_acquire))
+			return;
 		{
-			g_BreakpointChangedEvent(bpoint, what);
+			std::lock_guard<std::mutex> lock(g_BreakpointChangedEventMutex);
+			if (!g_BreakpointChangedEventActive.load(std::memory_order_relaxed) || !g_BreakpointChangedEvent)
+				return;
+			handler = g_BreakpointChangedEvent;
+		}
+		if (handler)
+		{
+			handler(bpoint, what);
 		}
 	}
 	void EmitInstructionExecutionEvent(VMFrameStack *stack, VMReturn *ret, int numret, const VMOP *pc)
 	{
-		if (g_InstructionExecutionEventActive)
+		InstructionExecutionEventHandle handler;
+		if (!g_InstructionExecutionEventActive.load(std::memory_order_acquire))
+			return;
 		{
-			g_InstructionExecutionEvent(stack, ret, numret, pc);
+			std::lock_guard<std::mutex> lock(g_InstructionExecutionEventMutex);
+			if (!g_InstructionExecutionEventActive.load(std::memory_order_relaxed) || !g_InstructionExecutionEvent)
+				return;
+			handler = g_InstructionExecutionEvent;
+		}
+		if (handler)
+		{
+			handler(stack, ret, numret, pc);
 		}
 	}
 	void EmitLogEvent(int level, const char *msg)
 	{
-		if (g_LogEventActive)
+		LogEventHandle handler;
+		if (!g_LogEventActive.load(std::memory_order_acquire))
+			return;
 		{
-			g_LogEvent(level, msg);
+			std::lock_guard<std::mutex> lock(g_LogEventMutex);
+			if (!g_LogEventActive.load(std::memory_order_relaxed) || !g_LogEvent)
+				return;
+			handler = g_LogEvent;
+		}
+		if (handler)
+		{
+			handler(level, msg);
 		}
 	}
 	void EmitExceptionEvent(EVMAbortException reason, const std::string &message, const std::string &stackTrace)
 	{
-		if (g_ExceptionThrownEventActive)
+		ExceptionThrownEventHandle handler;
+		if (!g_ExceptionThrownEventActive.load(std::memory_order_acquire))
+			return;
 		{
-			g_ExceptionThrownEvent(reason, message, stackTrace);
+			std::lock_guard<std::mutex> lock(g_ExceptionThrownEventMutex);
+			if (!g_ExceptionThrownEventActive.load(std::memory_order_relaxed) || !g_ExceptionThrownEvent)
+				return;
+			handler = g_ExceptionThrownEvent;
+		}
+		if (handler)
+		{
+			handler(reason, message, stackTrace);
 		}
 	}
 
 	bool IsDebugServerRunning()
 	{
-		if (g_DebuggerEnabledEventActive){
-			return g_DebuggerEnabledEvent();
+		DebuggerEnabledEventHandle handler;
+		if (!g_DebuggerEnabledEventActive.load(std::memory_order_acquire))
+			return false;
+		{
+			std::lock_guard<std::mutex> lock(g_DebuggerEnabledEventMutex);
+			if (!g_DebuggerEnabledEventActive.load(std::memory_order_relaxed) || !g_DebuggerEnabledEvent)
+				return false;
+			handler = g_DebuggerEnabledEvent;
 		}
-		return false;
+		return handler ? handler() : false;
 	}
 
 	// TODO: Are CreateStack and CleanupStack events needed? VM execution is single-threaded and there's only one stack.

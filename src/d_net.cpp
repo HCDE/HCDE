@@ -39,6 +39,7 @@
 #include "gameconfigfile.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_servermode.h"
 #include "debugtrace.h"
 #include "i_interface.h"
 #include "i_net.h"
@@ -406,26 +407,21 @@ static bool ShouldWrapHCDEClientCommandPacket(int client)
 {
 	return netgame
 		&& !demoplayback
-		&& consoleplayer != Net_Arbitrator
-		&& client == Net_Arbitrator
-		&& client != consoleplayer
-		&& I_ClientUsesHCDEService(client);
+		&& I_ShouldSendHCDELiveClientInputTo(client);
 }
 
 static bool ShouldWrapHCDEServerSnapshotPacket(int client)
 {
 	return netgame
 		&& !demoplayback
-		&& consoleplayer == Net_Arbitrator
-		&& client != consoleplayer
-		&& I_ClientUsesHCDEService(client);
+		&& I_ShouldSendHCDELiveServerSnapshotTo(client);
 }
 
 static bool HCDEEnforcesDedicatedInputAuthority()
 {
 	return netgame
 		&& !demoplayback
-		&& consoleplayer == Net_Arbitrator
+		&& I_IsLocalHCDELiveAuthority()
 		&& I_UsesDedicatedServerSlot();
 }
 
@@ -443,6 +439,73 @@ static bool HCDEWorldDeltasCanMutatePlaysim()
 	// side-band pose corrections here can make the checker report a desync, so
 	// HCDW remains validation/telemetry-only until live replication owns the loop.
 	return false;
+}
+
+static bool HCDEUsesNonPlayerServerAuthority()
+{
+	return I_IsDedicatedServerMode() && I_IsServerReservedSlot(I_GetHCDEServiceAuthoritySlot());
+}
+
+static bool HCDEUsesNonPlayerServerAuthoritySlot(int authoritySlot)
+{
+	return I_IsDedicatedServerMode() && I_IsServerReservedSlot(authoritySlot);
+}
+
+static const char* HCDEAuthorityDisplayName()
+{
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	return HCDEUsesNonPlayerServerAuthority()
+		? HCDE_ServerMode_GetAuthorityName()
+		: players[authoritySlot].userinfo.GetName();
+}
+
+static void HCDESetAuthoritySettingsController(bool enabled)
+{
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (HCDEUsesNonPlayerServerAuthority())
+	{
+		HCDE_ServerMode_SetAuthoritySettingsController(enabled);
+		players[authoritySlot].settings_controller = false;
+		return;
+	}
+
+	players[authoritySlot].settings_controller = enabled;
+}
+
+static void HCDESetAuthorityWaiting(bool waiting)
+{
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (HCDEUsesNonPlayerServerAuthority())
+	{
+		HCDE_ServerMode_SetAuthorityWaiting(waiting);
+		players[authoritySlot].waiting = false;
+		return;
+	}
+
+	players[authoritySlot].waiting = waiting;
+}
+
+static void HCDEInitializeAuthoritySession()
+{
+	const int authoritySlot = Net_Arbitrator;
+	const bool nonPlayerAuthority = HCDEUsesNonPlayerServerAuthoritySlot(authoritySlot);
+	const char* authorityName = nonPlayerAuthority ? "HCDE dedicated server" : players[authoritySlot].userinfo.GetName();
+	HCDE_ServerMode_SetAuthorityState(authoritySlot, !nonPlayerAuthority, true, false, authorityName);
+	HCDESetAuthoritySettingsController(true);
+}
+
+bool Net_LocalCanControlSettings()
+{
+	if (!netgame)
+		return true;
+
+	if (I_IsDedicatedServerMode() && I_IsLocalHCDEServiceAuthority())
+		return HCDE_ServerMode_AuthorityCanControlSettings();
+
+	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS)
+		return false;
+
+	return players[consoleplayer].settings_controller;
 }
 
 static const char* HCDEGameplayPayloadName(uint8_t kind)
@@ -2611,7 +2674,7 @@ static bool HandleHCDELivePacket(int clientNum)
 	{
 		++peer.ControlReceived;
 		if (peer.ControlReceived == 1u)
-			Printf("%s:: HCDE live channel active with client %d\n", consoleplayer == Net_Arbitrator ? "NetServer" : "NetSession", clientNum);
+			Printf("%s:: HCDE live channel active with client %d\n", I_IsLocalHCDELiveAuthority() ? "NetServer" : "NetSession", clientNum);
 		if (payloadSize < 6u)
 		{
 			DebugTrace::Markf("net", "malformed HCDE live control from client=%d payload=%zu", clientNum, payloadSize);
@@ -2627,10 +2690,11 @@ static bool HandleHCDELivePacket(int clientNum)
 	}
 	case HLIVE_CLIENT_COMMANDS:
 	{
-		if (consoleplayer != Net_Arbitrator)
+		if (!I_ShouldAcceptHCDELiveClientInputFrom(clientNum))
 		{
 			++peer.UnsupportedReceived;
-			DebugTrace::Markf("net", "ignored HCDE live client commands from client=%d on non-host peer", clientNum);
+			DebugTrace::Markf("net", "ignored HCDE live client commands from client=%d route-authority=%d local-authority=%d",
+				clientNum, I_IsHCDELiveAuthoritySlot(clientNum), I_IsLocalHCDELiveAuthority());
 			return true;
 		}
 
@@ -2640,16 +2704,17 @@ static bool HandleHCDELivePacket(int clientNum)
 		++peer.ClientCommandReceived;
 		if (peer.ClientCommandReceived == 1u)
 			Printf("NetServer:: HCDE live client inputs active with client %d\n", clientNum);
-		DebugTrace::Markf("net", "HCDE live client-input boundary recv client=%d payload=%zu host=%d",
-			clientNum, payloadSize, consoleplayer == Net_Arbitrator);
+		DebugTrace::Markf("net", "HCDE live client-input boundary recv client=%d payload=%zu local-authority=%d",
+			clientNum, payloadSize, I_IsLocalHCDELiveAuthority());
 		return false;
 	}
 	case HLIVE_SERVER_SNAPSHOT:
 	{
-		if (consoleplayer == Net_Arbitrator || clientNum != Net_Arbitrator)
+		if (!I_ShouldAcceptHCDELiveServerSnapshotFrom(clientNum))
 		{
 			++peer.UnsupportedReceived;
-			DebugTrace::Markf("net", "ignored HCDE live server snapshot from client=%d on non-client peer", clientNum);
+			DebugTrace::Markf("net", "ignored HCDE live server snapshot from client=%d route-authority=%d local-authority=%d",
+				clientNum, I_IsHCDELiveAuthoritySlot(clientNum), I_IsLocalHCDELiveAuthority());
 			return true;
 		}
 
@@ -2659,8 +2724,8 @@ static bool HandleHCDELivePacket(int clientNum)
 		++peer.SnapshotReceived;
 		if (peer.SnapshotReceived == 1u)
 			Printf("NetSession:: HCDE live server snapshots active with client %d\n", clientNum);
-		DebugTrace::Markf("net", "HCDE live snapshot boundary recv client=%d payload=%zu fromHost=%d",
-			clientNum, payloadSize, clientNum == Net_Arbitrator);
+		DebugTrace::Markf("net", "HCDE live snapshot boundary recv client=%d payload=%zu from-authority=%d",
+			clientNum, payloadSize, I_IsHCDELiveAuthoritySlot(clientNum));
 		return false;
 	}
 	default:
@@ -2681,9 +2746,7 @@ static void SendHCDELiveControl()
 	LastHCDELiveControlMS = now;
 	for (auto client : NetworkClients)
 	{
-		if (client == consoleplayer || !I_ClientUsesHCDEService(client))
-			continue;
-		if (consoleplayer != Net_Arbitrator && client != Net_Arbitrator)
+		if (!I_ShouldSendHCDELiveControlTo(client))
 			continue;
 
 		auto& peer = HCDELivePeers[client];
@@ -3047,8 +3110,9 @@ static bool Net_IsGameplayConsistencyParticipant(int player)
 
 static int Net_GetCutsceneReadyHost()
 {
-	if (Net_IsCutsceneReadyParticipant(Net_Arbitrator))
-		return Net_Arbitrator;
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (Net_IsCutsceneReadyParticipant(authoritySlot))
+		return authoritySlot;
 
 	for (auto client : NetworkClients)
 	{
@@ -3165,7 +3229,7 @@ void Net_AdvanceCutscene()
 {
 	CutsceneReady = 0u;
 	CutsceneCountdown = 0;
-	if (consoleplayer == Net_Arbitrator)
+	if (I_IsLocalHCDEServiceAuthority())
 		Net_WriteInt8(DEM_ENDSCREENJOB);
 }
 
@@ -3244,7 +3308,7 @@ void Net_SetWaiting()
 static size_t GetNetBufferSize()
 {
 	if (NetBuffer[0] & NCMD_EXIT)
-		return 1 + (RemoteClient == Net_Arbitrator);
+		return 1 + I_IsHCDEServiceAuthoritySlot(RemoteClient);
 	// TODO: Need a skipper for this.
 	if (NetBuffer[0] & NCMD_SETUP)
 		return NetBufferLength;
@@ -3256,7 +3320,7 @@ static size_t GetNetBufferSize()
 	if (NetBuffer[0] & NCMD_LEVELREADY)
 	{
 		int bytes = 2;
-		if (RemoteClient == Net_Arbitrator)
+		if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
 			bytes += 2;
 
 		return bytes;
@@ -3281,7 +3345,7 @@ static size_t GetNetBufferSize()
 	// 1 byte for player number
 	// If from the host, 2 bytes for the latency to the host
 	int padding = 1;
-	if (RemoteClient == Net_Arbitrator)
+	if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
 		padding += 2;
 	if (NetBufferLength < totalBytes + playerCount * padding)
 		return totalBytes + playerCount * padding;
@@ -3290,7 +3354,7 @@ static size_t GetNetBufferSize()
 	for (int p = 0; p < playerCount; ++p)
 	{
 		AdvanceStream(skipper, 1);
-		if (RemoteClient == Net_Arbitrator)
+		if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
 			AdvanceStream(skipper, 2);
 
 		for (int i = 0; i < ranTics; ++i)
@@ -3365,7 +3429,7 @@ static bool HGetPacket()
 
 static void ClientConnecting(int client)
 {
-	if (consoleplayer != Net_Arbitrator)
+	if (!I_IsLocalHCDEServiceAuthority())
 		return;
 
 	// TODO: Eventually...
@@ -3419,13 +3483,32 @@ static void DisconnectClient(int clientNum)
 static void SetArbitrator(int clientNum)
 {
 	Net_Arbitrator = clientNum;
-	players[Net_Arbitrator].settings_controller = true;
-	Printf("%s is the new host\n", players[Net_Arbitrator].userinfo.GetName());
+	HCDEInitializeAuthoritySession();
+	Printf("%s is the new authority\n", HCDEAuthorityDisplayName());
 
 	for (auto client : NetworkClients)
 		ClientStates[client].AverageLatency = 0u;
 	Net_ResetCommands(false);
 	Net_SetWaiting();
+}
+
+static int HCDESelectNextServiceAuthoritySlot(int leavingAuthority)
+{
+	for (auto client : NetworkClients)
+	{
+		if (client == leavingAuthority || I_IsServerReservedSlot(client))
+			continue;
+
+		return client;
+	}
+
+	for (auto client : NetworkClients)
+	{
+		if (client != leavingAuthority)
+			return client;
+	}
+
+	return leavingAuthority;
 }
 
 static void ClientQuit(int clientNum, int newHost)
@@ -3435,9 +3518,9 @@ static void ClientQuit(int clientNum, int newHost)
 
 	// This will get caught in the main loop and send it out to everyone as one big packet. The only
 	// exception is the host who will leave instantly and send out any needed data.
-	if (clientNum != Net_Arbitrator)
+	if (!I_IsHCDEServiceAuthoritySlot(clientNum))
 	{
-		if (consoleplayer != Net_Arbitrator)
+		if (!I_IsLocalHCDEServiceAuthority())
 			DPrintf(DMSG_WARNING, "Received disconnect packet from client %d erroneously\n", clientNum);
 		else
 			ClientStates[clientNum].Flags |= CF_QUIT;
@@ -3446,8 +3529,13 @@ static void ClientQuit(int clientNum, int newHost)
 	}
 
 	DisconnectClient(clientNum);
-	if (clientNum == Net_Arbitrator)
-		SetArbitrator(newHost >= 0 ? newHost : NetworkClients[0]);
+	if (I_IsHCDEServiceAuthoritySlot(clientNum))
+	{
+		const bool validReplacement = NetworkClients.InGame(newHost)
+			&& newHost != clientNum
+			&& !I_IsServerReservedSlot(newHost);
+		SetArbitrator(validReplacement ? newHost : HCDESelectNextServiceAuthoritySlot(clientNum));
+	}
 
 	if (demorecording)
 		G_CheckDemoStatus();
@@ -3462,7 +3550,7 @@ static void CheckLevelStart(int client, int delayTics)
 {
 	if (LevelStartStatus != LST_WAITING)
 	{
-		if (consoleplayer == Net_Arbitrator && client != consoleplayer)
+		if (I_IsLocalHCDEServiceAuthority() && client != consoleplayer)
 		{
 			// Someone might've missed the previous packet, so resend it just in case.
 			NetBuffer[0] = NCMD_LEVELREADY;
@@ -3476,10 +3564,10 @@ static void CheckLevelStart(int client, int delayTics)
 		return;
 	}
 
-	if (client == Net_Arbitrator)
+	if (I_IsHCDEServiceAuthoritySlot(client))
 	{
 		LevelStartAck = 0u;
-		LevelStartStatus = consoleplayer == Net_Arbitrator ? LST_HOST : LST_READY;
+		LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
 		LevelStartDelay = LevelStartDebug = delayTics;
 		LastGameUpdate = EnterTic;
 		return;
@@ -3488,7 +3576,7 @@ static void CheckLevelStart(int client, int delayTics)
 	uint64_t mask = 0u;
 	for (auto pNum : NetworkClients)
 	{
-		if (pNum != Net_Arbitrator)
+		if (!I_IsHCDEServiceAuthoritySlot(pNum))
 			mask |= (uint64_t)1u << pNum;
 	}
 
@@ -3508,7 +3596,7 @@ static void CheckLevelStart(int client, int delayTics)
 
 		for (auto client : NetworkClients)
 		{
-			if (client == Net_Arbitrator)
+			if (I_IsHCDEServiceAuthoritySlot(client))
 				continue;
 
 			const uint16_t latency = min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap);
@@ -3520,7 +3608,7 @@ static void CheckLevelStart(int client, int delayTics)
 		for (auto client : NetworkClients)
 		{
 			int delay = 0;
-			if (client != Net_Arbitrator)
+			if (!I_IsHCDEServiceAuthoritySlot(client))
 				delay = int(floor((highestAvg - min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap)) * MS2Sec * TICRATE));
 
 			NetBuffer[2] = (delay << 8);
@@ -3552,7 +3640,7 @@ static void GetPackets()
 
 		if (NetBuffer[0] & NCMD_EXIT)
 		{
-			ClientQuit(clientNum, clientNum == Net_Arbitrator ? NetBuffer[1] : -1);
+			ClientQuit(clientNum, I_IsHCDEServiceAuthoritySlot(clientNum) ? NetBuffer[1] : -1);
 			continue;
 		}
 
@@ -3593,7 +3681,7 @@ static void GetPackets()
 			if (NetBuffer[1] == CurrentRoomID)
 			{
 				int delay = 0;
-				if (clientNum == Net_Arbitrator)
+				if (I_IsHCDEServiceAuthoritySlot(clientNum))
 					delay = (NetBuffer[2] << 8) | NetBuffer[3];
 
 				CheckLevelStart(clientNum, delay);
@@ -3645,9 +3733,9 @@ static void GetPackets()
 
 		if (validID)
 		{
-			if (clientNum == Net_Arbitrator)
+			if (I_IsHCDEServiceAuthoritySlot(clientNum))
 				CommandsAhead = NetBuffer[curByte];
-			else if (consoleplayer == Net_Arbitrator)
+			else if (I_IsLocalHCDEServiceAuthority())
 				clientState.StabilityBuffer = NetBuffer[curByte];
 		}
 		++curByte;
@@ -3658,17 +3746,17 @@ static void GetPackets()
 			auto& pState = ClientStates[pNum];
 
 			// This gets sent over per-player so latencies are correctly displayed.
-			if (clientNum == Net_Arbitrator)
+			if (I_IsHCDEServiceAuthoritySlot(clientNum))
 			{
-				if (consoleplayer != Net_Arbitrator)
+				if (!I_IsLocalHCDEServiceAuthority())
 					pState.AverageLatency = (NetBuffer[curByte++] << 8) | NetBuffer[curByte++];
 				else
 					curByte += 2;
 			}
 
 			// Make sure the host doesn't update a player's last consistency ack with their own data.
-			if (consoleplayer != Net_Arbitrator
-				|| pNum == Net_Arbitrator || clientNum != Net_Arbitrator)
+			if (!I_IsLocalHCDEServiceAuthority()
+				|| I_IsHCDEServiceAuthoritySlot(pNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
 			{
 				pState.ConsistencyAck = consistencyAck;
 			}
@@ -3737,13 +3825,13 @@ static void GetPackets()
 				// The host and clients are a bit desynced here. We don't want to update the host's latest ack with their own
 				// info since they get those from the actual clients, but clients have to get them from the host since they
 				// don't commincate with each other.
-				if (consoleplayer != Net_Arbitrator
-					|| pNum == Net_Arbitrator || clientNum != Net_Arbitrator)
+				if (!I_IsLocalHCDEServiceAuthority()
+					|| I_IsHCDEServiceAuthoritySlot(pNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
 				{
 					pState.CurrentSequence = seq;
 				}
 				// Update this so host switching doesn't have any hiccups.
-				if (consoleplayer != Net_Arbitrator && pNum != Net_Arbitrator)
+				if (!I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(pNum))
 					pState.SequenceAck = seq;
 			}
 		}
@@ -3914,6 +4002,9 @@ static bool Net_UpdateStatus()
 	if (LevelStartStatus == LST_WAITING || LevelStartDelay > 0)
 		return false;
 
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	const bool localAuthority = I_IsLocalHCDEServiceAuthority();
+
 	// Check against the previous tick in case we're recovering from a huge
 	// system hiccup. If the game has taken too long to update, it's likely
 	// another client is hanging up the game.
@@ -3922,14 +4013,14 @@ static bool Net_UpdateStatus()
 		// Try again in the next MaxDelay tics.
 		LastGameUpdate = EnterTic;
 
-		if (consoleplayer == Net_Arbitrator)
+		if (localAuthority)
 		{
 			// Use a missing packet here to tell the other players to retransmit instead of simply retransmitting our
 			// own data over instantly. This avoids flooding the network at a time where it's not opportune to do so.
 			const int curTic = gametic / TicDup;
 			for (auto client : NetworkClients)
 			{
-				if (client == consoleplayer)
+				if (I_IsHCDEServiceAuthoritySlot(client))
 					continue;
 
 				if (ClientStates[client].CurrentSequence < curTic)
@@ -3947,8 +4038,8 @@ static bool Net_UpdateStatus()
 		{
 			// The client is waiting for data from the host and hasn't recieved it yet. Send
 			// our data back over in case the host is waiting for us.
-			ClientStates[Net_Arbitrator].Flags |= CF_MISSING;
-			players[Net_Arbitrator].waiting = true;
+			ClientStates[authoritySlot].Flags |= CF_MISSING;
+			HCDESetAuthorityWaiting(true);
 		}
 	}
 
@@ -3966,14 +4057,14 @@ static bool Net_UpdateStatus()
 	int lowestDiff = INT_MAX;
 	if (gametic > TICRATE * 2 && !(gametic % TicDup))
 	{
-		if (consoleplayer == Net_Arbitrator)
+		if (localAuthority)
 		{
 			// If we're consistenty ahead of the highest sequence player, slow down.
 			bool allUpdated = true;
 			const int curTic = ClientTic / TicDup;
 			for (auto client : NetworkClients)
 			{
-				if (client != Net_Arbitrator)
+				if (!I_IsHCDEServiceAuthoritySlot(client))
 				{
 					if (ClientStates[client].Flags & CF_UPDATED)
 					{
@@ -4000,12 +4091,12 @@ static bool Net_UpdateStatus()
 					lowestDiff = diff;
 			}
 		}
-		else if (ClientStates[Net_Arbitrator].Flags & CF_UPDATED)
+		else if (ClientStates[authoritySlot].Flags & CF_UPDATED)
 		{
 			// Check if the host is reporting that we're too far ahead of them.
 			updated = true;
 			lowestDiff = CommandsAhead;
-			ClientStates[Net_Arbitrator].Flags &= ~CF_UPDATED;
+			ClientStates[authoritySlot].Flags &= ~CF_UPDATED;
 		}
 	}
 
@@ -4040,7 +4131,7 @@ void NetUpdate(int tics)
 	{
 		// If a tic has passed, always send out a heartbeat packet (also doubles as
 		// a latency measurement tool).
-		if (consoleplayer == Net_Arbitrator)
+		if (I_IsLocalHCDEServiceAuthority())
 		{
 			DebugTrace::Markf("net", "host heartbeat gametic=%d", gametic);
 			LastLatencyUpdate += tics;
@@ -4072,15 +4163,15 @@ void NetUpdate(int tics)
 			if (NetworkClients.Size() == 1)
 			{
 				// If we got stuck in limbo waiting, force start the map.
-				CheckLevelStart(Net_Arbitrator, 0);
+				CheckLevelStart(I_GetHCDEServiceAuthoritySlot(), 0);
 			}
 			else
 			{
-				if (consoleplayer != Net_Arbitrator && IsMapLoaded())
+				if (!I_IsLocalHCDEServiceAuthority() && IsMapLoaded())
 				{
 					NetBuffer[0] = NCMD_LEVELREADY;
 					NetBuffer[1] = CurrentRoomID;
-					HSendPacket(Net_Arbitrator, 2);
+					HSendPacket(I_GetHCDEServiceAuthoritySlot(), 2);
 				}
 			}
 		}
@@ -4092,7 +4183,7 @@ void NetUpdate(int tics)
 			int lowestSeq = curTic;
 			for (auto client : NetworkClients)
 			{
-				if (client != Net_Arbitrator && ClientStates[client].CurrentSequence < lowestSeq)
+				if (!I_IsHCDEServiceAuthoritySlot(client) && ClientStates[client].CurrentSequence < lowestSeq)
 					lowestSeq = ClientStates[client].CurrentSequence;
 			}
 
@@ -4220,7 +4311,8 @@ void NetUpdate(int tics)
 	int quitNums[MAXPLAYERS];
 	int players = 1u;
 	int maxCommands = MAXSENDTICS;
-	if (consoleplayer == Net_Arbitrator)
+	const bool localAuthority = I_IsLocalHCDEServiceAuthority();
+	if (localAuthority)
 	{
 		// Ensure the host only sends out available tics when ready instead of constantly shotgunning
 		// them out as they're made locally.
@@ -4228,7 +4320,7 @@ void NetUpdate(int tics)
 		int lowestSeq = endSequence - 1;
 		for (auto client : NetworkClients)
 		{
-			if (client == Net_Arbitrator)
+			if (I_IsHCDEServiceAuthoritySlot(client))
 				continue;
 
 			if (ClientStates[client].Flags & CF_QUIT)
@@ -4270,7 +4362,7 @@ void NetUpdate(int tics)
 	{
 		// We don't want to send information to anyone but the host. On the other
 		// hand, if we're the host we send out everyone's info to everyone else.
-		if (consoleplayer != Net_Arbitrator && client != Net_Arbitrator)
+		if (!localAuthority && !I_IsHCDEServiceAuthoritySlot(client))
 			continue;
 
 		auto& curState = ClientStates[client];
@@ -4286,7 +4378,7 @@ void NetUpdate(int tics)
 		NetBuffer[1] = (curState.Flags & CF_RETRANSMIT_SEQ) ? curState.ResendID : CurrentRoomID;
 		int lastSeq = curState.CurrentSequence;
 		int lastCon = curState.CurrentNetConsistency;
-		if (consoleplayer != Net_Arbitrator)
+		if (!localAuthority)
 		{
 			// Make sure to get the lowest sequence of all players
 			// since the host themselves might have gotten updated but someone else in the packet
@@ -4330,7 +4422,7 @@ void NetUpdate(int tics)
 		const int baseConsistency = curState.ResendConsistencyFrom >= 0 ? curState.ResendConsistencyFrom : LastSentConsistency;
 		// Don't bother sending over consistencies unless you're the host.
 		int ran = 0;
-		if (consoleplayer == Net_Arbitrator)
+		if (localAuthority)
 			ran = clamp<int>(CurrentConsistency - baseConsistency, 0, MAXSENDTICS);
 
 		int ticLoops = static_cast<int>(ceil(max<double>(numTics, ran) / maxCommands));
@@ -4416,8 +4508,8 @@ void NetUpdate(int tics)
 					NetBuffer[size++] = baseConsistency + curTicOfs;
 				}
 
-				if (consoleplayer == Net_Arbitrator)
-					NetBuffer[size++] = client == Net_Arbitrator ? 0 : max<int>(curState.CurrentSequence + curState.StabilityBuffer - newestTic, 0);
+				if (localAuthority)
+					NetBuffer[size++] = I_IsHCDEServiceAuthoritySlot(client) ? 0 : max<int>(curState.CurrentSequence + curState.StabilityBuffer - newestTic, 0);
 				else
 					NetBuffer[size++] = max<int>(StabilityBuffer, 0);
 
@@ -4430,7 +4522,7 @@ void NetUpdate(int tics)
 
 					auto& clientState = ClientStates[playerNums[i]];
 					// Measured latency from client to host.
-					if (consoleplayer == Net_Arbitrator)
+					if (localAuthority)
 					{
 						WriteInt16(clientState.AverageLatency, cmd);
 					}
@@ -4654,9 +4746,37 @@ void Net_SetupUserInfo()
 	D_SetupUserInfo();
 }
 
-const char* Net_GetClientName(int client, unsigned int charLimit = 0u)
+const char* Net_GetClientName(int client, unsigned int charLimit)
 {
+	if (client < 0 || client >= MAXPLAYERS)
+	{
+		return "unknown";
+	}
 	return players[client].userinfo.GetName(charLimit);
+}
+
+void Net_GetKickableClientList(TArray<int>& clients, TArray<FString>& labels)
+{
+	clients.Clear();
+	labels.Clear();
+
+	if (!netgame)
+	{
+		return;
+	}
+
+	for (auto client : NetworkClients)
+	{
+		if (client == consoleplayer || client < 0 || client >= MAXPLAYERS || I_IsHCDEServiceAuthoritySlot(client))
+		{
+			continue;
+		}
+
+		FString label;
+		label.Format("%s [%d]", Net_GetClientName(client, 24u), client);
+		clients.Push(client);
+		labels.Push(label);
+	}
 }
 
 void Net_SetUserInfo(int client, TArrayView<uint8_t>& stream)
@@ -4739,7 +4859,7 @@ bool D_CheckNetGame()
 	if (Args->CheckParm(FArg_extratic))
 		net_extratic = true;
 
-	players[Net_Arbitrator].settings_controller = true;
+	HCDEInitializeAuthoritySession();
 	for (auto client : NetworkClients)
 	{
 		if (I_IsServerReservedSlot(client))
@@ -4776,27 +4896,18 @@ void D_QuitNetGame()
 
 	// Send a bunch of packets for stability.
 	NetBuffer[0] = NCMD_EXIT;
-	if (consoleplayer == Net_Arbitrator)
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	if (I_IsLocalHCDEServiceAuthority())
 	{
 		// This currently doesn't really do anything, but it's being split off into its
 		// own branch should proper host migration be added in the future (i.e. sending over stored event
 		// data rather than just dropping it entirely).
-		int nextHost = 0;
-		for (auto client : NetworkClients)
-		{
-			if (client != Net_Arbitrator)
-			{
-				nextHost = client;
-				break;
-			}
-		}
-
-		NetBuffer[1] = nextHost;
+		NetBuffer[1] = HCDESelectNextServiceAuthoritySlot(authoritySlot);
 		for (int i = 0; i < 4; ++i)
 		{
 			for (auto client : NetworkClients)
 			{
-				if (client != Net_Arbitrator)
+				if (!I_IsHCDEServiceAuthoritySlot(client))
 					HSendPacket(client, 2);
 			}
 
@@ -4807,8 +4918,8 @@ void D_QuitNetGame()
 	{
 		for (int i = 0; i < 4; ++i)
 		{
-			// Only the host should know about this information.
-			HSendPacket(Net_Arbitrator, 1);
+			// Only the service authority should know about this information.
+			HSendPacket(authoritySlot, 1);
 			I_WaitVBL(1);
 		}
 	}
@@ -4830,30 +4941,31 @@ ADD_STAT(network)
 	if (net_extratic)
 		out.AppendFormat("\tExtra tic enabled");
 
+	const bool localAuthority = I_IsLocalHCDEServiceAuthority();
 	out.AppendFormat("\nWorld tic: %06d (sequence %06d)", gametic, gametic / TicDup);
-	if (consoleplayer != Net_Arbitrator)
+	if (!localAuthority)
 		out.AppendFormat("\tStart tics delay: %d", LevelStartDebug);
 
 	const int delay = max<int>((ClientTic - gametic) / TicDup, 0);
 	const int msDelay = min<int>(delay * TicDup * 1000.0 / TICRATE, 999);
 	const int buffer = max<int>(StabilityBuffer, 0);
 	const int msBuffer = min<int>(buffer * 1000.0 / TICRATE, 999);
-	out.AppendFormat("\nLocal\n\tIs arbitrator: %d\tDelay: %02d (%03dms)\tStability Buffer: %02d (%03dms)",
-		consoleplayer == Net_Arbitrator,
+	out.AppendFormat("\nLocal\n\tIs authority: %d\tDelay: %02d (%03dms)\tStability Buffer: %02d (%03dms)",
+		localAuthority,
 		delay, msDelay,
 		buffer, msBuffer);
 
-	if (consoleplayer != Net_Arbitrator)
+	if (!localAuthority && consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
 		out.AppendFormat("\tAvg latency: %03ums", min<unsigned int>(ClientStates[consoleplayer].AverageLatency, 999u));
 
 	if (LevelStartStatus != LST_READY)
 	{
 		if (LevelStartStatus == LST_HOST)
 			out.AppendFormat("\tWaiting for packets");
-		else if (consoleplayer == Net_Arbitrator)
+		else if (localAuthority)
 			out.AppendFormat("\tWaiting for acks");
 		else
-			out.AppendFormat("\tWaiting for arbitrator");
+			out.AppendFormat("\tWaiting for authority");
 	}
 
 	int lowestSeq = ClientTic / TicDup;
@@ -4867,8 +4979,8 @@ ADD_STAT(network)
 			lowestSeq = state.CurrentSequence;
 
 		out.AppendFormat("\n%s", players[client].userinfo.GetName(12));
-		if (client == Net_Arbitrator)
-			out.AppendFormat("\t(Host)");
+		if (I_IsHCDEServiceAuthoritySlot(client))
+			out.AppendFormat("\t(Authority)");
 
 		if ((state.Flags & CF_RETRANSMIT) == CF_RETRANSMIT)
 			out.AppendFormat("\t(RT)");
@@ -4887,11 +4999,11 @@ ADD_STAT(network)
 		out.AppendFormat("\n");
 
 		out.AppendFormat("\tAck: %06d\tConsistency: %06d", state.SequenceAck, state.ConsistencyAck);
-		if (client != Net_Arbitrator)
+		if (!I_IsHCDEServiceAuthoritySlot(client))
 			out.AppendFormat("\tAvg latency: %03ums", min<unsigned int>(state.AverageLatency, 999u));
 	}
 
-	if (consoleplayer == Net_Arbitrator)
+	if (localAuthority)
 		out.AppendFormat("\nAvailable tics: %03d", max<int>(lowestSeq - (gametic / TicDup), 0));
 	return out;
 }
@@ -5720,7 +5832,7 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			if (newfov != players[player].DesiredFOV)
 			{
 				Printf("FOV%s set to %g\n",
-					player == Net_Arbitrator ? " for everyone" : "",
+					I_IsHCDEServiceAuthoritySlot(player) ? " for everyone" : "",
 					newfov);
 			}
 
@@ -5792,7 +5904,7 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			players[playernum].settings_controller = true;
 			if (consoleplayer == playernum)
 				Printf("You can now control game settings\n");
-			else if (consoleplayer == Net_Arbitrator)
+			else if (I_IsLocalHCDEServiceAuthority())
 				Printf("%s [%d] is now a settings controller\n", players[playernum].userinfo.GetName(), playernum);
 		}
 		break;
@@ -5803,7 +5915,7 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			players[playernum].settings_controller = false;
 			if (consoleplayer == playernum)
 				Printf("You can no longer control game settings\n");
-			else if (consoleplayer == Net_Arbitrator)
+			else if (I_IsLocalHCDEServiceAuthority())
 				Printf("%s [%d] is no longer a settings controller\n", players[playernum].userinfo.GetName(), playernum);
 		}
 		break;
@@ -6166,7 +6278,7 @@ int Net_GetLatency(int* localDelay, int* arbitratorDelay)
 		severity = 1;
 
 	*localDelay = gameDelayMs;
-	*arbitratorDelay = ClientStates[consoleplayer].AverageLatency;
+	*arbitratorDelay = consoleplayer >= 0 && consoleplayer < MAXPLAYERS ? ClientStates[consoleplayer].AverageLatency : 0;
 	return severity;
 }
 
@@ -6251,7 +6363,7 @@ CCMD(pings)
 
 	for (auto client : NetworkClients)
 	{
-		if (client != Net_Arbitrator)
+		if (!I_IsHCDEServiceAuthoritySlot(client))
 			Printf("%ums %s [%d]\n", ClientStates[client].AverageLatency, players[client].userinfo.GetName(), client);
 	}
 }
@@ -6270,11 +6382,11 @@ CCMD(kick)
 		return;
 	}
 
-	// Dont give settings controllers access to this. That should be reserved as a separate power
-	// the host can grant.
-	if (consoleplayer != Net_Arbitrator)
+	// Do not give settings controllers access to this. That remains reserved
+	// for the current service authority.
+	if (!I_IsLocalHCDEServiceAuthority())
 	{
-		Printf("This command is only accessible to the host\n");
+		Printf("This command is only accessible to the authority\n");
 		return;
 	}
 
@@ -6443,17 +6555,17 @@ static void Net_ChangeSettingsControllers(const TArray<int>& cNums, bool add)
 		return;
 	}
 
-	if (consoleplayer != Net_Arbitrator)
+	if (!I_IsLocalHCDEServiceAuthority())
 	{
-		Printf("This command is only accessible to the host\n");
+		Printf("This command is only accessible to the authority\n");
 		return;
 	}
 
 	for (auto cNum : cNums)
 	{
-		if (cNum == Net_Arbitrator)
+		if (I_IsHCDEServiceAuthoritySlot(cNum))
 		{
-			Printf("The host cannot change their own settings controller status\n");
+			Printf("The authority cannot change its own settings controller status\n");
 		}
 		else if (!NetworkClients.InGame(cNum))
 		{
@@ -6495,7 +6607,7 @@ CCMD(addsettingscontrollers)
 		int cNum = -1;
 		if (!C_IsValidInt(argv[i], cNum) || cNum < 0 || cNum >= MAXPLAYERS)
 			Printf("Bad client number %s\n", argv[i]);
-		else if (cNum != Net_Arbitrator && cNums.Find(cNum) >= cNums.Size())
+		else if (!I_IsHCDEServiceAuthoritySlot(cNum) && cNums.Find(cNum) >= cNums.Size())
 			cNums.Push(cNum);
 	}
 
@@ -6522,7 +6634,7 @@ CCMD(removesettingscontrollers)
 		int cNum = -1;
 		if (!C_IsValidInt(argv[i], cNum) || cNum < 0 || cNum >= MAXPLAYERS)
 			Printf("Bad player number %s\n", argv[i]);
-		else if (cNum != Net_Arbitrator && cNums.Find(cNum) >= cNums.Size())
+		else if (!I_IsHCDEServiceAuthoritySlot(cNum) && cNums.Find(cNum) >= cNums.Size())
 			cNums.Push(cNum);
 	}
 
@@ -6540,7 +6652,7 @@ CCMD(removeallsettingscontrollers)
 	TArray<int> cNums = {};
 	for (auto client : NetworkClients)
 	{
-		if (client != Net_Arbitrator && players[client].settings_controller)
+		if (!I_IsHCDEServiceAuthoritySlot(client) && players[client].settings_controller)
 			cNums.Push(client);
 	}
 
@@ -6564,7 +6676,7 @@ CCMD(listsettingscontrollers)
 	TArray<int> cNums = {};
 	for (auto client : NetworkClients)
 	{
-		if (client != Net_Arbitrator && players[client].settings_controller)
+		if (!I_IsHCDEServiceAuthoritySlot(client) && players[client].settings_controller)
 			cNums.Push(client);
 	}
 

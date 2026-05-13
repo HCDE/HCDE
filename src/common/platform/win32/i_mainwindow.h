@@ -52,12 +52,80 @@ public:
 
 	HWND GetHandle() { return Window; }
 
+#ifdef HCDE_DEDICATED_SERVER
+	void TickServerConsole();
+	void SetServerConsoleStatus(const char* status);
+#endif
+
 private:
 	static LRESULT CALLBACK LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+#ifdef HCDE_DEDICATED_SERVER
+	void CreateServerConsoleControls();
+	void ResizeServerConsoleControls(int width, int height);
+	static LRESULT CALLBACK ServerCommandProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId, DWORD_PTR refData);
+	void AppendServerConsoleText(const char* cp);
+	void PumpServerConsoleMessages();
+	void SubmitServerConsoleCommand();
+	void RememberServerConsoleCommand(const FString& command);
+	void NavigateServerConsoleCommandHistory(int direction);
+	void SubmitServerMapChange();
+	void SubmitServerBroadcast();
+	void SubmitServerKick();
+	void RefreshServerKickList();
+	void ApplyServerConsolePreset();
+	void ApplyServerConsoleFlag(bool enabled);
+	void ApplyServerConsoleSetting(int applyId);
+	void ApplyServerConsoleVisibleSettings();
+	void ApplyServerConsoleAdvancedSetting();
+	void SyncServerConsoleSettingsFromCVars(bool logResult);
+	void UpdateServerConsoleAdvancedSettingDefault();
+	void ClearServerConsoleLog();
+	void CopyServerConsoleLog();
+	void RequestServerConsoleStart();
+	void RequestServerConsoleShutdown();
+	void SendServerConsoleCommand(const char* command);
+	void UpdateServerConsoleStatusFromLogLine(const char* text);
+#endif
 
 	HWND Window = 0;
 	bool restartrequest = false;
 	TArray<FString> bufferedConsoleStuff;
+
+#ifdef HCDE_DEDICATED_SERVER
+	HWND ServerStatus = 0;
+	HWND ServerLog = 0;
+	HWND ServerCommand = 0;
+	TArray<FString> ServerCommandHistory;
+	int ServerCommandHistoryIndex = -1;
+	HWND ServerSessionTitle = 0;
+	HWND ServerMapLabel = 0;
+	HWND ServerMap = 0;
+	HWND ServerBroadcastLabel = 0;
+	HWND ServerBroadcast = 0;
+	HWND ServerKickLabel = 0;
+	HWND ServerKick = 0;
+	TArray<int> ServerKickClients;
+	TArray<FString> ServerKickClientLabels;
+	HWND ServerPresetLabel = 0;
+	HWND ServerPresetCombo = 0;
+	HWND ServerFlagLabel = 0;
+	HWND ServerFlagCombo = 0;
+	HWND ServerAdvancedSettingLabel = 0;
+	HWND ServerAdvancedSettingCombo = 0;
+	HWND ServerAdvancedSettingValue = 0;
+	HWND ServerAdvancedSettingValueCombo = 0;
+	enum { ServerMaxSettingControls = 12 };
+	HWND ServerSettingsTitle = 0;
+	HWND ServerSettingLabels[ServerMaxSettingControls] = {};
+	HWND ServerSettingInputs[ServerMaxSettingControls] = {};
+	HWND ServerSettingButtons[ServerMaxSettingControls] = {};
+	int ServerSettingCount = 0;
+	HWND ServerAdvancedControlsLabel = 0;
+	HFONT ServerFont = 0;
+	HBRUSH ServerBrush = 0;
+	bool ServerPumpingMessages = false;
+#endif
 };
 
 extern MainWindow mainwindow;

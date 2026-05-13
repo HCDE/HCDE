@@ -25,6 +25,7 @@
 #include <functional>
 #include <dap/network.h>
 #include "ZScriptDebugger.h"
+#include "debugtrace.h"
 
 // Main entry point for the debug server
 
@@ -36,6 +37,7 @@ DebugServer::DebugServer()
 	stopped = false;
 	quitting = false;
 	debugger = std::unique_ptr<ZScriptDebugger>(new ZScriptDebugger());
+	DebugTrace::Mark("debugger", "DAP debug server object created");
 }
 
 void DebugServer::RunRestartThread()
@@ -57,6 +59,7 @@ void DebugServer::RunRestartThread()
 			if (!StartServer()) {
 				RuntimeEvents::UnsubscribeFromDebuggerEnabled([](){return true;});
 				stopped = true;
+				DebugTrace::Error("debugger", "DAP debug server restart failed");
 				break;
 			}
 			restart_server = false;
@@ -77,6 +80,7 @@ bool DebugServer::Listen(int p_port)
 	closed = false;
 	if (!p_port)
 	{
+		DebugTrace::Warning("debugger", "DAP debug server listen skipped: port is 0");
 		return false;
 	}
 	port = p_port;
@@ -88,6 +92,7 @@ bool DebugServer::Listen(int p_port)
 	{
 		Stop();
 	}
+	DebugTrace::Markf("debugger", "DAP debug server listen requested port=%d", port);
 	restart_thread = std::thread(std::bind(&DebugServer::RunRestartThread, this));
 	return StartServer();
 }
@@ -129,12 +134,14 @@ void DebugServer::onClientConnected(const std::shared_ptr<dap::ReaderWriter> &co
 			});
 
 		LogInternal("DAP client connected.");
+		DebugTrace::Mark("debugger", "DAP client connected");
 		debugger->StartSession(sess);
 };
 
 void DebugServer::onError(const char *msg)
 {
 	LogInternalError("Server error: %s\n", msg);
+	DebugTrace::Warningf("debugger", "DAP server error: %s", msg != nullptr ? msg : "unknown");
 	if (restart_server){
 		LogInternalError("Restart failed! Stopping server...");
 	} else {
@@ -154,15 +161,18 @@ bool DebugServer::StartServer()
 	if (!m_server->start(port, [this](auto conn){this->onClientConnected(conn);}, [this](auto msg){this->onError(msg);}))
 	{
 		LogInternalError("DAP debugging server failed to start on port %d, debugging will be unavailable!", port);
+		DebugTrace::Errorf("debugger", "DAP debug server failed to start port=%d", port);
 		return false;
 	}
 	RuntimeEvents::SubscribeToDebuggerEnabled([](){return true;});
 	LogInternal("DAP debugging server started on port %d", port);
+	DebugTrace::Markf("debugger", "DAP debug server started port=%d", port);
 	return true;
 }
 
 void DebugServer::Stop()
 {
+	DebugTrace::Mark("debugger", "DAP debug server stop requested");
 	RuntimeEvents::UnsubscribeFromDebuggerEnabled([](){return true;});
 	{
 		ResetThreadLock lock(mutex);
@@ -177,6 +187,7 @@ void DebugServer::Stop()
 	{
 		restart_thread.join();
 	}
+	DebugTrace::Mark("debugger", "DAP debug server stopped");
 }
 
 DebugServer::~DebugServer() { Stop(); }

@@ -436,3 +436,67 @@ progress, status logging, and prediction gating now use the slotless boundary
 instead of exposing the inherited slot-zero arbitrator as a playable client.
 
 Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 27 Update
+
+HCDE live packet routing now uses explicit authority-route helpers instead of
+direct `Net_Arbitrator` checks in the live `HLIV` send/receive layer. The
+current internal authority slot is unchanged, but the routing decision is now
+centralized so the next stages can replace player-backed server state without
+rewriting every live-packet gate again.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 28 Update
+
+Dedicated HCDE server sessions now keep local settings authority in HCDE server
+session state instead of relying on the reserved internal server slot being a
+playable settings controller. Console commands, server CVAR changes, save/pause
+checks, and bot/admin commands now ask the same authority helper.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 29 Update
+
+HCDE now has a service-authority identity boundary for new service/live netcode.
+Live routing, reserved-slot mapping, and dedicated join assignment validation
+now ask HCDE authority helpers instead of directly comparing playable clients to
+`Net_Arbitrator`.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 30 Update
+
+The inherited runtime packet receive/start boundary now also asks HCDE
+service-authority helpers. Packet sizing, disconnect forwarding, level-start
+coordination, host-authored receive fields, and authority heartbeat gating no
+longer open-code direct `Net_Arbitrator` comparisons in that slice.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 31 Update
+
+Inherited tic balancing and packet construction now use the same HCDE
+service-authority helpers as the receive/start boundary. Host-side packet
+sequence selection, consistency emission, stability pacing, and latency fields
+no longer open-code direct `Net_Arbitrator` comparisons in that slice.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 32 Update
+
+Local quit and host-migration packet emission now uses HCDE service-authority
+helpers. Dedicated server sessions skip the reserved server slot when choosing a
+replacement authority, while the wire packet shape remains compatible with the
+current inherited tic protocol.
+
+Doom Connector does not need new command-line arguments for this stage.
+
+## Stage 33 Update
+
+Read-only status and notification paths now use HCDE service-authority helpers.
+The network stat view, cutscene host-only readiness, FOV/settings-controller
+notifications, and ping visibility no longer describe or filter the authority
+through direct inherited arbitrator checks.
+
+Doom Connector does not need new command-line arguments for this stage.

@@ -28,6 +28,7 @@
 
 uint64_t I_msTime();
 struct particle_t;
+class FString;
 
 enum EChatType
 {
@@ -150,12 +151,15 @@ bool Net_CheckCutsceneReady();
 void Net_AdvanceCutscene();
 void Net_ResetCommands(bool midTic);
 void Net_SetWaiting();
+bool Net_LocalCanControlSettings();
 void Net_ClearBuffers();
 void Net_ResetClientState(int client);
 bool Net_IsWaiting();
 double Net_ModifyFrac(double ticFrac);
 double Net_ModifyObjectFrac(DObject* obj, double ticFrac);
 double Net_ModifyParticleFrac(particle_t* part, double ticFrac);
+const char* Net_GetClientName(int client, unsigned int charLimit = 0u);
+void Net_GetKickableClientList(TArray<int>& clients, TArray<FString>& labels);
 
 // Netgame stuff (buffers and pointers, i.e. indices).
 

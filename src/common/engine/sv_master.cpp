@@ -47,6 +47,13 @@
 #include "hcde_master_protocol.h"
 
 CVAR(Int, sv_natport, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Bool, sv_upnp, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self)
+	{
+		Printf("HCDE server: UPnP port mapping is not implemented yet; forward the server port manually.\n");
+	}
+}
 
 #ifndef _WIN32
 typedef int SOCKET;

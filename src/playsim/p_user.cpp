@@ -762,7 +762,7 @@ void player_t::SetFOV(float fov)
 	{
 		if (dmflags & DF_NO_FOV)
 		{
-			if (consoleplayer == Net_Arbitrator)
+			if (I_IsLocalHCDEServiceAuthority())
 			{
 				Net_WriteInt8(DEM_MYFOV);
 			}

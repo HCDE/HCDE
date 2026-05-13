@@ -264,6 +264,11 @@ void CalculateCPUSpeed()
 
 static void PrintToStdOut(const char *cpt, HANDLE StdOut)
 {
+	if (StdOut == nullptr || StdOut == INVALID_HANDLE_VALUE || cpt == nullptr)
+	{
+		return;
+	}
+
 	const char* srcp = cpt;
 	FString printData = "";
 	bool terminal = FancyStdOut;

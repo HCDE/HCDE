@@ -246,6 +246,44 @@ CVAR (Bool,  cl_analog_run,               true,  CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
 CVAR (Bool,  cl_analog_straferun,         false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
 
 CVAR (Bool, teamplay, false, CVAR_SERVERINFO)
+CUSTOM_CVAR(Int, sv_gametype, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 0 || self > 4)
+	{
+		Printf("sv_gametype must be between 0 and 4.\n");
+		self = 0;
+	}
+
+	switch (self)
+	{
+	case 1:
+		deathmatch = 1;
+		teamplay = false;
+		break;
+
+	case 2:
+		deathmatch = 1;
+		teamplay = true;
+		break;
+
+	case 3:
+		Printf("sv_gametype 3 (CTF) is using team deathmatch rules until CTF rules are wired.\n");
+		deathmatch = 1;
+		teamplay = true;
+		break;
+
+	case 4:
+		Printf("sv_gametype 4 (Horde) is using cooperative rules until Horde rules are wired.\n");
+		deathmatch = 0;
+		teamplay = false;
+		break;
+
+	default:
+		deathmatch = 0;
+		teamplay = false;
+		break;
+	}
+}
 
 // Workaround for x64 code generation bug in MSVC 2015
 // Optimized targets contain illegal instructions in the function below
@@ -419,12 +457,12 @@ CCMD (pause)
 {
 	if (netgame)
 	{
-		if (net_disablepause == 2 && (!paused || !players[consoleplayer].settings_controller))
+		if (net_disablepause == 2 && (!paused || !Net_LocalCanControlSettings()))
 		{
 			Printf("Pausing the game is currently disabled\n");
 			return;
 		}
-		else if (net_disablepause == 1 && !players[consoleplayer].settings_controller)
+		else if (net_disablepause == 1 && !Net_LocalCanControlSettings())
 		{
 			Printf("Only settings controllers can currently (un)pause the game\n");
 			return;
@@ -1190,8 +1228,8 @@ void D_RunCutscene()
 	{
 		if (netgame)
 		{
-			// Only the host can determine this.
-			if (consoleplayer != Net_Arbitrator)
+			// Only the service authority can determine this.
+			if (!I_IsLocalHCDEServiceAuthority())
 				return;
 
 			int type = ST_VOTE;
@@ -2251,7 +2289,7 @@ void G_SaveGame (const char *filename, const char *description, bool quick)
 	{
 		Printf ("%s\n", GStrings.GetString("TXT_SPPLAYERDEAD"));
 	}
-	else if (netgame && net_limitsaves && !players[consoleplayer].settings_controller)
+	else if (netgame && net_limitsaves && !Net_LocalCanControlSettings())
 	{
 		Printf("Only settings controllers can save the game\n");
 	}

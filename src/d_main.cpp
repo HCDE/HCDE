@@ -638,14 +638,14 @@ CUSTOM_CVAR (Int, dmflags, 0, CVAR_SERVERINFO | CVAR_NOINITCALL)
 	{
 		Net_WriteInt8 (DEM_CENTERVIEW);
 	}
-	// If nofov is set, force everybody to the arbitrator's FOV.
-	if ((self & DF_NO_FOV) && consoleplayer == Net_Arbitrator)
+	// If nofov is set, force everybody to the authority's FOV.
+	if ((self & DF_NO_FOV) && I_IsLocalHCDEServiceAuthority())
 	{
 		float fov;
 
 		Net_WriteInt8 (DEM_FOV);
 
-		// If the game is started with DF_NO_FOV set, the arbitrator's
+		// If the game is started with DF_NO_FOV set, the authority's
 		// DesiredFOV will not be set when this callback is run, so
 		// be sure not to transmit a 0 FOV.
 		fov = players[consoleplayer].DesiredFOV;

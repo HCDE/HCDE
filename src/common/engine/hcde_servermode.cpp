@@ -42,16 +42,22 @@ struct FHCDEServerRuntime
 	bool ReservedServerSlot = false;
 	bool MasterStateKnown = false;
 	bool MasterAdvertisingEnabled = false;
+	bool AuthorityStateKnown = false;
+	bool AuthorityPlayerBacked = true;
+	bool AuthoritySettingsController = false;
+	bool AuthorityWaiting = false;
 	size_t ConfiguredMasters = 0;
 	int RequestedServerSlots = 0;
 	int VisibleSlots = 1;
 	int InternalSlots = 1;
 	int GamePort = 0;
+	int AuthoritySlot = 0;
 	FString IWADArg;
 	FString SelectedIWAD;
 	FString MapArg;
 	FString JoinAddress;
 	FString FlowState;
+	FString AuthorityName;
 };
 
 FHCDEServerRuntime Runtime;
@@ -171,6 +177,39 @@ void HCDE_ServerMode_SetMasterState(bool advertisingEnabled, size_t configuredMa
 	Runtime.ConfiguredMasters = configuredMasters;
 }
 
+void HCDE_ServerMode_SetAuthorityState(int internalSlot, bool playerBacked, bool settingsController, bool waiting, const char* displayName)
+{
+	HCDE_ServerMode_InitFromArgs();
+	Runtime.AuthorityStateKnown = true;
+	Runtime.AuthoritySlot = internalSlot;
+	Runtime.AuthorityPlayerBacked = playerBacked;
+	Runtime.AuthoritySettingsController = settingsController;
+	Runtime.AuthorityWaiting = waiting;
+	Runtime.AuthorityName = displayName != nullptr ? displayName : "";
+	DebugTrace::Markf("servermode", "authority slot=%d playerBacked=%d settings=%d waiting=%d name=%s",
+		Runtime.AuthoritySlot,
+		Runtime.AuthorityPlayerBacked ? 1 : 0,
+		Runtime.AuthoritySettingsController ? 1 : 0,
+		Runtime.AuthorityWaiting ? 1 : 0,
+		TextOr(Runtime.AuthorityName, "unknown"));
+}
+
+void HCDE_ServerMode_SetAuthoritySettingsController(bool enabled)
+{
+	HCDE_ServerMode_InitFromArgs();
+	Runtime.AuthorityStateKnown = true;
+	Runtime.AuthoritySettingsController = enabled;
+	DebugTrace::Markf("servermode", "authority settings-controller=%d", enabled ? 1 : 0);
+}
+
+void HCDE_ServerMode_SetAuthorityWaiting(bool waiting)
+{
+	HCDE_ServerMode_InitFromArgs();
+	Runtime.AuthorityStateKnown = true;
+	Runtime.AuthorityWaiting = waiting;
+	DebugTrace::Markf("servermode", "authority waiting=%d", waiting ? 1 : 0);
+}
+
 void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 {
 	HCDE_ServerMode_InitFromArgs();
@@ -180,25 +219,44 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 	const char* masterState = Runtime.MasterStateKnown
 		? (Runtime.MasterAdvertisingEnabled ? "enabled" : "disabled")
 		: "not-initialized";
+	const char* safePhase = phase != nullptr ? phase : "unknown";
+	FString portText = Runtime.GamePort > 0 ? FStringf("%d", Runtime.GamePort) : FString("default");
+	const char* modeText = Runtime.DedicatedServer ? "dedicated-server" : (Runtime.JoinMode ? "join-client" : (Runtime.HostMode ? "host-client" : "client"));
 
 	Printf("HCDE server runtime [%s]: mode=%s executable=%s host=%s join=%s dedicatedjoin=%s silent-room-ui=%s\n",
-		phase != nullptr ? phase : "unknown",
-		Runtime.DedicatedServer ? "dedicated-server" : (Runtime.JoinMode ? "join-client" : (Runtime.HostMode ? "host-client" : "client")),
+		safePhase,
+		modeText,
+		YesNo(Runtime.DedicatedExecutable),
+		YesNo(Runtime.HostMode),
+		YesNo(Runtime.JoinMode),
+		YesNo(Runtime.DedicatedJoin),
+		YesNo(HCDE_ServerMode_ShouldSuppressRoomUI()));
+	DebugTrace::Infof("servermode", "diagnostics phase=%s mode=%s executable=%s host=%s join=%s dedicatedjoin=%s silent-room-ui=%s",
+		safePhase,
+		modeText,
 		YesNo(Runtime.DedicatedExecutable),
 		YesNo(Runtime.HostMode),
 		YesNo(Runtime.JoinMode),
 		YesNo(Runtime.DedicatedJoin),
 		YesNo(HCDE_ServerMode_ShouldSuppressRoomUI()));
 	Printf("HCDE server runtime [%s]: requested-slots=%d visible-slots=%d internal-slots=%d reserved-server-slot=%s port=%s flow=%s\n",
-		phase != nullptr ? phase : "unknown",
+		safePhase,
 		Runtime.RequestedServerSlots,
 		Runtime.VisibleSlots,
 		Runtime.InternalSlots,
 		YesNo(Runtime.ReservedServerSlot),
-		Runtime.GamePort > 0 ? FStringf("%d", Runtime.GamePort).GetChars() : "default",
+		portText.GetChars(),
+		TextOr(Runtime.FlowState, "unknown"));
+	DebugTrace::Infof("servermode", "diagnostics phase=%s slots requested=%d visible=%d internal=%d reserved=%s port=%s flow=%s",
+		safePhase,
+		Runtime.RequestedServerSlots,
+		Runtime.VisibleSlots,
+		Runtime.InternalSlots,
+		YesNo(Runtime.ReservedServerSlot),
+		portText.GetChars(),
 		TextOr(Runtime.FlowState, "unknown"));
 	Printf("HCDE server runtime [%s]: iwad-arg=%s selected-iwad=%s map=%s join-address=%s master=%s masters=%zu startup-ui=%s\n",
-		phase != nullptr ? phase : "unknown",
+		safePhase,
 		TextOr(Runtime.IWADArg, "auto"),
 		TextOr(Runtime.SelectedIWAD, "unknown"),
 		TextOr(Runtime.MapArg, "default"),
@@ -206,6 +264,32 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 		masterState,
 		Runtime.ConfiguredMasters,
 		YesNo(!HCDE_ServerMode_ShouldSuppressStartupUI()));
+	DebugTrace::Infof("servermode", "diagnostics phase=%s iwad=%s selected-iwad=%s map=%s join=%s master=%s masters=%zu startup-ui=%s",
+		safePhase,
+		TextOr(Runtime.IWADArg, "auto"),
+		TextOr(Runtime.SelectedIWAD, "unknown"),
+		TextOr(Runtime.MapArg, "default"),
+		TextOr(Runtime.JoinAddress, "none"),
+		masterState,
+		Runtime.ConfiguredMasters,
+		YesNo(!HCDE_ServerMode_ShouldSuppressStartupUI()));
+	if (Runtime.AuthorityStateKnown)
+	{
+		Printf("HCDE server runtime [%s]: authority-slot=%d authority-player-backed=%s authority-settings=%s authority-waiting=%s authority-name=%s\n",
+			safePhase,
+			Runtime.AuthoritySlot,
+			YesNo(Runtime.AuthorityPlayerBacked),
+			YesNo(Runtime.AuthoritySettingsController),
+			YesNo(Runtime.AuthorityWaiting),
+			TextOr(Runtime.AuthorityName, "unknown"));
+		DebugTrace::Infof("servermode", "diagnostics phase=%s authority-slot=%d player-backed=%s settings=%s waiting=%s name=%s",
+			safePhase,
+			Runtime.AuthoritySlot,
+			YesNo(Runtime.AuthorityPlayerBacked),
+			YesNo(Runtime.AuthoritySettingsController),
+			YesNo(Runtime.AuthorityWaiting),
+			TextOr(Runtime.AuthorityName, "unknown"));
+	}
 }
 
 void HCDE_ServerMode_GuardClientSubsystem(const char* subsystem)
@@ -214,6 +298,8 @@ void HCDE_ServerMode_GuardClientSubsystem(const char* subsystem)
 	if (!Runtime.DedicatedServer)
 		return;
 
+	DebugTrace::Errorf("servermode", "dedicated server attempted client subsystem=%s",
+		subsystem != nullptr ? subsystem : "unknown");
 	I_FatalError("Dedicated server attempted to initialize client subsystem: %s. This is a server-boundary bug.",
 		subsystem != nullptr ? subsystem : "unknown");
 }
@@ -234,6 +320,42 @@ bool HCDE_ServerMode_IsDedicatedJoin()
 {
 	HCDE_ServerMode_InitFromArgs();
 	return Runtime.DedicatedJoin;
+}
+
+bool HCDE_ServerMode_HasAuthorityState()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return Runtime.AuthorityStateKnown;
+}
+
+bool HCDE_ServerMode_IsAuthorityPlayerBacked()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return Runtime.AuthorityPlayerBacked;
+}
+
+bool HCDE_ServerMode_AuthorityCanControlSettings()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return Runtime.AuthoritySettingsController;
+}
+
+bool HCDE_ServerMode_IsAuthorityWaiting()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return Runtime.AuthorityWaiting;
+}
+
+int HCDE_ServerMode_GetAuthoritySlot()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return Runtime.AuthoritySlot;
+}
+
+const char* HCDE_ServerMode_GetAuthorityName()
+{
+	HCDE_ServerMode_InitFromArgs();
+	return TextOr(Runtime.AuthorityName, "HCDE server");
 }
 
 bool HCDE_ServerMode_ShouldSuppressRoomUI()

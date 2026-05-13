@@ -70,6 +70,7 @@ Everything that is changed is marked (maybe commented) with "Added by MC"
 #include "events.h"
 #include "g_game.h"
 #include "g_levellocals.h"
+#include "i_net.h"
 #include "i_specialpaths.h"
 #include "p_acs.h"
 #include "p_local.h"
@@ -116,7 +117,7 @@ void FCajunMaster::Main(FLevelLocals *Level)
 {
 	BotThinkCycles.Reset();
 
-	if (demoplayback || gamestate != GS_LEVEL || consoleplayer != Net_Arbitrator)
+	if (demoplayback || gamestate != GS_LEVEL || !I_IsLocalHCDEServiceAuthority())
 		return;
 
 	//Add new bots?

@@ -58,8 +58,11 @@ namespace DebugTrace
 	
 	// File output
 	bool SaveToFile(const char* filename);
+	bool SaveToFile(const char* filename, const char* channelFilter, Severity minSeverity);
 	
 	// Filtering
 	bool IsChannelEnabled(const char* channel);
 	bool IsSeverityEnabled(Severity severity);
+	bool ParseSeverity(const char* text, Severity& severity);
+	const char* GetSeverityName(Severity severity);
 }

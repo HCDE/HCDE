@@ -33,6 +33,7 @@
 #include "cmdlib.h"
 #include "sbar.h"
 #include "d_net.h"
+#include "i_net.h"
 #include "serializer.h"
 #include "vm.h"
 
@@ -753,9 +754,9 @@ void FWeaponSlots::SetupWeaponSlots(AActor *pp)
 	{
 		player->weapons.StandardSetup(pp->GetClass());
 		// If we're the local player, then there's a bit more work to do.
-		// This also applies if we're a bot and this is the net arbitrator.
+		// This also applies if we're a bot and this instance is the service authority.
 		if (player - players == consoleplayer ||
-			(player->Bot != nullptr && consoleplayer == Net_Arbitrator))
+			(player->Bot != nullptr && I_IsLocalHCDEServiceAuthority()))
 		{
 			FWeaponSlots local_slots(player->weapons);
 			if (player->Bot != nullptr)

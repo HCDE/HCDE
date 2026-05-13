@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -53,11 +54,22 @@ struct TraceEntry
 	char Message[MessageSize] = {};
 };
 
+struct TraceSnapshot
+{
+	uint64_t Milliseconds = 0;
+	uint64_t ThreadStamp = 0;
+	DebugTrace::Severity SeverityLevel = DebugTrace::Severity::Info;
+	char Channel[ChannelSize] = {};
+	char Message[MessageSize] = {};
+};
+
 static TraceEntry TraceBuffer[TraceCapacity] = {};
 static std::atomic<uint64_t> NextSerial = 1;
+static std::mutex TraceMutex;
 
 // Statistics tracking
 static std::unordered_map<std::string, size_t> ChannelCounts;
+static std::mutex StatsMutex;
 static std::atomic<uint64_t> TotalCount = {0};
 static std::atomic<uint64_t> SeverityCounts[4] = {{0}, {0}, {0}, {0}};
 
@@ -66,7 +78,7 @@ static uint64_t GetThreadStamp()
 	return static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
 }
 
-static const char* GetSeverityName(DebugTrace::Severity severity)
+static const char* SeverityName(DebugTrace::Severity severity)
 {
 	switch (severity)
 	{
@@ -78,25 +90,24 @@ static const char* GetSeverityName(DebugTrace::Severity severity)
 	}
 }
 
-static bool ShouldChannelBeLogged(const char* channel)
+static bool IsAllChannelFilter(const char* filter)
 {
-	if (!debugtrace_enable)
-		return false;
+	return filter == nullptr || *filter == '\0' || stricmp(filter, "all") == 0 || strcmp(filter, "*") == 0;
+}
 
-	const char* filter = debugtrace_filter;
-	if (filter == nullptr || *filter == '\0')
+static bool ChannelMatchesFilter(const char* channel, const char* channelFilter)
+{
+	if (IsAllChannelFilter(channelFilter))
 		return true;
 
-	// Check if channel matches filter (supports multiple channels separated by commas)
-	const char* start = filter;
+	// Supports multiple channels separated by commas, matching debugtrace_filter.
+	const char* start = channelFilter;
 	while (*start != '\0')
 	{
-		// Find end of current channel in filter
 		const char* end = start;
 		while (*end != '\0' && *end != ',')
 			++end;
 
-		// Extract channel from filter
 		FString filterChannel;
 		for (const char* p = start; p < end; ++p)
 		{
@@ -105,19 +116,24 @@ static bool ShouldChannelBeLogged(const char* channel)
 		}
 
 		if (filterChannel.IsEmpty())
-		{
-			// Empty filter means all channels
 			return true;
-		}
 
 		if (channel != nullptr && filterChannel.CompareNoCase(channel) == 0)
 			return true;
 
-		// Move to next channel in filter
 		start = (*end != '\0') ? end + 1 : end;
 	}
 
 	return false;
+}
+
+static bool ShouldChannelBeLogged(const char* channel)
+{
+	if (!debugtrace_enable)
+		return false;
+
+	const char* filter = debugtrace_filter;
+	return ChannelMatchesFilter(channel, filter);
 }
 
 static bool ShouldSeverityBeLogged(DebugTrace::Severity severity)
@@ -133,6 +149,7 @@ static void UpdateStatistics(const char* channel, DebugTrace::Severity severity)
 {
 	if (debugtrace_stats)
 	{
+		std::lock_guard<std::mutex> lock(StatsMutex);
 		if (channel != nullptr)
 		{
 			std::string channelKey(channel);
@@ -145,9 +162,9 @@ static void UpdateStatistics(const char* channel, DebugTrace::Severity severity)
 
 		const int severityIndex = static_cast<int>(severity);
 		if (severityIndex >= 0 && severityIndex < 4)
-			SeverityCounts[severityIndex]++;
+			SeverityCounts[severityIndex].fetch_add(1, std::memory_order_relaxed);
 
-		TotalCount++;
+		TotalCount.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -162,6 +179,7 @@ static void StoreEntry(const char* channel, DebugTrace::Severity severity, const
 
 	UpdateStatistics(channel, severity);
 
+	std::lock_guard<std::mutex> lock(TraceMutex);
 	const uint64_t serial = NextSerial.fetch_add(1, std::memory_order_relaxed);
 	TraceEntry& entry = TraceBuffer[(serial - 1u) % TraceCapacity];
 	entry.Serial.store(0, std::memory_order_relaxed);
@@ -175,64 +193,88 @@ static void StoreEntry(const char* channel, DebugTrace::Severity severity, const
 	entry.Serial.store(serial, std::memory_order_release);
 }
 
-static void PrintEntry(uint64_t serial, const char* channelFilter, DebugTrace::Severity minSeverity)
+static bool ReadEntrySnapshot(uint64_t serial, const char* channelFilter, DebugTrace::Severity minSeverity, TraceSnapshot& snapshot)
 {
+	std::lock_guard<std::mutex> lock(TraceMutex);
 	const TraceEntry& entry = TraceBuffer[(serial - 1u) % TraceCapacity];
 	const uint64_t published = entry.Serial.load(std::memory_order_acquire);
 	if (published != serial)
-		return;
+		return false;
 
-	// Apply filters
-	if (channelFilter != nullptr && entry.Channel[0] != '\0')
-	{
-		const char* filterStart = channelFilter;
-		bool matches = false;
-		while (*filterStart != '\0' && !matches)
-		{
-			const char* filterEnd = filterStart;
-			while (*filterEnd != '\0' && *filterEnd != ',')
-				++filterEnd;
-
-			FString filterChannel;
-			for (const char* p = filterStart; p < filterEnd; ++p)
-			{
-				if (*p != ' ' && *p != '\t')
-					filterChannel += *p;
-			}
-
-			if (filterChannel.IsEmpty() || filterChannel.CompareNoCase(entry.Channel) == 0)
-				matches = true;
-
-			filterStart = (*filterEnd != '\0') ? filterEnd + 1 : filterEnd;
-		}
-		if (!matches)
-			return;
-	}
+	if (!ChannelMatchesFilter(entry.Channel, channelFilter))
+		return false;
 
 	if (static_cast<int>(entry.SeverityLevel) < static_cast<int>(minSeverity))
+		return false;
+
+	snapshot.Milliseconds = entry.Milliseconds;
+	snapshot.ThreadStamp = entry.ThreadStamp;
+	snapshot.SeverityLevel = entry.SeverityLevel;
+	std::memcpy(snapshot.Channel, entry.Channel, sizeof(snapshot.Channel));
+	std::memcpy(snapshot.Message, entry.Message, sizeof(snapshot.Message));
+	return true;
+}
+
+static void PrintEntry(uint64_t serial, const char* channelFilter, DebugTrace::Severity minSeverity)
+{
+	TraceSnapshot snapshot;
+	if (!ReadEntrySnapshot(serial, channelFilter, minSeverity, snapshot))
 		return;
-
-	char channel[ChannelSize] = {};
-	char message[MessageSize] = {};
-	std::memcpy(channel, entry.Channel, sizeof(channel));
-	std::memcpy(message, entry.Message, sizeof(message));
-
-	if (entry.Serial.load(std::memory_order_acquire) != published)
-		return;
-
 	Printf("%10llu ms [0x%08llX] [%5s] %s: %s\n",
-		static_cast<unsigned long long>(entry.Milliseconds),
-		static_cast<unsigned long long>(entry.ThreadStamp & 0xffffffffull),
-		GetSeverityName(entry.SeverityLevel),
-		channel,
-		message);
+		static_cast<unsigned long long>(snapshot.Milliseconds),
+		static_cast<unsigned long long>(snapshot.ThreadStamp & 0xffffffffull),
+		SeverityName(snapshot.SeverityLevel),
+		snapshot.Channel,
+		snapshot.Message);
 }
 }
 
 namespace DebugTrace
 {
+const char* GetSeverityName(Severity severity)
+{
+	return SeverityName(severity);
+}
+
+bool ParseSeverity(const char* text, Severity& severity)
+{
+	if (text == nullptr || *text == '\0')
+		return false;
+
+	int level = 0;
+	if (C_IsValidInt(text, level))
+	{
+		severity = static_cast<Severity>(clamp<int>(level, 0, 3));
+		return true;
+	}
+
+	if (stricmp(text, "debug") == 0)
+	{
+		severity = Severity::Debug;
+		return true;
+	}
+	if (stricmp(text, "info") == 0)
+	{
+		severity = Severity::Info;
+		return true;
+	}
+	if (stricmp(text, "warn") == 0 || stricmp(text, "warning") == 0)
+	{
+		severity = Severity::Warning;
+		return true;
+	}
+	if (stricmp(text, "error") == 0)
+	{
+		severity = Severity::Error;
+		return true;
+	}
+
+	return false;
+}
+
 void Clear()
 {
+	std::lock_guard<std::mutex> lock(TraceMutex);
 	for (auto& entry : TraceBuffer)
 	{
 		entry.Serial.store(0, std::memory_order_release);
@@ -374,7 +416,7 @@ void Dump(const char* channelFilter, Severity minSeverity)
 	if (channelFilter != nullptr && *channelFilter != '\0')
 		header.AppendFormat(" [channel=%s]", channelFilter);
 	if (minSeverity != Severity::Debug)
-		header.AppendFormat(" [severity=%s]", GetSeverityName(minSeverity));
+		header.AppendFormat(" [severity=%s]", SeverityName(minSeverity));
 
 	Printf("%s:\n", header.GetChars());
 	for (uint64_t serial = firstSerial; serial <= lastSerial; ++serial)
@@ -407,43 +449,36 @@ void WriteCrashInfo(char* buffer, size_t bufflen, const char* lfstr)
 	buffer += mysnprintf(buffer, end - buffer, "%sRecent engine trace:", lfstr);
 	for (uint64_t serial = firstSerial; serial <= lastSerial && buffer < end; ++serial)
 	{
-		const TraceEntry& entry = TraceBuffer[(serial - 1u) % TraceCapacity];
-		const uint64_t published = entry.Serial.load(std::memory_order_acquire);
-		if (published != serial)
-			continue;
-
-		char channel[ChannelSize] = {};
-		char message[MessageSize] = {};
-		std::memcpy(channel, entry.Channel, sizeof(channel));
-		std::memcpy(message, entry.Message, sizeof(message));
-
-		if (entry.Serial.load(std::memory_order_acquire) != published)
+		TraceSnapshot snapshot;
+		if (!ReadEntrySnapshot(serial, nullptr, Severity::Debug, snapshot))
 			continue;
 
 		buffer += mysnprintf(buffer, end - buffer, "%s[%10llu ms][0x%08llX][%5s] %s: %s",
 			lfstr,
-			static_cast<unsigned long long>(entry.Milliseconds),
-			static_cast<unsigned long long>(entry.ThreadStamp & 0xffffffffull),
-			GetSeverityName(entry.SeverityLevel),
-			channel,
-			message);
+			static_cast<unsigned long long>(snapshot.Milliseconds),
+			static_cast<unsigned long long>(snapshot.ThreadStamp & 0xffffffffull),
+			SeverityName(snapshot.SeverityLevel),
+			snapshot.Channel,
+			snapshot.Message);
 	}
 	*buffer = 0;
 }
 
 void ClearStats()
 {
+	std::lock_guard<std::mutex> lock(StatsMutex);
 	ChannelCounts.clear();
-	TotalCount = 0;
+	TotalCount.store(0, std::memory_order_relaxed);
 	for (int i = 0; i < 4; ++i)
-		SeverityCounts[i] = 0;
+		SeverityCounts[i].store(0, std::memory_order_relaxed);
 }
 
 void DumpStats()
 {
 	Printf("Debug Trace Statistics:\n");
 
-	uint64_t totalCount = TotalCount.load();
+	std::lock_guard<std::mutex> lock(StatsMutex);
+	uint64_t totalCount = TotalCount.load(std::memory_order_relaxed);
 	if (totalCount == 0)
 	{
 		Printf("  No traces recorded.\n");
@@ -452,10 +487,10 @@ void DumpStats()
 
 	Printf("  Total entries: %llu\n", static_cast<unsigned long long>(totalCount));
 	Printf("\n  By Severity:\n");
-	Printf("    DEBUG:  %llu\n", static_cast<unsigned long long>(SeverityCounts[0].load()));
-	Printf("    INFO:   %llu\n", static_cast<unsigned long long>(SeverityCounts[1].load()));
-	Printf("    WARN:   %llu\n", static_cast<unsigned long long>(SeverityCounts[2].load()));
-	Printf("    ERROR:  %llu\n", static_cast<unsigned long long>(SeverityCounts[3].load()));
+	Printf("    DEBUG:  %llu\n", static_cast<unsigned long long>(SeverityCounts[0].load(std::memory_order_relaxed)));
+	Printf("    INFO:   %llu\n", static_cast<unsigned long long>(SeverityCounts[1].load(std::memory_order_relaxed)));
+	Printf("    WARN:   %llu\n", static_cast<unsigned long long>(SeverityCounts[2].load(std::memory_order_relaxed)));
+	Printf("    ERROR:  %llu\n", static_cast<unsigned long long>(SeverityCounts[3].load(std::memory_order_relaxed)));
 
 	Printf("\n  By Channel:\n");
 	for (const auto& pair : ChannelCounts)
@@ -466,7 +501,7 @@ void DumpStats()
 
 size_t GetTotalCount()
 {
-	return static_cast<size_t>(TotalCount.load());
+	return static_cast<size_t>(TotalCount.load(std::memory_order_relaxed));
 }
 
 size_t GetChannelCount(const char* channel)
@@ -474,12 +509,18 @@ size_t GetChannelCount(const char* channel)
 	if (channel == nullptr)
 		return 0;
 
+	std::lock_guard<std::mutex> lock(StatsMutex);
 	std::string channelKey(channel);
 	auto it = ChannelCounts.find(channelKey);
 	return (it != ChannelCounts.end()) ? it->second : 0;
 }
 
 bool SaveToFile(const char* filename)
+{
+	return SaveToFile(filename, nullptr, Severity::Debug);
+}
+
+bool SaveToFile(const char* filename, const char* channelFilter, Severity minSeverity)
 {
 	if (filename == nullptr)
 		return false;
@@ -502,30 +543,26 @@ bool SaveToFile(const char* filename)
 
 	fprintf(file, "HCDE Debug Trace Export\n");
 	fprintf(file, "========================\n");
-	fprintf(file, "Total entries: %llu\n\n", static_cast<unsigned long long>(lastSerial));
+	fprintf(file, "Total entries: %llu\n", static_cast<unsigned long long>(lastSerial));
+	if (!IsAllChannelFilter(channelFilter))
+		fprintf(file, "Channel filter: %s\n", channelFilter);
+	if (minSeverity != Severity::Debug)
+		fprintf(file, "Minimum severity: %s\n", SeverityName(minSeverity));
+	fprintf(file, "\n");
 
 	const uint64_t firstSerial = (lastSerial > TraceCapacity) ? (lastSerial - TraceCapacity + 1u) : 1u;
 	for (uint64_t serial = firstSerial; serial <= lastSerial; ++serial)
 	{
-		const TraceEntry& entry = TraceBuffer[(serial - 1u) % TraceCapacity];
-		const uint64_t published = entry.Serial.load(std::memory_order_acquire);
-		if (published != serial)
-			continue;
-
-		char channel[ChannelSize] = {};
-		char message[MessageSize] = {};
-		std::memcpy(channel, entry.Channel, sizeof(channel));
-		std::memcpy(message, entry.Message, sizeof(message));
-
-		if (entry.Serial.load(std::memory_order_acquire) != published)
+		TraceSnapshot snapshot;
+		if (!ReadEntrySnapshot(serial, channelFilter, minSeverity, snapshot))
 			continue;
 
 		fprintf(file, "[%10llu ms][0x%08llX][%5s] %s: %s\n",
-			static_cast<unsigned long long>(entry.Milliseconds),
-			static_cast<unsigned long long>(entry.ThreadStamp & 0xffffffffull),
-			GetSeverityName(entry.SeverityLevel),
-			channel,
-			message);
+			static_cast<unsigned long long>(snapshot.Milliseconds),
+			static_cast<unsigned long long>(snapshot.ThreadStamp & 0xffffffffull),
+			SeverityName(snapshot.SeverityLevel),
+			snapshot.Channel,
+			snapshot.Message);
 	}
 
 	fclose(file);
@@ -544,14 +581,40 @@ bool IsSeverityEnabled(Severity severity)
 }
 }
 
+static bool ParseTraceFilterArgs(int argc, FCommandLine& argv, int firstArg, const char*& channelFilter, DebugTrace::Severity& minSeverity)
+{
+	channelFilter = nullptr;
+	minSeverity = DebugTrace::Severity::Debug;
+
+	if (argc <= firstArg)
+		return true;
+
+	if (DebugTrace::ParseSeverity(argv[firstArg], minSeverity))
+		return argc == firstArg + 1;
+
+	if (!IsAllChannelFilter(argv[firstArg]))
+		channelFilter = argv[firstArg];
+
+	if (argc > firstArg + 1)
+	{
+		if (!DebugTrace::ParseSeverity(argv[firstArg + 1], minSeverity))
+			return false;
+	}
+
+	return argc <= firstArg + 2;
+}
+
 CCMD(debugtrace)
 {
-	if (argv.argc() == 1)
-		DebugTrace::Dump();
-	else if (argv.argc() == 2)
-		DebugTrace::Dump(argv[1]);
-	else
-		Printf("Usage: debugtrace [channel]\n");
+	const char* channelFilter = nullptr;
+	DebugTrace::Severity minSeverity = DebugTrace::Severity::Debug;
+	if (!ParseTraceFilterArgs(argv.argc(), argv, 1, channelFilter, minSeverity))
+	{
+		Printf("Usage: debugtrace [channel|all] [debug|info|warn|error|0-3]\n");
+		return;
+	}
+
+	DebugTrace::Dump(channelFilter, minSeverity);
 }
 
 CCMD(debugcleartrace)
@@ -564,23 +627,24 @@ CCMD(debugtraceseverity)
 {
 	if (argv.argc() == 1)
 	{
-		Printf("Current minimum severity: %d\n", int(debugtrace_minseverity));
+		const int level = clamp<int>(int(debugtrace_minseverity), 0, 3);
+		Printf("Current minimum severity: %d (%s)\n", level, DebugTrace::GetSeverityName(static_cast<DebugTrace::Severity>(level)));
 		Printf("Severity levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR\n");
 	}
 	else if (argv.argc() == 2)
 	{
-		int level = 0;
-		if (C_IsValidInt(argv[1], level))
+		DebugTrace::Severity severity;
+		if (DebugTrace::ParseSeverity(argv[1], severity))
 		{
-			level = clamp<int>(level, 0, 3);
+			const int level = static_cast<int>(severity);
 			debugtrace_minseverity = level;
-			Printf("Minimum severity set to: %d (%s)\n", level, level == 0 ? "DEBUG" : level == 1 ? "INFO" : level == 2 ? "WARN" : "ERROR");
+			Printf("Minimum severity set to: %d (%s)\n", level, DebugTrace::GetSeverityName(severity));
 		}
 		else
 			Printf("Invalid severity level.\n");
 	}
 	else
-		Printf("Usage: debugtraceseverity [0-3]\n");
+		Printf("Usage: debugtraceseverity [debug|info|warn|error|0-3]\n");
 }
 
 CCMD(debugtracestats)
@@ -596,13 +660,21 @@ CCMD(debugtracestats)
 
 CCMD(debugtracesave)
 {
-	if (argv.argc() != 2)
+	if (argv.argc() < 2)
 	{
-		Printf("Usage: debugtracesave <filename>\n");
+		Printf("Usage: debugtracesave <filename> [channel|all] [debug|info|warn|error|0-3]\n");
 		return;
 	}
 
-	if (DebugTrace::SaveToFile(argv[1]))
+	const char* channelFilter = nullptr;
+	DebugTrace::Severity minSeverity = DebugTrace::Severity::Debug;
+	if (!ParseTraceFilterArgs(argv.argc(), argv, 2, channelFilter, minSeverity))
+	{
+		Printf("Usage: debugtracesave <filename> [channel|all] [debug|info|warn|error|0-3]\n");
+		return;
+	}
+
+	if (DebugTrace::SaveToFile(argv[1], channelFilter, minSeverity))
 		Printf("Saved successfully.\n");
 }
 
