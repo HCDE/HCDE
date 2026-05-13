@@ -49,7 +49,6 @@ $symbolsZip = Join-Path $releaseRoot "$packageName-symbols.zip"
 if ($Build) {
     cmake --build $buildRoot --config $Configuration --target zdoom --parallel 1
     cmake --build $buildRoot --config $Configuration --target hcdeserv --parallel 1
-    cmake --build $buildRoot --config $Configuration --target hcdemaster --parallel 1
 }
 
 $buildConfigDir = Resolve-RequiredPath $buildConfigDir
@@ -69,7 +68,6 @@ New-Item -Path $stageDir -ItemType Directory | Out-Null
 $runtimeFiles = @(
     "hcde.exe",
     "hcdeserv.exe",
-    "hcdemaster.exe",
     "hcde.pk3",
     "hcde_mod_compat.pk3",
     "game_support.pk3",
@@ -91,35 +89,29 @@ $soundfontsDir = Join-Path $stageDir "soundfonts"
 New-Item -Path $soundfontsDir -ItemType Directory | Out-Null
 Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir "soundfonts/hcde.sf2")) -Destination $soundfontsDir
 
-$docFiles = @("README.md", "LICENSE", "SECURITY.md", "docs/HCDE_GOLDEN_RULES.md", "docs/HCDE_MASTER_PROTOCOL.md", "docs/HCDE_MASTER_BOUNDARY_STAGE1_AUDIT.md", "docs/HCDE_NETCODE_STAGE15_SERVER_SNAPSHOT_PAYLOAD.md", "docs/HCDE_NETCODE_STAGE16_CLIENT_INPUT_RECORDS.md", "docs/HCDE_NETCODE_STAGE17_SERVER_SNAPSHOT_RECORDS.md", "docs/HCDE_NETCODE_STAGE18_CLIENT_INPUT_COMMAND_FIELDS.md", "docs/HCDE_NETCODE_STAGE19_CLIENT_INPUT_EVENT_RECORDS.md", "docs/HCDE_NETCODE_STAGE20_CLIENT_INPUT_EVENT_PAYLOADS.md", "docs/HCDE_NETCODE_STAGE21_SERVER_SNAPSHOT_COMMAND_RECORDS.md", "docs/HCDE_NETCODE_STAGE22_DEDICATED_INPUT_AUTHORITY.md", "docs/HCDE_NETCODE_STAGE23_SERVER_WORLD_DELTAS.md", "docs/HCDE_NETCODE_STAGE24_BASELINE_REPAIR.md", "docs/HCDE_NETCODE_STAGE25_CLIENT_RECONCILIATION.md", "docs/HCDE_NETCODE_STAGE26_SLOTLESS_DEDICATED_BOUNDARY.md", "docs/HCDE_NETCODE_STAGE27_LIVE_ROUTE_AUTHORITY.md", "docs/HCDE_NETCODE_STAGE28_NON_PLAYER_SERVER_SESSION.md", "docs/HCDE_NETCODE_STAGE29_SERVICE_AUTHORITY_IDENTITY.md", "docs/HCDE_NETCODE_STAGE30_PACKET_AUTHORITY_BOUNDARY.md", "docs/HCDE_NETCODE_STAGE31_PACKET_BUILD_AUTHORITY.md", "docs/HCDE_NETCODE_STAGE32_QUIT_AUTHORITY.md", "docs/HCDE_NETCODE_STAGE33_STATUS_AUTHORITY.md")
+$docFiles = @("README.md", "LICENSE")
 foreach ($file in $docFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $repoRoot $file)) -Destination $stageDir
-}
-
-$protocolDir = Join-Path $stageDir "protocol"
-New-Item -Path $protocolDir -ItemType Directory | Out-Null
-$protocolFiles = @("protocol/hcde_master_protocol.json", "protocol/hcde_master_protocol.h")
-foreach ($file in $protocolFiles) {
-    Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $repoRoot $file)) -Destination $protocolDir
 }
 
 @"
 HCDE $Version
 
-This package contains the Windows x64 HCDE client, dedicated server, and standalone master server.
+This package contains the Windows x64 HCDE client and dedicated server.
 
 Included:
 - hcde.exe
 - hcdeserv.exe
-- hcdemaster.exe
 - HCDE runtime PK3 files
 - FM bank and soundfont assets
 
 Bring your own IWAD, such as DOOM2.WAD.
 
-Master discovery is opt-in for dedicated servers. Start hcdemaster.exe, then launch hcdeserv.exe
-with +set sv_usemasters 1 -master host[:port], or configure Doom Connector's HCDE masterserver
-setting so Connector appends those startup arguments for hosted sessions.
+Source code and complete documentation are available from the public HCDE repository:
+https://github.com/bokoxthexchocobo/HCDE
+
+The corresponding source for this release is the v$Version tag:
+https://github.com/bokoxthexchocobo/HCDE/tree/v$Version
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "RELEASE-NOTES.txt") -Encoding UTF8
 
 if (Test-Path -LiteralPath $packageZip) {
