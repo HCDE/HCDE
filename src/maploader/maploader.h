@@ -153,6 +153,7 @@ private:
 	TMap<int, EDLinedef> EDLines;
 	TMap<int, EDSector> EDSectors;
 	TMap<int, EDMapthing> EDThings;
+	bool EDInitialized = false;
 
 	// Polyobject init
 	TArray<int32_t> KnownPolySides;

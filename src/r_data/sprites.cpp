@@ -524,7 +524,7 @@ void VOX_AddVoxel(int sprnum, int frame, FVoxelDef *def)
 // Reads in everything applicable to a skin. The skins should have already
 // been counted and had their identifiers assigned to namespaces.
 //
-#define NUMSKINSOUNDS 17
+#define NUMSKINSOUNDS 18
 static const char *skinsoundnames[NUMSKINSOUNDS][2] =
 { // The *painXXX sounds must be the first four
 	{ "dsplpain",	"*pain100" },
@@ -549,8 +549,437 @@ static const char *skinsoundnames[NUMSKINSOUNDS][2] =
 	{ "dsslop",		"*splat" },
 
 	{ "dspunch",	"*fist" },
-	{ "dsjump",		"*jump" }
+	{ "dsjump",		"*jump" },
+	{ "dstaunt",	"*taunt" }
 };
+
+static uint32_t R_SkinSpriteNameToInt(const char* name)
+{
+	char chars[4] = { 0, 0, 0, 0 };
+	for (int i = 0; i < 4 && name[i] != 0; ++i)
+	{
+		chars[i] = (char)toupper((unsigned char)name[i]);
+	}
+
+	uint32_t intname;
+	memcpy(&intname, chars, sizeof(intname));
+	return intname;
+}
+
+static unsigned R_CountSkinInfoDefinitions()
+{
+	unsigned count = 0;
+	int lastlump = 0;
+	int lump;
+
+	while ((lump = fileSystem.FindLump("SKININFO", &lastlump, true)) != -1)
+	{
+		FScanner sc(lump);
+		while (sc.GetString())
+		{
+			if (sc.Compare("{"))
+			{
+				count++;
+				sc.SkipToEndOfBlock();
+			}
+			else
+			{
+				Printf(PRINT_BOLD, "Bad SKININFO format: expected '{', got '%s'.\n", sc.String);
+				break;
+			}
+		}
+	}
+
+	return count;
+}
+
+static void R_MakeSkinNameUnique(unsigned skinIndex)
+{
+	for (unsigned j = 0; j < skinIndex; j++)
+	{
+		if (Skins[skinIndex].Name.CompareNoCase(Skins[j].Name) == 0)
+		{
+			Skins[skinIndex].Name.Format("skin%u", skinIndex);
+			Printf(PRINT_BOLD, "Skin %s duplicated as %s\n", Skins[j].Name.GetChars(), Skins[skinIndex].Name.GetChars());
+			break;
+		}
+	}
+}
+
+static bool R_ParseSkinInfoDefinition(FScanner& sc, unsigned skinIndex, const FSoundID playersoundrefs[NUMSKINSOUNDS],
+	int sndlumps[NUMSKINSOUNDS], uint32_t& intname, uint32_t& crouchname,
+	PClassActor*& basetype, PClassActor*& transtype)
+{
+	char key[65];
+	key[sizeof(key) - 1] = 0;
+
+	while (sc.GetString())
+	{
+		if (sc.Compare("}"))
+		{
+			return false;
+		}
+
+		strncpy(key, sc.String, sizeof(key) - 1);
+		if (!sc.GetString() || sc.String[0] != '=')
+		{
+			Printf(PRINT_BOLD, "Bad SKININFO format for skin %u: %s\n", skinIndex, key);
+			sc.SkipToEndOfBlock();
+			return true;
+		}
+		if (!sc.GetString())
+		{
+			Printf(PRINT_BOLD, "Bad SKININFO format for skin %u: %s has no value\n", skinIndex, key);
+			return true;
+		}
+
+		if (0 == stricmp(key, "name"))
+		{
+			Skins[skinIndex].Name = sc.String;
+			R_MakeSkinNameUnique(skinIndex);
+		}
+		else if (0 == stricmp(key, "sprite"))
+		{
+			intname = R_SkinSpriteNameToInt(sc.String);
+		}
+		else if (0 == stricmp(key, "crouchsprite"))
+		{
+			crouchname = R_SkinSpriteNameToInt(sc.String);
+		}
+		else if (0 == stricmp(key, "face"))
+		{
+			Skins[skinIndex].Face = FString(sc.String, 3);
+		}
+		else if (0 == stricmp(key, "gender"))
+		{
+			Skins[skinIndex].gender = D_GenderToInt(sc.String);
+		}
+		else if (0 == stricmp(key, "scale"))
+		{
+			Skins[skinIndex].Scale.X = clamp((float)atof(sc.String), EQUAL_EPSILON, 256.f);
+			Skins[skinIndex].Scale.Y = Skins[skinIndex].Scale.X;
+		}
+		else if (0 == stricmp(key, "game"))
+		{
+			if (gameinfo.gametype == GAME_Heretic)
+				basetype = PClass::FindActor(NAME_HereticPlayer);
+			else if (gameinfo.gametype == GAME_Strife)
+				basetype = PClass::FindActor(NAME_StrifePlayer);
+			else
+				basetype = PClass::FindActor(NAME_DoomPlayer);
+
+			transtype = basetype;
+
+			if (stricmp(sc.String, "heretic") == 0)
+			{
+				if (gameinfo.gametype & GAME_DoomChex)
+				{
+					transtype = PClass::FindActor(NAME_HereticPlayer);
+					Skins[skinIndex].othergame = true;
+				}
+				else if (gameinfo.gametype != GAME_Heretic)
+				{
+					sc.SkipToEndOfBlock();
+					return true;
+				}
+			}
+			else if (stricmp(sc.String, "strife") == 0)
+			{
+				if (gameinfo.gametype != GAME_Strife)
+				{
+					sc.SkipToEndOfBlock();
+					return true;
+				}
+			}
+			else
+			{
+				if (gameinfo.gametype == GAME_Heretic)
+				{
+					transtype = PClass::FindActor(NAME_DoomPlayer);
+					Skins[skinIndex].othergame = true;
+				}
+				else if (!(gameinfo.gametype & GAME_DoomChex))
+				{
+					sc.SkipToEndOfBlock();
+					return true;
+				}
+			}
+		}
+		else if (0 == stricmp(key, "class"))
+		{
+			int pclass = D_PlayerClassToInt(sc.String);
+			if (pclass < 0)
+			{
+				sc.SkipToEndOfBlock();
+				return true;
+			}
+
+			basetype = transtype = PlayerClasses[pclass].Type;
+		}
+		else if (key[0] == '*')
+		{
+			int lump = fileSystem.CheckNumForName(sc.String, Skins[skinIndex].namespc);
+			if (lump == -1)
+			{
+				lump = fileSystem.CheckNumForFullName(sc.String, true, FileSys::ns_sounds);
+			}
+			if (lump != -1)
+			{
+				if (stricmp(key, "*pain") == 0)
+				{
+					FSoundID aliasid = S_AddPlayerSound(Skins[skinIndex].Name.GetChars(), Skins[skinIndex].gender,
+						playersoundrefs[0], lump, true);
+					for (int l = 3; l > 0; --l)
+					{
+						S_AddPlayerSoundExisting(Skins[skinIndex].Name.GetChars(), Skins[skinIndex].gender,
+							playersoundrefs[l], aliasid, true);
+					}
+				}
+				else
+				{
+					auto sndref = soundEngine->FindSoundNoHash(key);
+					if (sndref.isvalid())
+					{
+						S_AddPlayerSound(Skins[skinIndex].Name.GetChars(), Skins[skinIndex].gender, sndref, lump, true);
+					}
+				}
+			}
+		}
+		else
+		{
+			for (int j = 0; j < NUMSKINSOUNDS; j++)
+			{
+				if (stricmp(key, skinsoundnames[j][0]) == 0)
+				{
+					sndlumps[j] = fileSystem.CheckNumForName(sc.String, Skins[skinIndex].namespc);
+					if (sndlumps[j] == -1)
+					{
+						sndlumps[j] = fileSystem.CheckNumForFullName(sc.String, true, FileSys::ns_sounds);
+					}
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+static bool R_FinalizeSkinInfoDefinition(unsigned skinIndex, int container, const FSoundID playersoundrefs[NUMSKINSOUNDS],
+	const int sndlumps[NUMSKINSOUNDS], uint32_t intname, uint32_t crouchname,
+	PClassActor* basetype, PClassActor* transtype)
+{
+	spritedef_t temp;
+	bool remove = false;
+
+	if (basetype == NULL)
+	{
+		if (gameinfo.gametype & GAME_DoomChex)
+		{
+			basetype = transtype = PClass::FindActor(NAME_DoomPlayer);
+		}
+		else if (gameinfo.gametype == GAME_Heretic)
+		{
+			basetype = PClass::FindActor(NAME_HereticPlayer);
+			transtype = PClass::FindActor(NAME_DoomPlayer);
+			Skins[skinIndex].othergame = true;
+		}
+		else
+		{
+			remove = true;
+		}
+	}
+
+	if (!remove)
+	{
+		auto transdef = GetDefaultByType(transtype);
+
+		Skins[skinIndex].range0start = transdef->IntVar(NAME_ColorRangeStart);
+		Skins[skinIndex].range0end = transdef->IntVar(NAME_ColorRangeEnd);
+	}
+
+	if (!remove)
+	{
+		if (Skins[skinIndex].Name.IsEmpty())
+		{
+			Skins[skinIndex].Name.Format("skin%u", skinIndex);
+		}
+
+		if (intname == 0)
+		{
+			Printf(PRINT_BOLD, "SKININFO skin %s (#%u) has no sprite. Removing.\n", Skins[skinIndex].Name.GetChars(), skinIndex);
+			remove = true;
+		}
+	}
+
+	if (!remove)
+	{
+		int first = fileSystem.GetFirstEntry(container);
+		int last = fileSystem.GetLastEntry(container);
+
+		for (int spr = 0; spr < 2; spr++)
+		{
+			spriteframewithrotate sprtemp[MAX_SPRITE_FRAMES];
+			memset(sprtemp, 0xFFFF, sizeof(sprtemp));
+			for (int k = 0; k < MAX_SPRITE_FRAMES; ++k)
+			{
+				sprtemp[k].Flip = 0;
+				sprtemp[k].Voxel = NULL;
+			}
+			int maxframe = -1;
+			uint32_t activeSprite = intname;
+
+			if (spr == 1)
+			{
+				if (crouchname != 0 && crouchname != intname)
+				{
+					activeSprite = crouchname;
+				}
+				else
+				{
+					Skins[skinIndex].crouchsprite = -1;
+					break;
+				}
+			}
+
+			for (int k = first; k <= last; k++)
+			{
+				const char* lname = fileSystem.GetFileShortName(k);
+				if (strlen(lname) < 6)
+				{
+					continue;
+				}
+
+				uint32_t lnameint = R_SkinSpriteNameToInt(lname);
+				if (lnameint == activeSprite)
+				{
+					FTextureID picnum = TexMan.CreateTexture(k, ETextureType::SkinSprite);
+					bool res = R_InstallSpriteLump(picnum, toupper((unsigned char)lname[4]) - 'A',
+						toupper((unsigned char)lname[5]), false, sprtemp, maxframe);
+
+					if (lname[6] && res)
+					{
+						R_InstallSpriteLump(picnum, toupper((unsigned char)lname[6]) - 'A',
+							toupper((unsigned char)lname[7]), true, sprtemp, maxframe);
+					}
+				}
+			}
+
+			if (spr == 0 && maxframe <= 0)
+			{
+				Printf(PRINT_BOLD, "Skin %s (#%u) has no frames. Removing.\n", Skins[skinIndex].Name.GetChars(), skinIndex);
+				remove = true;
+				break;
+			}
+
+			memcpy(temp.name, &activeSprite, sizeof(activeSprite));
+			temp.name[4] = 0;
+			int sprno = (int)sprites.Push(temp);
+			if (spr == 0) Skins[skinIndex].sprite = sprno;
+			else Skins[skinIndex].crouchsprite = sprno;
+			R_InstallSprite(sprno, sprtemp, maxframe);
+		}
+	}
+
+	if (!remove)
+	{
+		auto basedef = GetDefaultByType(basetype);
+
+		remove = true;
+		for (int j = 0; j < (int)PlayerClasses.Size(); j++)
+		{
+			auto type = PlayerClasses[j].Type;
+			auto type_def = GetDefaultByType(type);
+
+			if (type->IsDescendantOf(basetype) &&
+				GetDefaultByType(type)->SpawnState->sprite == GetDefaultByType(basetype)->SpawnState->sprite &&
+				type_def->IntVar(NAME_ColorRangeStart) == basedef->IntVar(NAME_ColorRangeStart) &&
+				type_def->IntVar(NAME_ColorRangeEnd) == basedef->IntVar(NAME_ColorRangeEnd))
+			{
+				PlayerClasses[j].Skins.Push((int)skinIndex);
+				remove = false;
+			}
+		}
+	}
+
+	if (remove)
+	{
+		return false;
+	}
+
+	FSoundID aliasid = NO_SOUND;
+	for (int j = 0; j < NUMSKINSOUNDS; j++)
+	{
+		if (sndlumps[j] != -1)
+		{
+			if (j == 0 || sndlumps[j] != sndlumps[j - 1])
+			{
+				aliasid = S_AddPlayerSound(Skins[skinIndex].Name.GetChars(), Skins[skinIndex].gender,
+					playersoundrefs[j], sndlumps[j], true);
+			}
+			else
+			{
+				S_AddPlayerSoundExisting(Skins[skinIndex].Name.GetChars(), Skins[skinIndex].gender,
+					playersoundrefs[j], aliasid, true);
+			}
+		}
+	}
+
+	if (Skins[skinIndex].Face.Len() < 3)
+	{
+		Skins[skinIndex].Face = "";
+	}
+
+	return true;
+}
+
+static void R_InitSkinInfoSkins(unsigned& skinIndex, const FSoundID playersoundrefs[NUMSKINSOUNDS])
+{
+	int lastlump = 0;
+	int lump;
+
+	while ((lump = fileSystem.FindLump("SKININFO", &lastlump, true)) != -1)
+	{
+		FScanner sc(lump);
+		int container = fileSystem.GetFileContainer(lump);
+
+		while (sc.GetString())
+		{
+			if (!sc.Compare("{"))
+			{
+				Printf(PRINT_BOLD, "Bad SKININFO format: expected '{', got '%s'.\n", sc.String);
+				break;
+			}
+
+			skinIndex++;
+			int sndlumps[NUMSKINSOUNDS];
+			for (int j = 0; j < NUMSKINSOUNDS; j++)
+			{
+				sndlumps[j] = -1;
+			}
+
+			Skins[skinIndex].namespc = FileSys::ns_global;
+			uint32_t intname = 0;
+			uint32_t crouchname = 0;
+			PClassActor* basetype = NULL;
+			PClassActor* transtype = NULL;
+
+			bool remove = R_ParseSkinInfoDefinition(sc, skinIndex, playersoundrefs, sndlumps,
+				intname, crouchname, basetype, transtype);
+
+			if (!remove)
+			{
+				remove = !R_FinalizeSkinInfoDefinition(skinIndex, container, playersoundrefs, sndlumps,
+					intname, crouchname, basetype, transtype);
+			}
+
+			if (remove)
+			{
+				Skins.Delete(skinIndex);
+				skinIndex--;
+			}
+		}
+	}
+}
 
 /*
 static int skinsorter (const void *a, const void *b)
@@ -870,10 +1299,7 @@ void R_InitSkins (void)
 
 		if (remove)
 		{
-			if (i < Skins.Size() - 1)
-			{
-				Skins.Delete(i);
-			}
+			Skins.Delete(i);
 			i--;
 			continue;
 		}
@@ -903,6 +1329,8 @@ void R_InitSkins (void)
 			Skins[i].Face = "";
 		}
 	}
+
+	R_InitSkinInfoSkins(i, playersoundrefs);
 
 	if (Skins.Size() > PlayerClasses.Size ())
 	{ // The sound table may have changed, so rehash it.
@@ -983,6 +1411,7 @@ void R_InitSprites ()
 	{
 		numskins++;
 	}
+	numskins += R_CountSkinInfoDefinitions();
 
 	// [RH] Do some preliminary setup
 	Skins.Clear();

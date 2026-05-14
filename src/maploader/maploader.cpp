@@ -37,6 +37,7 @@
 #include "v_text.h"
 #include "p_setup.h"
 #include "gi.h"
+#include "hcde_emapinfo.h"
 #include "engineerrors.h"
 #include "types.h"
 #include "filesystem.h"
@@ -2953,8 +2954,16 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 			translator = Args->CheckValue(FArg_xlat);
 			if (translator == nullptr)
 			{
-				// Use the game's default.
-				translator = gameinfo.translator.GetChars();
+				if (HCDE_EMapInfo_IsEternityMap(Level->MapName.GetChars()))
+				{
+					translator = "xlat/eternity.txt";
+					Printf("HCDE: using Eternity XLAT translator for EMAPINFO map %s.\n", Level->MapName.GetChars());
+				}
+				else
+				{
+					// Use the game's default.
+					translator = gameinfo.translator.GetChars();
+				}
 			}
 		}
 		Level->Translator = P_LoadTranslator(translator);

@@ -207,14 +207,16 @@ void D_AddConfigFiles(std::vector<FileSys::ResourceName>& wadfiles, const char* 
 //
 // D_AddDirectory
 //
-// Add all .wad files in a directory. Does not descend into subdirectories.
+// Add all files matching a pattern in a directory. Does not descend into
+// subdirectories.
 //
 //==========================================================================
 
 void D_AddDirectory(std::vector<FileSys::ResourceName>& wadfiles, const char* dir, const char *filespec, FConfigFile* config, bool optional)
 {
 	FileSys::FileList list;
-	if (FileSys::ScanDirectory(list, dir, "*.wad", true))
+	const char* pattern = filespec != nullptr && *filespec != '\0' ? filespec : "*.wad";
+	if (FileSys::ScanDirectory(list, dir, pattern, true))
 	{
 		for (auto& entry : list)
 		{

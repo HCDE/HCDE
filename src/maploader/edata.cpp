@@ -23,6 +23,7 @@
 */
 
 #include "filesystem.h"
+#include "hcde_emapinfo.h"
 #include "m_argv.h"
 #include "sc_man.h"
 #include "g_level.h"
@@ -507,9 +508,16 @@ void MapLoader::InitED()
 	FString filename = Level->info->EDName;
 	FScanner sc;
 
+	if (EDInitialized) return;
+	EDInitialized = true;
+
 	if (filename.IsEmpty()) return;
-	int lump = fileSystem.CheckNumForFullName(filename.GetChars(), true, FileSys::ns_global);
-	if (lump == -1) return;
+	int lump = HCDE_EMapInfo_FindExtraDataLump(Level->MapName.GetChars(), filename.GetChars());
+	if (lump == -1)
+	{
+		Printf("HCDE: ExtraData '%s' for map %s was not found.\n", filename.GetChars(), Level->MapName.GetChars());
+		return;
+	}
 	sc.OpenLumpNum(lump);
 
 	sc.SetCMode(true);
@@ -532,6 +540,13 @@ void MapLoader::InitED()
 			sc.ScriptError("Unknown keyword '%s'", sc.String);
 		}
 	}
+
+	Printf("HCDE: loaded ExtraData %s for map %s: linedefs=%d sectors=%d mapthings=%d.\n",
+		fileSystem.GetFileFullPath(lump).c_str(),
+		Level->MapName.GetChars(),
+		EDLines.CountUsed(),
+		EDSectors.CountUsed(),
+		EDThings.CountUsed());
 }
 
 void MapLoader::ProcessEDMapthing(FMapThing *mt, int recordnum)

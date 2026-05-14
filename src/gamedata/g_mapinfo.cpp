@@ -38,6 +38,7 @@
 #include "autosegs.h"
 #include "g_levellocals.h"
 #include "events.h"
+#include "hcde_emapinfo.h"
 #include "i_system.h"
 #include "screenjob.h"
 #include "texturemanager.h"
@@ -2671,6 +2672,7 @@ void G_ClearMapinfo()
 	AllSkills.Clear();
 	DefaultSkill = -1;
 	DeinitIntermissions();
+	HCDE_ClearEMapInfoCompat();
 	primaryLevel->info = nullptr;
 	primaryLevel->F1Pic = "";
 	ParsedLumps.Clear();
@@ -2759,7 +2761,7 @@ void G_ParseMapInfo(FString basemapinfo)
 	gamedefaults.compatflags2 |= flags2;
 	gamedefaults.compatmask2 |= flags2;
 
-	static const char* mapinfonames[] = { "MAPINFO", "ZMAPINFO", "UMAPINFO", NULL };
+	static const char* mapinfonames[] = { "MAPINFO", "ZMAPINFO", "UMAPINFO", "EMAPINFO", NULL };
 	int nindex;
 
 	// Parse any extra MAPINFOs.
@@ -2784,12 +2786,33 @@ void G_ParseMapInfo(FString basemapinfo)
 			altlump = fileSystem.CheckNumForName("MAPINFO", FileSys::ns_global, wad, true);
 			if (altlump >= 0) continue;
 		}
+		else if (nindex == 3)
+		{
+			// Native MAPINFO variants win over EMAPINFO if the same archive ships both.
+			int wad = fileSystem.GetFileContainer(lump);
+			int altlump = fileSystem.CheckNumForName("ZMAPINFO", FileSys::ns_global, wad, true);
+			if (altlump < 0) altlump = fileSystem.CheckNumForName("MAPINFO", FileSys::ns_global, wad, true);
+			if (altlump < 0) altlump = fileSystem.CheckNumForName("UMAPINFO", FileSys::ns_global, wad, true);
+			if (altlump >= 0)
+			{
+				Printf("HCDE: skipped EMAPINFO in %s because a native map-info lump from the same archive takes precedence.\n",
+					fileSystem.GetResourceFileName(wad));
+				continue;
+			}
+		}
 		if (nindex != 2)
 		{
 			CommitUMapinfo(&gamedefaults);	// UMAPINFOs are collected until a regular MAPINFO is found so that they properly use the base settings.
-			FMapInfoParser parse(nindex == 1 ? FMapInfoParser::FMT_New : FMapInfoParser::FMT_Unknown);
-			level_info_t defaultinfo;
-			parse.ParseMapInfo(lump, gamedefaults, defaultinfo);
+			if (nindex == 3)
+			{
+				HCDE_ParseEMapInfo(lump, &gamedefaults);
+			}
+			else
+			{
+				FMapInfoParser parse(nindex == 1 ? FMapInfoParser::FMT_New : FMapInfoParser::FMT_Unknown);
+				level_info_t defaultinfo;
+				parse.ParseMapInfo(lump, gamedefaults, defaultinfo);
+			}
 		}
 		else
 		{

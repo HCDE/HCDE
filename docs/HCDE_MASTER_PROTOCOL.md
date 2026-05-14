@@ -33,18 +33,22 @@ server registration, heartbeat refreshes, and unregisters.
 
 ## Dedicated Server Startup
 
-Dedicated servers advertise only when `sv_usemasters` is enabled. Use
-`-master host[:port]` for startup master addresses:
+Dedicated servers advertise only when master advertising is enabled. Use
+`-advertise` to enable it for the current run and `-master host[:port]` for
+startup master addresses:
 
 ```powershell
-hcdeserv -server 1 -port 10666 -iwad doom2.wad +set sv_usemasters 1 -master hcde.servebeer.com +map MAP01
+hcdeserv -server 1 -port 10666 -iwad doom2.wad -advertise -master hcde.servebeer.com:15000 +map MAP01
 ```
 
 `-master` may be repeated. If no startup or archived masters are configured,
-HCDE falls back to the built-in default master list. The `addmaster` console
-command is still available at runtime and in archived configs, but launchers
-should prefer `-master` because dedicated-server startup does not run delayed
-console commands.
+HCDE falls back to the built-in default master list. The `advertise`,
+`unadvertise`, and `addmaster` console commands are still available at runtime
+and in archived configs, but launchers should prefer `-advertise` and `-master`
+because dedicated-server startup does not run delayed console commands.
+
+Use `-noadvertise` to force a private dedicated server even if `sv_usemasters`
+is enabled in the archived config.
 
 ## Legacy Server Heartbeat
 

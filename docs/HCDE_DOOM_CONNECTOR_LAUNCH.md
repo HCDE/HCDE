@@ -30,7 +30,7 @@ Notes:
 - Server discovery is opt-in:
 
 ```powershell
-hcdeserv -server 4 -iwad C:\Games\doom2.wad -port 10666 +set sv_usemasters 1 -master hcde.servebeer.com +map MAP01
+hcdeserv -server 4 -iwad C:\Games\doom2.wad -port 10666 -advertise -master hcde.servebeer.com:15000 +map MAP01
 ```
 
 ## Join Client Process
@@ -100,7 +100,7 @@ with HCDE service messages instead of the legacy room packet names. Doom
 Connector still launches the same two-process shape:
 
 ```powershell
-hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> +sv_usemasters 0 +map <map-name>
+hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> -noadvertise +map <map-name>
 hcde -join <host:port> -dedicatedjoin -netwaitsilent -iwad <iwad-path> -file <mods...>
 ```
 
@@ -130,7 +130,7 @@ does not need new command-line arguments for this stage.
 A healthy join should still use the same launch shape:
 
 ```powershell
-hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> +sv_usemasters 0 +map <map-name>
+hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> -noadvertise +map <map-name>
 hcde -join <host:port> -dedicatedjoin -netwaitsilent -iwad <iwad-path> -file <mods...>
 ```
 
@@ -146,7 +146,7 @@ Doom Connector does not need new command-line arguments for this stage.
 Keep launching the dedicated pair as:
 
 ```powershell
-hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> +sv_usemasters 0 +map <map-name>
+hcdeserv -server <player-slots> -iwad <iwad-path> -port <udp-port> -noadvertise +map <map-name>
 hcde -join <host:port> -dedicatedjoin -netwaitsilent -iwad <iwad-path> -file <mods...>
 ```
 

@@ -48,7 +48,7 @@ separately.
 The local stage smoke used:
 
 ```powershell
-hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10682 +sv_usemasters 0 +map MAP01
+hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10682 -noadvertise +map MAP01
 hcde -join 127.0.0.1:10682 -dedicatedjoin -netwaitsilent -iwad C:\Users\User\Downloads\doom2.wad -port 10683 -nosound -nomusic -norun
 ```
 

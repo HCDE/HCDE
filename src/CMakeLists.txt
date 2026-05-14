@@ -849,6 +849,8 @@ set (PCH_SOURCES
 	gamedata/a_weapons.cpp
 	gamedata/decallib.cpp
 	gamedata/g_mapinfo.cpp
+	gamedata/hcde_edf.cpp
+	gamedata/hcde_emapinfo.cpp
 	gamedata/g_skill.cpp
 	gamedata/gi.cpp
 	gamedata/umapinfo.cpp
@@ -1104,6 +1106,7 @@ set (PCH_SOURCES
 	common/engine/palettecontainer.cpp
 	common/engine/stringtable.cpp
 	common/engine/hcde_servermode.cpp
+	common/engine/hcde_eternity_compat.cpp
 	common/engine/hcde_mod_compat.cpp
 	common/engine/i_net.cpp
 	common/engine/sv_master.cpp

@@ -58,7 +58,7 @@ these service messages from that client.
 The local stage smoke used:
 
 ```powershell
-hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10680 +sv_usemasters 0 +map MAP01
+hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10680 -noadvertise +map MAP01
 hcde -join 127.0.0.1:10680 -dedicatedjoin -netwaitsilent -iwad C:\Users\User\Downloads\doom2.wad -port 10681 -nosound -nomusic -norun
 ```
 

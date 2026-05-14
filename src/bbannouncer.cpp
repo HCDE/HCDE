@@ -35,6 +35,7 @@
 #include "gstrings.h"
 #include "d_player.h"
 #include "g_levellocals.h"
+#include "filesystem.h"
 
 // MACROS ------------------------------------------------------------------
 
@@ -60,6 +61,7 @@ void PronounMessage (const char *from, char *to, int pronoun,
 // PUBLIC DATA DEFINITIONS -------------------------------------------------
 
 CVAR (Bool, cl_bbannounce, false, CVAR_ARCHIVE)
+CVAR (Bool, cl_stannounce, false, CVAR_ARCHIVE)
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
 
@@ -160,6 +162,30 @@ static const char *TelefragSounds[] =
 static int LastAnnounceTime;
 static FCRandom pr_bbannounce ("BBAnnounce");
 
+struct SkulltagAnnouncerEvent
+{
+	const char *Name;
+	FString Sound;
+};
+
+static SkulltagAnnouncerEvent SkulltagAnnouncerEvents[] =
+{
+	{ "fight", "" },
+	{ "preparetofight", "" },
+	{ "firstfrag", "" },
+	{ "domination", "" },
+	{ "totaldomination", "" },
+	{ "excellent", "" },
+	{ "impressive", "" },
+	{ "incredible", "" },
+	{ "mostimpressive", "" },
+	{ "perfect", "" },
+	{ "youfailit", "" },
+	{ "yourskillisnotenough", "" },
+};
+
+static bool SkulltagAnnouncerInfoLoaded;
+
 // CODE --------------------------------------------------------------------
 
 //==========================================================================
@@ -180,6 +206,101 @@ void DoVoiceAnnounce (const char *sound)
 
 //==========================================================================
 //
+// Skulltag/Zandronum ANCRINFO support
+//
+//==========================================================================
+
+static FString *FindSkulltagAnnouncerEvent(const char *name)
+{
+	for (unsigned i = 0; i < countof(SkulltagAnnouncerEvents); ++i)
+	{
+		if (stricmp(SkulltagAnnouncerEvents[i].Name, name) == 0)
+		{
+			return &SkulltagAnnouncerEvents[i].Sound;
+		}
+	}
+
+	return nullptr;
+}
+
+static void LoadSkulltagAnnouncerInfo()
+{
+	if (SkulltagAnnouncerInfoLoaded)
+	{
+		return;
+	}
+	SkulltagAnnouncerInfoLoaded = true;
+
+	int lastlump = 0;
+	int lump;
+	while ((lump = fileSystem.FindLump("ANCRINFO", &lastlump, true)) != -1)
+	{
+		FScanner sc(lump);
+		while (sc.GetString())
+		{
+			if (!sc.Compare("{"))
+			{
+				Printf(PRINT_BOLD, "Bad ANCRINFO format: expected '{', got '%s'.\n", sc.String);
+				sc.SkipToEndOfBlock();
+				break;
+			}
+
+			while (sc.GetString())
+			{
+				if (sc.Compare("}"))
+				{
+					break;
+				}
+
+				FString key = sc.String;
+				if (!sc.GetString() || sc.String[0] != '=')
+				{
+					Printf(PRINT_BOLD, "Bad ANCRINFO format: expected '=' after '%s'.\n", key.GetChars());
+					sc.SkipToEndOfBlock();
+					break;
+				}
+				if (!sc.GetString())
+				{
+					Printf(PRINT_BOLD, "Bad ANCRINFO format: '%s' has no sound.\n", key.GetChars());
+					break;
+				}
+
+				if (key.CompareNoCase("name") == 0)
+				{
+					continue;
+				}
+
+				FString *sound = FindSkulltagAnnouncerEvent(key.GetChars());
+				if (sound != nullptr)
+				{
+					*sound = sc.String;
+				}
+			}
+		}
+	}
+}
+
+static bool PlaySkulltagAnnouncer(const char *name)
+{
+	LoadSkulltagAnnouncerInfo();
+
+	FString *sound = FindSkulltagAnnouncerEvent(name);
+	if (sound == nullptr || sound->IsEmpty())
+	{
+		return false;
+	}
+
+	DoVoiceAnnounce(sound->GetChars());
+	return true;
+}
+
+static bool PlaySkulltagAnnouncer(const char *name, const char *fallback)
+{
+	return PlaySkulltagAnnouncer(name) || PlaySkulltagAnnouncer(fallback);
+}
+
+//==========================================================================
+//
 // AnnounceGameStart
 //
 // Called when a new map is entered.
@@ -189,6 +310,10 @@ void DoVoiceAnnounce (const char *sound)
 bool AnnounceGameStart ()
 {
 	LastAnnounceTime = 0;
+	if (cl_stannounce && deathmatch)
+	{
+		PlaySkulltagAnnouncer("fight", "preparetofight");
+	}
 	if (cl_bbannounce && deathmatch)
 	{
 		DoVoiceAnnounce (BeginSounds[pr_bbannounce() & 1]);
@@ -210,6 +335,15 @@ bool AnnounceKill (AActor *killer, AActor *killee)
 	const SoundAndString *choice;
 	const char *message;
 	int rannum = pr_bbannounce();
+
+	if (cl_stannounce && deathmatch && killer != NULL && killer != killee &&
+		killer->player != NULL && killer->CheckLocalView())
+	{
+		if (killer->player->fragcount == 1)
+		{
+			PlaySkulltagAnnouncer("firstfrag");
+		}
+	}
 
 	if (cl_bbannounce && deathmatch)
 	{
@@ -311,6 +445,29 @@ bool AnnounceTelefrag (AActor *killer, AActor *killee)
 
 bool AnnounceSpree (AActor *who)
 {
+	if (cl_stannounce && who != NULL && who->player != NULL && who->CheckLocalView())
+	{
+		switch (who->player->spreecount)
+		{
+		case 5:
+			PlaySkulltagAnnouncer("domination");
+			break;
+		case 10:
+			PlaySkulltagAnnouncer("totaldomination", "domination");
+			break;
+		case 15:
+			PlaySkulltagAnnouncer("incredible", "excellent");
+			break;
+		case 20:
+			PlaySkulltagAnnouncer("perfect", "mostimpressive");
+			break;
+		case 25:
+			PlaySkulltagAnnouncer("yourskillisnotenough", "totaldomination");
+			break;
+		default:
+			break;
+		}
+	}
 	return false;
 }
 
@@ -324,6 +481,10 @@ bool AnnounceSpree (AActor *who)
 
 bool AnnounceSpreeLoss (AActor *who)
 {
+	if (cl_stannounce && who != NULL && who->CheckLocalView())
+	{
+		PlaySkulltagAnnouncer("youfailit");
+	}
 	if (cl_bbannounce)
 	{
 		if (who->CheckLocalView())
@@ -344,6 +505,24 @@ bool AnnounceSpreeLoss (AActor *who)
 
 bool AnnounceMultikill (AActor *who)
 {
+	if (cl_stannounce && who != NULL && who->player != NULL && who->CheckLocalView())
+	{
+		switch (who->player->multicount)
+		{
+		case 2:
+			PlaySkulltagAnnouncer("excellent");
+			break;
+		case 3:
+			PlaySkulltagAnnouncer("impressive", "excellent");
+			break;
+		case 4:
+			PlaySkulltagAnnouncer("incredible", "impressive");
+			break;
+		default:
+			PlaySkulltagAnnouncer("perfect", "mostimpressive");
+			break;
+		}
+	}
 	if (cl_bbannounce)
 	{
 		if (who->CheckLocalView())

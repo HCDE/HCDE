@@ -56,7 +56,7 @@ Stage 7 adds that retained service queue. See
 The local stage smoke used:
 
 ```powershell
-hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10684 +sv_usemasters 0 +map MAP01
+hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10684 -noadvertise +map MAP01
 hcde -join 127.0.0.1:10684 -dedicatedjoin -netwaitsilent -iwad C:\Users\User\Downloads\doom2.wad -port 10685 -nosound -nomusic -norun
 ```
 

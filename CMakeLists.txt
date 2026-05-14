@@ -192,6 +192,21 @@ else()
 	set(HCDE_RESOURCE_DIR "${PROJECT_BINARY_DIR}")
 endif()
 
+option(HCDE_STAGE_PERSONAL_EXTRAS "Stage local optional Boko announcer and skin extras into the build output" OFF)
+set(HCDE_BOKO_ANNOUNCER_ZIP "//192.168.1.2/Main_Data/WADS/BokoAnnouncerV3.zip" CACHE FILEPATH "Boko announcer ZIP source")
+set(HCDE_BOKO_SKIN_PK3 "//192.168.1.2/Main_Data/WADS/RBCSkins12_NOSTDN.pk3" CACHE FILEPATH "Boko/RBC skin PK3 source")
+
+if(HCDE_STAGE_PERSONAL_EXTRAS)
+	add_custom_target(hcde_personal_extras ALL
+		COMMAND Python3::Interpreter -B -E -s
+			"${CMAKE_SOURCE_DIR}/tools/stage_hcde_personal_extras.py"
+			--output "${HCDE_RESOURCE_DIR}/extras"
+			--announcer-zip "${HCDE_BOKO_ANNOUNCER_ZIP}"
+			--skin-pk3 "${HCDE_BOKO_SKIN_PK3}"
+		COMMENT "Staging optional HCDE personal extras"
+		VERBATIM)
+endif()
+
 # Replacement variables for a possible long list of C/C++ compilers compatible with GCC
 if( "${CMAKE_C_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_C_COMPILER_ID}" MATCHES "Clang" )
 	set( ZD_CMAKE_COMPILER_IS_GNUC_COMPATIBLE TRUE )

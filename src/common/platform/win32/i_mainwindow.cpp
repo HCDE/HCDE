@@ -317,7 +317,7 @@ static const char* const ServerGuiPresetPrivateDebug[] =
 	"skill 1",
 	"fraglimit 0",
 	"timelimit 0",
-	"sv_usemasters 0",
+	"unadvertise",
 	"sv_cheats 1",
 	"debugtrace_enable 1"
 };
@@ -1708,7 +1708,14 @@ void MainWindow::ApplyServerConsoleFlag(bool enabled)
 	PrintStr(message.GetChars());
 
 	FString command;
-	command.Format("%s %d", flag.CVarName, enabled ? 1 : 0);
+	if (strcmp(flag.CVarName, "sv_usemasters") == 0)
+	{
+		command = enabled ? "advertise" : "unadvertise";
+	}
+	else
+	{
+		command.Format("%s %d", flag.CVarName, enabled ? 1 : 0);
+	}
 	SendServerConsoleCommand(command.GetChars());
 }
 

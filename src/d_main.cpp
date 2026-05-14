@@ -76,6 +76,8 @@
 #include "gameconfigfile.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_edf.h"
+#include "hcde_eternity_compat.h"
 #include "hcde_mod_compat.h"
 #include "hcde_servermode.h"
 #include "hu_stuff.h"
@@ -2187,7 +2189,7 @@ void GetReserved(LumpFilterInfo& lfi)
 {
 	lfi.reservedFolders = { "flats/", "textures/", "hires/", "sprites/", "voxels/", "colormaps/", "acs/", "maps/", "voices/", "patches/", "graphics/", "sounds/", "music/",
 	"materials/", "models/", "fonts/", "brightmaps/" };
-	lfi.requiredPrefixes = { "mapinfo", "zmapinfo", "umapinfo", "gameinfo", "sndinfo", "sndseq", "sbarinfo", "menudef", "gldefs", "animdefs", "decorate", "zscript", "iwadinfo", "complvl", "terrain", "maps/" };
+	lfi.requiredPrefixes = { "mapinfo", "zmapinfo", "umapinfo", "emapinfo", "gameinfo", "sndinfo", "sndseq", "sbarinfo", "menudef", "gldefs", "animdefs", "decorate", "zscript", "iwadinfo", "complvl", "terrain", "maps/" };
 	lfi.blockednames = { "*.bat", "*.exe", "__macosx/*", "*/__macosx/*", "*~" };
 }
 
@@ -2300,7 +2302,7 @@ static void AddAutoloadFiles(const char *autoname, std::vector<FileSys::Resource
 		if (wad)
 			D_AddFile (allwads, wad, true, -1, GameConfig, true);
 
-		// [RH] Add any .wad files in the skins directory
+		// [RH] Add any skin files in the skins directory
 #ifdef __unix__
 		file = SHARE_DIR;
 #else
@@ -2308,11 +2310,13 @@ static void AddAutoloadFiles(const char *autoname, std::vector<FileSys::Resource
 #endif
 		file += "skins";
 		D_AddDirectory (allwads, file.GetChars(), "*.wad", GameConfig, true);
+		D_AddDirectory (allwads, file.GetChars(), "*.pk3", GameConfig, true);
 
 #ifdef __unix__
 		FString skinDir = FStringf("%s/skins", M_GetAppDataPath(true).GetChars());
 		file = NicePath(skinDir.GetChars());
 		D_AddDirectory (allwads, file.GetChars(), "*.wad", GameConfig, true);
+		D_AddDirectory (allwads, file.GetChars(), "*.pk3", GameConfig, true);
 #endif
 
 		// Add common (global) wads
@@ -3614,6 +3618,8 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	allwads.clear();
 	allwads.shrink_to_fit();
 	SetMapxxFlag();
+	HCDE_EternityCompat_DetectLoadedResources();
+	HCDE_EdfCompat_ParseLoadedResources();
 
 	D_GrabCVarDefaults(); //parse DEFCVARS
 	InitPalette();
@@ -3870,6 +3876,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	InitActorNumsFromMapinfo();
 	InitSpawnablesFromMapinfo();
 	PClassActor::StaticSetActorNums();
+	HCDE_EdfCompat_ApplyActorMappings();
 
 	//Added by MC:
 	primaryLevel->BotInfo.getspawned.Clear();

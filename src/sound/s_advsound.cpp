@@ -489,6 +489,9 @@ FSoundID S_AddPlayerSound (const char *pclass, int gender, FSoundID refid, int l
 	auto sfx = soundEngine->GetSfx(refid);
 	if (refid == NO_SOUND || !sfx) return NO_SOUND;
 
+	// AddSoundLump can grow the sound table, so keep the linked player
+	// sound id before taking any writable sound-table path.
+	FSoundID playerSoundID = sfx->link;
 	fakename = pclass;
 	fakename += '"';
 	fakename += '0' + gender;
@@ -499,7 +502,7 @@ FSoundID S_AddPlayerSound (const char *pclass, int gender, FSoundID refid, int l
 	int classnum = S_AddPlayerClass (pclass);
 	int soundlist = S_AddPlayerGender (classnum, gender);
 
-	PlayerSounds[soundlist].AddSound (sfx->link, id);
+	PlayerSounds[soundlist].AddSound (playerSoundID, id);
 
 	if (fromskin) S_SavePlayerSound(pclass, gender, refid, lumpnum, false);
 

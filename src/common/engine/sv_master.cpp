@@ -114,6 +114,7 @@ enum class Nms1HeartbeatResult
 
 static SOCKET MasterSocket = INVALID_SOCKET;
 static std::vector<masterserver> masters = {};
+static bool StartupAdvertisingResolved = false;
 
 static bool IsMasterName(const std::string& host)
 {
@@ -775,6 +776,10 @@ static void SV_UnregisterMasterServersInternal()
 }
 
 CVAR(Bool, sv_usemasters, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+FARG(advertise, "Multiplayer", "Enables HCDE master server advertising for this run.", "",
+	"Sets sv_usemasters before dedicated-server startup so -master entries can register immediately.");
+FARG(noadvertise, "Multiplayer", "Disables HCDE master server advertising for this run.", "",
+	"Overrides archived master advertising settings for a private dedicated server.");
 FARG(master, "Multiplayer", "Adds an HCDE master server for this run.", "host[:port]",
 	"Adds a master server before dedicated-server advertising starts. May be specified multiple times.");
 
@@ -810,6 +815,29 @@ static void SV_AddStartupMasters()
 	}
 }
 
+static bool SV_ResolveStartupAdvertising()
+{
+	if (StartupAdvertisingResolved)
+		return sv_usemasters;
+
+	StartupAdvertisingResolved = true;
+
+	if (Args != nullptr && Args->CheckParm(FArg_noadvertise))
+	{
+		sv_usemasters = false;
+		Printf("Master advertising disabled by -noadvertise\n");
+		return false;
+	}
+
+	if (Args != nullptr && Args->CheckParm(FArg_advertise))
+	{
+		sv_usemasters = true;
+		Printf("Master advertising enabled by -advertise\n");
+	}
+
+	return sv_usemasters;
+}
+
 CCMD(addmaster)
 {
 	if (argv.argc() <= 1)
@@ -819,6 +847,25 @@ CCMD(addmaster)
 	}
 
 	SV_AddMaster(argv[1]);
+}
+
+CCMD(advertise)
+{
+	sv_usemasters = true;
+	for (int i = 1; i < argv.argc(); ++i)
+	{
+		SV_AddMaster(argv[i]);
+	}
+
+	Printf("Master advertising enabled.\n");
+	SV_InitMasters();
+}
+
+CCMD(unadvertise)
+{
+	sv_usemasters = false;
+	Printf("Master advertising disabled.\n");
+	SV_ShutdownMasters();
 }
 
 CCMD(delmaster)
@@ -839,8 +886,9 @@ CCMD(masters)
 
 void SV_InitMasters()
 {
-	DebugTrace::Markf("master", "init enabled=%d", sv_usemasters ? 1 : 0);
-	if (!sv_usemasters)
+	const bool advertise = SV_ResolveStartupAdvertising();
+	DebugTrace::Markf("master", "init enabled=%d", advertise ? 1 : 0);
+	if (!advertise)
 	{
 		Printf("Master advertising is disabled because sv_usemasters is 0\n");
 		return;
@@ -877,6 +925,19 @@ void SV_ShutdownMasters()
 
 void SV_UpdateMasterServers(void)
 {
+	if (!sv_usemasters)
+	{
+		if (MasterSocket != INVALID_SOCKET)
+			SV_ShutdownMasters();
+		return;
+	}
+
+	if (MasterSocket == INVALID_SOCKET)
+	{
+		SV_InitMasters();
+		return;
+	}
+
 	SV_UpdateMasterServersInternal(false);
 }
 
