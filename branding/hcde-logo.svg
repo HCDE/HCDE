@@ -49,7 +49,7 @@
             font-family="Impact, 'Arial Black', 'Segoe UI Black', sans-serif" font-size="190" letter-spacing="10">HCDE</text>
       <text x="10" y="220" fill="#d7e3ef" opacity="0.92"
             font-family="'Segoe UI', Arial, sans-serif" font-size="42" letter-spacing="6">
-        STANDALONE DOOM ENGINE
+        MULTIPLAYER DOOM ENGINE
       </text>
       <text x="10" y="285" fill="#9ad6ff" opacity="0.88"
             font-family="'Segoe UI', Arial, sans-serif" font-size="30" letter-spacing="2">
