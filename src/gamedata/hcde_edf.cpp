@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "filesystem.h"
+#include "actor.h"
 #include "hcde_eternity_compat.h"
 #include "info.h"
 #include "printf.h"
