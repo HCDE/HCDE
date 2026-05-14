@@ -6,7 +6,7 @@
 
 ## Welcome to HCDE
 
-HCDE is a standalone Doom engine project focused on compatibility, mod support, networking, and modern rendering.
+HCDE is a Multiplayer Doom engine project focused on compatibility, mod support, networking, and modern rendering.
 
 It is built to stay friendly to classic Doom content while making room for bigger, stranger, and more ambitious addons.
 
