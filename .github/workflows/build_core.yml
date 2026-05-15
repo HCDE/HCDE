@@ -262,6 +262,8 @@ jobs:
           mkdir AppDir
 
           cmake --install . --prefix "$(realpath AppDir)/usr"
+          cp AppDir/usr/share/applications/org.hcde.HCDE.desktop AppDir/org.hcde.HCDE.desktop
+          cp AppDir/usr/share/icons/hicolor/scalable/apps/org.hcde.HCDE.svg AppDir/org.hcde.HCDE.svg
 
           chmod +x appimage-builder
           ./appimage-builder --skip-tests --recipe ../tools/AppImageBuilder.yml
@@ -269,6 +271,14 @@ jobs:
 
           rm package/licenses.zip
         fi
+
+    - name: Upload Linux Server Payload
+      if: always() && runner.os == 'Linux'
+      uses: actions/upload-artifact@v7
+      with:
+        path: build/package/hcdeserv-linux-x64
+        name: ${{ inputs.name }} ${{ inputs.build_type }} hcdeserv-payload
+        if-no-files-found: warn
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v7
