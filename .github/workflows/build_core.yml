@@ -147,7 +147,7 @@ jobs:
         mkdir package
         7z a package/licenses.zip ../docs/licenses/*
 
-        echo "name=${{ runner.os }}-${{ runner.arch }}"-UZDoom-"${{ steps.build.outputs.version }}" >> "$GITHUB_OUTPUT"
+        echo "name=${{ runner.os }}-${{ runner.arch }}"-HCDE-"${{ steps.build.outputs.version }}" >> "$GITHUB_OUTPUT"
 
     - name: Package Windows
       if: runner.os == 'Windows'
@@ -164,7 +164,7 @@ jobs:
         fi
 
         mkdir package/soundfonts
-        cp ../soundfont/uzdoom.sf2 package/soundfonts
+        cp ../soundfont/hcde.sf2 package/soundfonts
 
         mkdir package/fm_banks
         cp ../fm_banks/GENMIDI.GS.wopl ../fm_banks/gs-by-papiezak-and-sneakernets.wopn package/fm_banks
@@ -173,7 +173,8 @@ jobs:
           mv ${{ inputs.build_type }}/* .
         fi
 
-        cp uzdoom.* *.pk3 package
+        shopt -s nullglob
+        cp hcde.* hcdeserv.* hcdemaster.* *.pk3 package
 
         cd package
         7z a -sdel -r "${NAME}.zip" *
@@ -186,16 +187,16 @@ jobs:
       env:
         NAME: ${{ steps.package.outputs.name }}
       run: |
-        if [[ ! -d uzdoom.app ]] && [[ -d ${{ inputs.build_type }}/uzdoom.app ]]; then
-          mv ${{ inputs.build_type }}/uzdoom.app uzdoom.app
+        if [[ ! -d hcde.app ]] && [[ -d ${{ inputs.build_type }}/hcde.app ]]; then
+          mv ${{ inputs.build_type }}/hcde.app hcde.app
         fi
 
-        app=UZDoom.app
-        mv uzdoom.app ${app}
+        app=HCDE.app
+        mv hcde.app ${app}
         mv package/licenses.zip ${app}/Contents/Resources
 
-        if dsymutil ${app}/Contents/MacOS/uzdoom; then
-          mv ${app}/Contents/MacOS/uzdoom.dSYM ${app}/Contents/Resources/
+        if dsymutil ${app}/Contents/MacOS/hcde; then
+          mv ${app}/Contents/MacOS/hcde.dSYM ${app}/Contents/Resources/
         fi
 
         SIGN_ID="-"
@@ -216,7 +217,7 @@ jobs:
         mkdir -p ${app}/Contents/Frameworks
         cp $(brew --prefix molten-vk)/lib/libMoltenVK.dylib ${app}/Contents/Frameworks/
         dylibbundler -ns -of -cd -b \
-          -x ./${app}/Contents/MacOS/uzdoom \
+          -x ./${app}/Contents/MacOS/hcde \
           -d ./${app}/Contents/Frameworks \
           -p @executable_path/../Frameworks/
 
@@ -232,8 +233,8 @@ jobs:
         $(brew --prefix python)/bin/python3 -m venv venv
         source venv/bin/activate
         pip install dmgbuild
-        dmgbuild -s ../tools/dmgbuild-settings.py -D app=${app} "UZDoom" UZDoom.dmg
-        mv UZDoom.dmg package
+        dmgbuild -s ../tools/dmgbuild-settings.py -D app=${app} "HCDE" HCDE.dmg
+        mv HCDE.dmg package
 
         cd ..
 
@@ -245,10 +246,18 @@ jobs:
         NAME: ${{ steps.package.outputs.name }}
         GIT_DESCRIBE: ${{ steps.build.outputs.version }}
       run: |
-        ldd ./uzdoom
+        ldd ./hcde
+        ldd ./hcdeserv
+
+        mkdir -p package/hcdeserv-linux-x64
+        cp hcdeserv *.pk3 package/hcdeserv-linux-x64
+        if [[ -f hcdemaster ]]; then
+          cp hcdemaster package/hcdeserv-linux-x64
+        fi
+        cp -r soundfonts fm_banks package/hcdeserv-linux-x64
 
         if [[ $(uname -m) != "x86_64" ]]; then
-          mv uzdoom *.pk3 package
+          mv hcde hcdeserv hcdemaster *.pk3 package
         else
           mkdir AppDir
 
