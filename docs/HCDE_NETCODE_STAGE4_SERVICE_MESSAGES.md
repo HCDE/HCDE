@@ -42,7 +42,8 @@ these service messages from that client.
 
 ## Current Behavior
 
-- Dedicated clients launched with `-dedicatedjoin -netwaitsilent` negotiate
+- Dedicated clients launched with `-dedicatedjoin`, optionally with
+  `-netwaitsilent`, negotiate
   HCDE service connect and then use service messages for user info, game info,
   peer info, heartbeat, and start-game.
 - Legacy `PRE_USER_INFO`, `PRE_GAME_INFO`, `PRE_USER_INFO_ACK`,
@@ -59,7 +60,7 @@ The local stage smoke used:
 
 ```powershell
 hcdeserv -server 1 -iwad C:\Users\User\Downloads\doom2.wad -port 10680 -noadvertise +map MAP01
-hcde -join 127.0.0.1:10680 -dedicatedjoin -netwaitsilent -iwad C:\Users\User\Downloads\doom2.wad -port 10681 -nosound -nomusic -norun
+hcde -join 127.0.0.1:10680 -dedicatedjoin -iwad C:\Users\User\Downloads\doom2.wad -port 10681 -nosound -nomusic -norun
 ```
 
 Observed result:

@@ -361,7 +361,9 @@ const char* HCDE_ServerMode_GetAuthorityName()
 bool HCDE_ServerMode_ShouldSuppressRoomUI()
 {
 	HCDE_ServerMode_InitFromArgs();
-	return Runtime.DedicatedServer || Runtime.NetWaitSilent || Runtime.DedicatedJoin || Runtime.JoinMode;
+	// Keep join clients visible by default. Dedicated servers never create the
+	// room UI, and clients opt into a headless pregame wait with -netwaitsilent.
+	return Runtime.DedicatedServer || Runtime.NetWaitSilent;
 }
 
 bool HCDE_ServerMode_ShouldSuppressStartupUI()

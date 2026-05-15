@@ -24,7 +24,7 @@ ported before HCDE behaves like a real separated client/server engine.
 | Server executable | Built as `hcdeserv.exe`, but from the same `GAME_SOURCES` as the client with `HCDE_DEDICATED_SERVER=1`. It is not yet a minimal Odamex-style server target. | `src/CMakeLists.txt` |
 | Startup gating | `-server` skips several video/UI paths, startup screen paths, and delayed startup commands. The server still runs through the shared UZDoom/GZDoom initialization flow. | `src/d_main.cpp` |
 | Pregame transport | Uses the existing UZDoom room/session handshake: `PRE_CONNECT`, `PRE_CONNECT_ACK`, `PRE_GAME_INFO`, `PRE_GO`, session tokens, and room flow states. | `src/common/engine/i_net.cpp` |
-| Dedicated server mode | Adds `-server`, `-netwaitsilent`, and `-dedicatedjoin` behavior, hides the old session window in those paths, and reserves the arbitrator as a hidden server slot. | `src/common/engine/i_net.cpp`, `src/d_net.cpp` |
+| Dedicated server mode | Adds `-server`, optional `-netwaitsilent`, and `-dedicatedjoin` behavior, hides the old session window only for server/silent paths, and reserves the arbitrator as a hidden server slot. | `src/common/engine/i_net.cpp`, `src/d_net.cpp` |
 | Gameplay sync | Still uses deterministic tic command synchronization, `Net_Arbitrator`, `NetworkClients`, `ClientStates`, heartbeat tics, consistency checks, and level-start acks. | `src/d_net.cpp` |
 | Old lobby UI | Still present and callable for normal `-host` flows. It is suppressed for dedicated/silent join flows, not removed. | `src/widgets/netstartwindow.cpp` |
 | Server browser query | HCDE custom query snapshot exists, with a compatibility check for Odamex query-tag style probes. It is not the Odamex server protocol. | `src/common/engine/i_net.h`, `src/common/engine/i_net.cpp` |
@@ -68,8 +68,8 @@ query tag constant used to accept Odamex-shaped discovery probes.
 3. Gameplay sync is still deterministic peer/arbitrator tic sync. It must gain
    server-owned state, authoritative joins, snapshots/service messages, and
    client-side prediction boundaries.
-4. The old `NetStartWindow` lobby still exists and can return if a launch path
-   misses `-netwaitsilent`, `-join`, or `-dedicatedjoin`.
+4. The old `NetStartWindow` lobby still exists and is intentionally visible for
+   join clients unless `-netwaitsilent` is passed.
 5. Master discovery is HCDE-custom and documented, but not Odamex SQP. That is
    acceptable for Doom Connector, but it should be named as HCDE protocol.
 6. No live Odamex source import was found in HCDE's active multiplayer files.
@@ -92,9 +92,8 @@ gameplay replication yet:
    and whether the old room UI is suppressed.
 5. Document the expected Doom Connector launch contract:
    `hcdeserv -server <slots> -iwad <iwad> -port <port> +map <map>` and
-   `hcde -join <host:port> -dedicatedjoin -netwaitsilent -iwad <iwad>`.
+   `hcde -join <host:port> -dedicatedjoin -iwad <iwad>`.
 
 Stage 2 should stop before importing Odamex `sv_main.cpp` or `svc_message.cpp`.
 That port needs its own stage because it touches gameplay authority, actor
 state, map state, ACS/script events, and prediction.
-

@@ -124,8 +124,8 @@ FARG(server, "Multiplayer", "Starts a dedicated multiplayer server without the s
 	" machine). Use this for HCDE's separate server mode so the launcher can start a server process"
 	" and a local join client without showing the old room/session window.");
 FARG(netwaitsilent, "Multiplayer", "Suppresses the multiplayer connection status window.", "",
-	"Run the pregame network handshake without showing the old room/session window. Launchers use"
-	" this when starting a local client for a separate dedicated server.");
+	"Run the pregame network handshake without showing the old room/session window. Launchers can"
+	" use this when they intentionally want a silent dedicated-server join.");
 FARG(dedicatedjoin, "Multiplayer", "Connects to a dedicated server with a reserved server authority slot.", "",
 	"Treat the network arbitrator as a transport-only slot. This is used by launchers when joining"
 	" HCDE's separate dedicated server executable so the server does not appear as an in-game player.");
@@ -550,7 +550,13 @@ static uint8_t BuildLocalHCDEConnectFlags()
 {
 	uint8_t flags = 0u;
 	if (DedicatedJoinMode)
+	{
 		flags |= HCDE_CONNECT_DEDICATED_JOIN;
+		// Dedicated service-connect servers historically saw this bit together
+		// with -dedicatedjoin. Keep the wire signature stable even when the
+		// local pregame window stays visible.
+		flags |= HCDE_CONNECT_SUPPRESS_ROOM_UI;
+	}
 	if (SilentNetStartMode)
 		flags |= HCDE_CONNECT_SUPPRESS_ROOM_UI;
 	if (DedicatedJoinMode)
@@ -3010,6 +3016,8 @@ bool I_InitNetwork()
 	HCDE_ServerMode_InitFromArgs();
 	DedicatedServerMode = HCDE_ServerMode_IsDedicatedServer();
 	DedicatedJoinMode = HCDE_ServerMode_IsDedicatedJoin();
+	// This controls only the pregame room/status UI. Dedicated join protocol
+	// flags are still emitted through DedicatedJoinMode when the UI is visible.
 	SilentNetStartMode = HCDE_ServerMode_ShouldSuppressRoomUI();
 
 	// set up for network
