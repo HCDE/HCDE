@@ -37,6 +37,13 @@ static const char* const AliensEradicationPatterns[] =
 	nullptr
 };
 
+static const char* const AliensEradicationMapsetPatterns[] =
+{
+	"ERADICATION_MAPSET*",
+	"ERADICATION_MAPSET*.wad",
+	nullptr
+};
+
 static unsigned int ActiveCompatFlags = 0u;
 
 static const HCDEModCompatEntry ModCompatEntries[] =
@@ -100,6 +107,48 @@ static bool HCDE_ModCompat_EntryMatches(const std::vector<FileSys::ResourceName>
 	return false;
 }
 
+static int HCDE_ModCompat_FindFirstMatch(const std::vector<FileSys::ResourceName>& pwads, const char* const* patterns)
+{
+	for (size_t i = 0; i < pwads.size(); ++i)
+	{
+		for (const char* const* pattern = patterns; *pattern != nullptr; ++pattern)
+		{
+			if (HCDE_ModCompat_FileMatchesPattern(pwads[i], *pattern))
+			{
+				return static_cast<int>(i);
+			}
+		}
+	}
+
+	return -1;
+}
+
+static void HCDE_ModCompat_NormalizeAliensEradicationOrder(std::vector<FileSys::ResourceName>& pwads)
+{
+	const int mapsetIndex = HCDE_ModCompat_FindFirstMatch(pwads, AliensEradicationMapsetPatterns);
+	if (mapsetIndex < 0)
+	{
+		return;
+	}
+
+	const int tcIndex = HCDE_ModCompat_FindFirstMatch(pwads, AliensEradicationPatterns);
+	if (tcIndex < 0)
+	{
+		Printf("HCDE: Aliens Eradication mapset detected without ALIENS_ERADICATION_TC; load the TC before the mapset.\n");
+		return;
+	}
+
+	if (mapsetIndex < tcIndex)
+	{
+		// The mapset replaces actors defined by the TC. Some launchers preserve UI order,
+		// others sort paths; normalize here so the known pair parses in dedicated servers.
+		FileSys::ResourceName tc = pwads[tcIndex];
+		pwads.erase(pwads.begin() + tcIndex);
+		pwads.insert(pwads.begin() + mapsetIndex, tc);
+		Printf("HCDE: reordered Aliens Eradication add-ons so the TC loads before the mapset.\n");
+	}
+}
+
 void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConfigFile* config)
 {
 	ActiveCompatFlags = 0u;
@@ -108,6 +157,8 @@ void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConf
 	{
 		return;
 	}
+
+	HCDE_ModCompat_NormalizeAliensEradicationOrder(pwads);
 
 	for (const auto& entry : ModCompatEntries)
 	{
