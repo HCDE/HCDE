@@ -1,0 +1,84 @@
+name: HCDE Server Linux Payload
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hcdeserv_linux_payload.yml
+      - CMakeLists.txt
+      - src/**
+      - tools/hcdemaster/**
+      - protocol/**
+      - wadsrc*/**
+      - soundfont/**
+      - fm_banks/**
+
+jobs:
+  build:
+    name: hcdeserv linux x64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Dependencies
+        shell: bash
+        run: |
+          sudo apt-get -q update
+          sudo apt-get -q install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            p7zip-full \
+            libopenal-dev \
+            libsdl2-dev \
+            libwebp-dev \
+            libbz2-dev \
+            libomp-dev \
+            libvpx-dev \
+            waylandpp-dev
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -B build -S . \
+            -DPK3_QUIET_ZIPDIR=ON \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build Server Payload
+        shell: bash
+        run: |
+          cmake --build build --target \
+            hcdeserv \
+            hcdemaster \
+            hcde_pk3 \
+            brightmaps_pk3 \
+            game_support_pk3 \
+            game_widescreen_gfx_pk3 \
+            lights_pk3 \
+            hcde_mod_compat_pk3 \
+            --parallel 2
+
+      - name: Stage Payload
+        shell: bash
+        run: |
+          mkdir -p payload/soundfonts payload/fm_banks
+          cp build/hcdeserv payload/
+          cp build/hcdemaster payload/
+          cp build/*.pk3 payload/
+          cp soundfont/hcde.sf2 payload/soundfonts/
+          cp fm_banks/GENMIDI.GS.wopl fm_banks/gs-by-papiezak-and-sneakernets.wopn payload/fm_banks/
+          chmod 755 payload/hcdeserv payload/hcdemaster
+          find payload -maxdepth 3 -type f -print | sort
+
+      - name: Upload Payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: hcdeserv-linux-x64-payload
+          path: payload
