@@ -48,6 +48,8 @@ inline constexpr uint16_t Nms1MaxPacketSize = 1200u;
 inline constexpr uint16_t Nms1MaxProtocolFamilyBytes = 32u;
 inline constexpr uint16_t Nms1MaxBuildLabelBytes = 64u;
 inline constexpr uint16_t Nms1MaxDisplayNameBytes = 96u;
+inline constexpr uint16_t Nms1MaxGameNameBytes = 64u;
+inline constexpr uint16_t Nms1MaxMapNameBytes = 64u;
 inline constexpr const char Nms1DefaultProtocolFamily[] = "raw";
 
 enum class Nms1MessageType : uint8_t
@@ -86,6 +88,8 @@ enum class Nms1FieldType : uint16_t
 	PublicIp = 23,
 	BuildLabel = 24,
 	DisplayName = 25,
+	GameName = 26,
+	MapName = 27,
 	Cursor = 31,
 	PageSize = 32,
 	EntryCount = 33,

@@ -76,6 +76,102 @@ EDGE_SCRIPT_LUMP_NAMES = {
     "RTS",
 }
 
+EDGE_DDF_KIND_BY_NAME = {
+    "DDFANIM": "animations",
+    "DDFATK": "attacks",
+    "DDFCOLM": "colormaps",
+    "DDFCOLOR": "colors",
+    "DDFFONT": "fonts",
+    "DDFGAME": "game",
+    "DDFIMAGE": "images",
+    "DDFLANG": "language",
+    "DDFLEVL": "levels",
+    "DDFLINE": "lines",
+    "DDFPLAY": "players",
+    "DDFSFX": "sounds",
+    "DDFSECT": "sectors",
+    "DDFSTYLE": "styles",
+    "DDFTHING": "things",
+    "DDFWEAP": "weapons",
+}
+
+EDGE_DDF_KIND_BY_STEM = {
+    "anim": "animations",
+    "anims": "animations",
+    "animations": "animations",
+    "attack": "attacks",
+    "attacks": "attacks",
+    "colmap": "colormaps",
+    "colm": "colormaps",
+    "colormap": "colormaps",
+    "colormaps": "colormaps",
+    "color": "colors",
+    "colors": "colors",
+    "font": "fonts",
+    "fonts": "fonts",
+    "game": "game",
+    "games": "game",
+    "image": "images",
+    "images": "images",
+    "lang": "language",
+    "language": "language",
+    "level": "levels",
+    "levels": "levels",
+    "line": "lines",
+    "lines": "lines",
+    "playlist": "playlist",
+    "playlists": "playlist",
+    "player": "players",
+    "players": "players",
+    "sector": "sectors",
+    "sectors": "sectors",
+    "sound": "sounds",
+    "sounds": "sounds",
+    "sfx": "sounds",
+    "style": "styles",
+    "styles": "styles",
+    "switch": "switches",
+    "switches": "switches",
+    "thing": "things",
+    "things": "things",
+    "weapon": "weapons",
+    "weapons": "weapons",
+}
+
+EDGE_STAGE3_SUPPORTED_PROPERTIES = {
+    "animations": {"type", "first", "last", "speed", "sequence"},
+    "attacks": {
+        "accuracy_angle",
+        "accuracy_slope",
+        "attack_height",
+        "attackrange",
+        "attacktype",
+        "damage.max",
+        "damage.val",
+        "height",
+        "radius",
+        "shotcount",
+        "speed",
+    },
+    "colormaps": {"gl_colour", "length", "lump", "special", "start"},
+    "fonts": {"image", "missing", "type"},
+    "game": {"def_player", "firstmap", "titlepic", "titlemusic"},
+    "images": {"image_data", "scale", "special"},
+    "levels": {"description", "episode", "levelname", "music", "nextmap", "sky_texture", "type"},
+    "lines": {"count", "newtrignum", "tagged", "time", "type"},
+    "playlist": {"title"},
+    "sectors": {"ambient_light", "damage", "secret", "type"},
+    "sounds": {"loop", "lump", "lump_name", "priority", "singular"},
+    "styles": {"background", "cursor", "font", "text", "title"},
+    "switches": {"off", "on", "time"},
+    "things": {"doomednum", "height", "health", "mass", "painchance", "radius", "reactiontime", "speed"},
+    "weapons": {"ammopershot", "ammotype", "clip_size", "priority", "selection_order", "slot"},
+}
+
+# EDGE commonly has several STATES(...) groups per entry; those remain manual
+# adapter data, but are not duplicate scalar-property warnings.
+EDGE_REPEATABLE_PROPERTY_KEYS = {"states"}
+
 TEXT_EXTENSIONS = {
     ".acs",
     ".bex",
@@ -94,6 +190,7 @@ TEXT_EXTENSIONS = {
 }
 
 MAX_TEXT_BYTES = 1_048_576
+MAX_EMBEDDED_WAD_BYTES = 64 * 1024 * 1024
 
 ETERNITY_EDF_BEHAVIOR_PROPERTIES = {
     "action",
@@ -204,6 +301,90 @@ class EternityValidationProfile:
 
 
 @dataclass
+class EdgeDdfIncludeHint:
+    entry: str
+    line: int
+    target: str
+    resolved_entry: str | None = None
+
+
+@dataclass
+class EdgeDdfPropertyHint:
+    entry: str
+    line: int
+    key: str
+    value: str
+
+
+@dataclass
+class EdgeDdfSectionHint:
+    entry: str
+    line: int
+    kind: str
+    name: str
+    parent: str | None = None
+    property_keys: list[str] = field(default_factory=list)
+    properties: list[EdgeDdfPropertyHint] = field(default_factory=list)
+
+
+@dataclass
+class EdgeScriptHint:
+    entry: str
+    kind: str
+    size: int
+
+
+@dataclass
+class EdgeDdfConflictHint:
+    kind: str
+    name: str
+    definitions: list[TextHit] = field(default_factory=list)
+
+
+@dataclass
+class EdgeDdfManifestEntry:
+    kind: str
+    label: str
+    entry: str
+    line: int
+    status: str
+    supported_properties: dict[str, str] = field(default_factory=dict)
+    manual_properties: list[str] = field(default_factory=list)
+    duplicate_properties: list[str] = field(default_factory=list)
+    property_count: int = 0
+
+
+@dataclass
+class EdgeTranslationSummary:
+    animdefs_entries: int = 0
+    sndinfo_entries: int = 0
+    skipped_entries: int = 0
+
+
+@dataclass
+class EdgeClassicProfile:
+    ddf_entries: list[str] = field(default_factory=list)
+    ddf_entry_kinds: dict[str, str] = field(default_factory=dict)
+    ddf_load_order: list[str] = field(default_factory=list)
+    ddf_sections: list[EdgeDdfSectionHint] = field(default_factory=list)
+    ddf_includes: list[EdgeDdfIncludeHint] = field(default_factory=list)
+    ddf_missing_includes: list[EdgeDdfIncludeHint] = field(default_factory=list)
+    ddf_include_cycles: list[list[str]] = field(default_factory=list)
+    ddf_clearall: list[TextHit] = field(default_factory=list)
+    ddf_versions: list[TextHit] = field(default_factory=list)
+    ddf_conflicts: list[EdgeDdfConflictHint] = field(default_factory=list)
+    ddf_manifest_entries: list[EdgeDdfManifestEntry] = field(default_factory=list)
+    ddf_manifest_counts: dict[str, int] = field(default_factory=dict)
+    ddf_manual_property_counts: dict[str, int] = field(default_factory=dict)
+    ddf_duplicate_property_counts: dict[str, int] = field(default_factory=dict)
+    translation_summary: EdgeTranslationSummary = field(default_factory=EdgeTranslationSummary)
+    script_entries: list[EdgeScriptHint] = field(default_factory=list)
+    kind_counts: dict[str, int] = field(default_factory=dict)
+    stage_flags: dict[str, bool] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ScanResult:
     source_path: str
     archive_type: str
@@ -214,6 +395,7 @@ class ScanResult:
     checks: list[CompatibilityCheck]
     warnings: list[str]
     eternity: EternityValidationProfile | None = None
+    edge: EdgeClassicProfile | None = None
 
 
 def sha256_file(path: Path) -> str:
@@ -221,6 +403,28 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_path(path: Path) -> str:
+    if path.is_file():
+        return sha256_file(path)
+
+    digest = hashlib.sha256()
+    digest.update(b"directory\n")
+    for item in sorted(path.rglob("*"), key=lambda candidate: str(candidate.relative_to(path)).lower()):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(path).as_posix()
+        digest.update(rel.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        try:
+            with item.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            digest.update(f"<unreadable:{exc}>".encode("utf-8", errors="replace"))
+        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -241,9 +445,9 @@ def decode_text(data: bytes) -> str:
 
 def is_text_candidate(name: str) -> bool:
     normalized = name.replace("\\", "/")
-    base = Path(normalized).name.upper()
-    suffix = Path(normalized).suffix.lower()
-    if base in TEXT_LUMP_NAMES:
+    base = archive_base_name(normalized)
+    suffix = archive_suffix(normalized)
+    if base in TEXT_LUMP_NAMES or base.startswith(("SNDINFO.", "SNDSEQ.")):
         return True
     if base in EDGE_DDF_LUMP_NAMES or base in EDGE_SCRIPT_LUMP_NAMES:
         return True
@@ -265,6 +469,18 @@ def read_zip_archive(path: Path) -> tuple[list[ArchiveEntry], dict[str, bytes], 
                 continue
             name = info.filename.replace("\\", "/")
             entries.append(ArchiveEntry(name=name, size=info.file_size))
+            if name.lower().endswith(".wad"):
+                if info.file_size > MAX_EMBEDDED_WAD_BYTES:
+                    warnings.append(f"Skipped large embedded WAD candidate {name} ({info.file_size} bytes).")
+                    continue
+                try:
+                    wad_entries, wad_texts, wad_warnings, _ = read_wad_bytes(zf.read(info), name)
+                except (OSError, RuntimeError, zipfile.BadZipFile, ValueError) as exc:
+                    warnings.append(f"Skipped embedded WAD candidate {name}: {exc}.")
+                else:
+                    entries.extend(wad_entries)
+                    texts.update(wad_texts)
+                    warnings.extend(f"{name}: {warning}" for warning in wad_warnings)
             if is_text_candidate(name):
                 if info.file_size > MAX_TEXT_BYTES:
                     warnings.append(f"Skipped large text candidate {name} ({info.file_size} bytes).")
@@ -274,49 +490,100 @@ def read_zip_archive(path: Path) -> tuple[list[ArchiveEntry], dict[str, bytes], 
     return entries, texts, warnings
 
 
-def read_wad_archive(path: Path) -> tuple[list[ArchiveEntry], dict[str, bytes], list[str], str]:
+def read_wad_bytes(data: bytes, label: str = "") -> tuple[list[ArchiveEntry], dict[str, bytes], list[str], str]:
     warnings: list[str] = []
     entries: list[ArchiveEntry] = []
     texts: dict[str, bytes] = {}
 
-    with path.open("rb") as fh:
-        header = fh.read(12)
-        if len(header) != 12:
-            raise ValueError("File is too small to be a WAD.")
-        magic, lump_count, directory_offset = struct.unpack("<4sii", header)
-        magic_text = magic.decode("ascii", errors="replace")
-        if magic_text not in ("IWAD", "PWAD"):
-            raise ValueError(f"Unsupported WAD magic {magic_text!r}.")
-        if lump_count < 0 or directory_offset < 0:
-            raise ValueError("WAD directory header contains negative values.")
+    if len(data) < 12:
+        raise ValueError("File is too small to be a WAD.")
 
-        fh.seek(directory_offset)
-        directory = fh.read(lump_count * 16)
-        if len(directory) != lump_count * 16:
-            raise ValueError("WAD directory is truncated.")
+    magic, lump_count, directory_offset = struct.unpack("<4sii", data[:12])
+    magic_text = magic.decode("ascii", errors="replace")
+    if magic_text not in ("IWAD", "PWAD"):
+        raise ValueError(f"Unsupported WAD magic {magic_text!r}.")
+    if lump_count < 0 or directory_offset < 0:
+        raise ValueError("WAD directory header contains negative values.")
 
-        for i in range(lump_count):
-            chunk = directory[i * 16 : (i + 1) * 16]
-            file_pos, size, raw_name = struct.unpack("<ii8s", chunk)
-            name = raw_name.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
-            entries.append(ArchiveEntry(name=name, size=max(size, 0)))
-            if size <= 0 or not is_text_candidate(name):
-                continue
-            if size > MAX_TEXT_BYTES:
-                warnings.append(f"Skipped large text candidate {name} ({size} bytes).")
-                continue
-            if file_pos < 0:
-                warnings.append(f"Skipped text candidate {name}: negative file offset.")
-                continue
-            current = fh.tell()
-            fh.seek(file_pos)
-            texts[name] = fh.read(size)
-            fh.seek(current)
+    directory_size = lump_count * 16
+    directory_end = directory_offset + directory_size
+    if directory_end > len(data):
+        raise ValueError("WAD directory is truncated.")
+
+    directory = data[directory_offset:directory_end]
+    for i in range(lump_count):
+        chunk = directory[i * 16 : (i + 1) * 16]
+        file_pos, size, raw_name = struct.unpack("<ii8s", chunk)
+        lump_name = raw_name.split(b"\x00", 1)[0].decode("latin-1", errors="replace")
+        name = f"{label}:{lump_name}" if label else lump_name
+        entries.append(ArchiveEntry(name=name, size=max(size, 0)))
+        if size <= 0 or not is_text_candidate(name):
+            continue
+        if size > MAX_TEXT_BYTES:
+            warnings.append(f"Skipped large text candidate {name} ({size} bytes).")
+            continue
+        if file_pos < 0:
+            warnings.append(f"Skipped text candidate {name}: negative file offset.")
+            continue
+        if file_pos + size > len(data):
+            warnings.append(f"Skipped text candidate {name}: data extends past end of WAD.")
+            continue
+        texts[name] = data[file_pos : file_pos + size]
 
     return entries, texts, warnings, magic_text
 
 
+def read_wad_archive(path: Path) -> tuple[list[ArchiveEntry], dict[str, bytes], list[str], str]:
+    return read_wad_bytes(path.read_bytes())
+
+
+def read_directory_archive(path: Path) -> tuple[list[ArchiveEntry], dict[str, bytes], list[str]]:
+    entries: list[ArchiveEntry] = []
+    texts: dict[str, bytes] = {}
+    warnings: list[str] = []
+
+    for item in sorted(path.rglob("*"), key=lambda candidate: str(candidate.relative_to(path)).lower()):
+        if not item.is_file():
+            continue
+        name = item.relative_to(path).as_posix()
+        try:
+            size = item.stat().st_size
+        except OSError as exc:
+            warnings.append(f"Skipped {name}: {exc}.")
+            continue
+        entries.append(ArchiveEntry(name=name, size=size))
+
+        if item.suffix.lower() == ".wad":
+            if size > MAX_EMBEDDED_WAD_BYTES:
+                warnings.append(f"Skipped large embedded WAD candidate {name} ({size} bytes).")
+                continue
+            try:
+                wad_entries, wad_texts, wad_warnings, _ = read_wad_bytes(item.read_bytes(), name)
+            except (OSError, ValueError) as exc:
+                warnings.append(f"Skipped embedded WAD candidate {name}: {exc}.")
+            else:
+                entries.extend(wad_entries)
+                texts.update(wad_texts)
+                warnings.extend(f"{name}: {warning}" for warning in wad_warnings)
+
+        if not is_text_candidate(name):
+            continue
+        if size > MAX_TEXT_BYTES:
+            warnings.append(f"Skipped large text candidate {name} ({size} bytes).")
+            continue
+        try:
+            texts[name] = item.read_bytes()
+        except OSError as exc:
+            warnings.append(f"Skipped text candidate {name}: {exc}.")
+
+    return entries, texts, warnings
+
+
 def read_archive(path: Path) -> tuple[str, list[ArchiveEntry], dict[str, bytes], list[str]]:
+    if path.is_dir():
+        entries, texts, warnings = read_directory_archive(path)
+        return "directory", entries, texts, warnings
+
     suffix = path.suffix.lower()
     if suffix in (".pk3", ".zip"):
         entries, texts, warnings = read_zip_archive(path)
@@ -340,8 +607,8 @@ def classify_surfaces(entries: Iterable[ArchiveEntry]) -> dict[str, list[str]]:
     for entry in entries:
         name = entry.name.replace("\\", "/")
         lower = name.lower()
-        base = Path(name).name.upper()
-        suffix = Path(name).suffix.lower()
+        base = archive_base_name(name)
+        suffix = archive_suffix(name)
 
         if base == "DECORATE" or lower.startswith(("actors/", "decorate/")) or suffix == ".dec":
             add_surface(surfaces, "decorate", name)
@@ -363,7 +630,7 @@ def classify_surfaces(entries: Iterable[ArchiveEntry]) -> dict[str, list[str]]:
             add_surface(surfaces, "dehacked", name)
         if base == "LOADACS" or suffix == ".acs" or lower.startswith("acs/"):
             add_surface(surfaces, "acs", name)
-        if base in ("SNDINFO", "SNDSEQ"):
+        if base in ("SNDINFO", "SNDSEQ") or base.startswith(("SNDINFO.", "SNDSEQ.")):
             add_surface(surfaces, "sound", name)
         if base in ("GLDEFS", "ANIMDEFS", "MODELDEF", "VOXELDEF", "DECALDEF"):
             add_surface(surfaces, "visual_defs", name)
@@ -385,7 +652,17 @@ def find_line_hits(texts: dict[str, bytes], pattern: str, *, flags: int = re.IGN
 
 
 def archive_base_name(name: str) -> str:
-    return Path(name.replace("\\", "/")).name.upper()
+    normalized = name.replace("\\", "/")
+    if ":" in normalized:
+        normalized = normalized.rsplit(":", 1)[1]
+    return Path(normalized).name.upper()
+
+
+def archive_suffix(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    if ":" in normalized:
+        normalized = normalized.rsplit(":", 1)[1]
+    return Path(normalized).suffix.lower()
 
 
 def strip_script_comment(line: str) -> str:
@@ -407,6 +684,29 @@ def strip_script_comment(line: str) -> str:
             quote_char = char
             continue
         if char == "#" or (char == "/" and index + 1 < len(line) and line[index + 1] == "/"):
+            return line[:index]
+    return line
+
+
+def strip_slash_comment(line: str) -> str:
+    in_quote = False
+    quote_char = ""
+    escape = False
+    for index, char in enumerate(line):
+        if escape:
+            escape = False
+            continue
+        if in_quote:
+            if char == "\\":
+                escape = True
+            elif char == quote_char:
+                in_quote = False
+            continue
+        if char in ("'", '"'):
+            in_quote = True
+            quote_char = char
+            continue
+        if char == "/" and index + 1 < len(line) and line[index + 1] == "/":
             return line[:index]
     return line
 
@@ -613,6 +913,541 @@ def parse_edf_hints(name: str, text: str) -> tuple[list[EternityIncludeHint], li
     return includes, things
 
 
+def archive_member_name(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    if ":" in normalized:
+        normalized = normalized.rsplit(":", 1)[1]
+    return normalized
+
+
+def edge_ddf_kind(name: str) -> str:
+    member = archive_member_name(name)
+    base = Path(member).name.upper()
+    if base in EDGE_DDF_KIND_BY_NAME:
+        return EDGE_DDF_KIND_BY_NAME[base]
+
+    stem = Path(member).stem
+    if stem.upper() in EDGE_DDF_KIND_BY_NAME:
+        return EDGE_DDF_KIND_BY_NAME[stem.upper()]
+    if stem.lower() in EDGE_DDF_KIND_BY_STEM:
+        return EDGE_DDF_KIND_BY_STEM[stem.lower()]
+
+    lower = member.lower()
+    if lower.startswith("ddf/"):
+        first = lower.split("/", 2)[1]
+        if first.endswith(".ddf"):
+            first = first[:-4]
+        named = f"DDF{first.upper()}"
+        return EDGE_DDF_KIND_BY_NAME.get(named, EDGE_DDF_KIND_BY_STEM.get(first, first.replace("-", "_")))
+    if "/doom_ddf/" in f"/{lower}" or lower.startswith("doom_ddf/"):
+        first = Path(lower).stem
+        return EDGE_DDF_KIND_BY_STEM.get(first, first.replace("-", "_"))
+
+    return "ddf"
+
+
+def edge_script_kind(name: str) -> str:
+    member = archive_member_name(name)
+    base = Path(member).name.upper()
+    suffix = Path(member).suffix.lower()
+    lower = member.lower()
+
+    if base == "COAL" or suffix == ".coal" or lower.startswith("coal/"):
+        return "coal"
+    if base == "LUA" or suffix == ".lua":
+        return "lua"
+    if base in {"RADTRIG", "RADTRIGS"}:
+        return "radtrig"
+    if base == "RTS" or suffix == ".rts":
+        return "rts"
+    return "script"
+
+
+def edge_entry_key(name: str) -> str:
+    return name.replace("\\", "/").strip("/").lower()
+
+
+def edge_section_label(section: EdgeDdfSectionHint) -> str:
+    if section.parent:
+        return f"{section.name}:{section.parent}"
+    return section.name
+
+
+def normalize_edge_property_key(key: str) -> str:
+    return key.strip().lower()
+
+
+def normalize_edge_property_value(value: str) -> str:
+    cleaned = value.strip().rstrip(";").strip()
+    return cleaned[:240]
+
+
+def edge_property_continues(line: str) -> bool:
+    return not line.rstrip().endswith(";")
+
+
+def edge_unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def edge_speed_to_tics(value: str) -> str | None:
+    cleaned = edge_unquote(value).strip()
+    match = re.match(r"^([0-9]+)(?:\s*T)?$", cleaned, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def edge_split_sequence(value: str) -> list[str]:
+    values: list[str] = []
+    current: list[str] = []
+    in_quote = False
+    quote_char = ""
+    escape = False
+    for char in value:
+        if escape:
+            current.append(char)
+            escape = False
+            continue
+        if in_quote:
+            if char == "\\":
+                escape = True
+            elif char == quote_char:
+                in_quote = False
+            else:
+                current.append(char)
+            continue
+        if char in {"'", '"'}:
+            in_quote = True
+            quote_char = char
+            continue
+        if char == ",":
+            item = "".join(current).strip()
+            if item:
+                values.append(edge_unquote(item))
+            current = []
+            continue
+        current.append(char)
+    item = "".join(current).strip()
+    if item:
+        values.append(edge_unquote(item))
+    return values
+
+
+def parse_edge_property_hint(name: str, line_no: int, line: str) -> EdgeDdfPropertyHint | None:
+    prop = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_./-]*)(?:\([^)]*\))?\s*(?:=|:)\s*(.*?)\s*;?\s*$", line)
+    if prop is None:
+        return None
+    return EdgeDdfPropertyHint(
+        entry=name,
+        line=line_no,
+        key=normalize_edge_property_key(prop.group(1)),
+        value=normalize_edge_property_value(prop.group(2)),
+    )
+
+
+def apply_edge_property_hint(section: EdgeDdfSectionHint, hint: EdgeDdfPropertyHint) -> None:
+    if hint.key not in section.property_keys:
+        section.property_keys.append(hint.key)
+    section.properties.append(hint)
+
+
+def is_edge_ddf_name(name: str) -> bool:
+    member = archive_member_name(name)
+    base = Path(member).name.upper()
+    suffix = Path(member).suffix.lower()
+    return base in EDGE_DDF_LUMP_NAMES or suffix == ".ddf" or member.lower().startswith("ddf/")
+
+
+def parse_edge_include_hint(name: str, line_no: int, line: str) -> EdgeDdfIncludeHint | None:
+    match = re.match(r"^\s*#?\s*include\b\s*(?:=|\s)?\s*(.+?)\s*;?\s*$", line, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    target = match.group(1).strip()
+    target = target.strip("\"'<>")
+    if not target:
+        return None
+    return EdgeDdfIncludeHint(entry=name, line=line_no, target=target)
+
+
+def resolve_edge_include_target(hint: EdgeDdfIncludeHint, ddf_entries: Iterable[str]) -> str | None:
+    entry_by_key = {edge_entry_key(entry): entry for entry in ddf_entries}
+    target = hint.target.replace("\\", "/").strip().strip("/")
+    if not target:
+        return None
+
+    candidates: list[str] = []
+    if not re.match(r"^[A-Za-z]:/", target):
+        parent = hint.entry.replace("\\", "/").rsplit("/", 1)[0] if "/" in hint.entry else ""
+        if parent:
+            candidates.append(f"{parent}/{target}")
+    candidates.append(target)
+    candidates.append(Path(target).name)
+
+    for candidate in candidates:
+        match = entry_by_key.get(edge_entry_key(candidate))
+        if match is not None:
+            return match
+
+    target_name = Path(target).name.lower()
+    suffix_matches = [
+        entry
+        for entry in ddf_entries
+        if Path(entry.replace("\\", "/")).name.lower() == target_name
+    ]
+    if len(suffix_matches) == 1:
+        return suffix_matches[0]
+    return None
+
+
+def resolve_edge_includes(profile: EdgeClassicProfile) -> None:
+    for hint in profile.ddf_includes:
+        hint.resolved_entry = resolve_edge_include_target(hint, profile.ddf_entries)
+    profile.ddf_missing_includes = [hint for hint in profile.ddf_includes if hint.resolved_entry is None]
+
+
+def build_edge_load_order(profile: EdgeClassicProfile) -> None:
+    includes_by_entry: dict[str, list[str]] = {entry: [] for entry in profile.ddf_entries}
+    for hint in profile.ddf_includes:
+        if hint.resolved_entry is not None:
+            includes_by_entry.setdefault(hint.entry, []).append(hint.resolved_entry)
+
+    # Build dependency-first order so generated reports describe the same layering
+    # an EDGE-style include chain would use, while still reporting cycles below.
+    order: list[str] = []
+    permanent: set[str] = set()
+    temporary: set[str] = set()
+    stack: list[str] = []
+    seen_cycles: set[tuple[str, ...]] = set()
+
+    def visit(entry: str) -> None:
+        if entry in permanent:
+            return
+        if entry in temporary:
+            try:
+                start = stack.index(entry)
+            except ValueError:
+                cycle = [entry]
+            else:
+                cycle = stack[start:] + [entry]
+            key = tuple(edge_entry_key(item) for item in cycle)
+            if key not in seen_cycles:
+                profile.ddf_include_cycles.append(cycle)
+                seen_cycles.add(key)
+            return
+
+        temporary.add(entry)
+        stack.append(entry)
+        for dependency in includes_by_entry.get(entry, []):
+            visit(dependency)
+        stack.pop()
+        temporary.remove(entry)
+        permanent.add(entry)
+        if entry not in order:
+            order.append(entry)
+
+    for entry in profile.ddf_entries:
+        visit(entry)
+
+    profile.ddf_load_order = order
+
+
+def build_edge_conflicts(profile: EdgeClassicProfile) -> None:
+    order_index = {entry: index for index, entry in enumerate(profile.ddf_load_order)}
+    sections = sorted(
+        profile.ddf_sections,
+        key=lambda section: (order_index.get(section.entry, len(order_index)), section.entry.lower(), section.line),
+    )
+    grouped: dict[tuple[str, str], list[EdgeDdfSectionHint]] = {}
+    for section in sections:
+        key = (section.kind.lower(), edge_section_label(section).lower())
+        grouped.setdefault(key, []).append(section)
+
+    conflicts: list[EdgeDdfConflictHint] = []
+    for (kind, name), matches in sorted(grouped.items()):
+        if len(matches) < 2:
+            continue
+        conflicts.append(
+            EdgeDdfConflictHint(
+                kind=kind,
+                name=name,
+                definitions=[
+                    TextHit(
+                        entry=section.entry,
+                        line=section.line,
+                        text=f"{section.kind} [{edge_section_label(section)}]",
+                    )
+                    for section in matches
+                ],
+            )
+        )
+    profile.ddf_conflicts = conflicts
+
+
+def build_edge_neutral_manifest(profile: EdgeClassicProfile) -> None:
+    order_index = {entry: index for index, entry in enumerate(profile.ddf_load_order)}
+    ordered_sections = sorted(
+        profile.ddf_sections,
+        key=lambda section: (order_index.get(section.entry, len(order_index)), section.entry.lower(), section.line),
+    )
+
+    entries: list[EdgeDdfManifestEntry] = []
+    status_counts: dict[str, int] = {}
+    manual_counts: dict[str, int] = {}
+    duplicate_counts: dict[str, int] = {}
+
+    for section in ordered_sections:
+        supported_keys = EDGE_STAGE3_SUPPORTED_PROPERTIES.get(section.kind, set())
+        supported: dict[str, str] = {}
+        manual: list[str] = []
+        key_counts: dict[str, int] = {}
+
+        # Keep duplicate keys visible instead of silently turning them into
+        # last-writer-wins data. Later adapters need to decide whether these
+        # represent overrides, alternatives, or accidental stale code.
+        for prop in section.properties:
+            key_counts[prop.key] = key_counts.get(prop.key, 0) + 1
+            if prop.key in supported_keys:
+                supported[prop.key] = prop.value
+            elif prop.key not in manual:
+                manual.append(prop.key)
+                manual_counts[prop.key] = manual_counts.get(prop.key, 0) + 1
+
+        duplicates = sorted(
+            key for key, count in key_counts.items() if count > 1 and key not in EDGE_REPEATABLE_PROPERTY_KEYS
+        )
+        for key in duplicates:
+            duplicate_counts[key] = duplicate_counts.get(key, 0) + 1
+
+        if supported and (manual or duplicates):
+            status = "partial"
+        elif supported:
+            status = "bridgeable"
+        else:
+            status = "manual"
+
+        entry = EdgeDdfManifestEntry(
+            kind=section.kind,
+            label=edge_section_label(section),
+            entry=section.entry,
+            line=section.line,
+            status=status,
+            supported_properties=dict(sorted(supported.items())),
+            manual_properties=sorted(manual),
+            duplicate_properties=duplicates,
+            property_count=len(section.properties),
+        )
+        entries.append(entry)
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    profile.ddf_manifest_entries = entries
+    profile.ddf_manifest_counts = dict(sorted(status_counts.items()))
+    profile.ddf_manual_property_counts = dict(sorted(manual_counts.items(), key=lambda item: (-item[1], item[0])))
+    profile.ddf_duplicate_property_counts = dict(sorted(duplicate_counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def edge_animdefs_line(item: EdgeDdfManifestEntry) -> str | None:
+    # Stage 4 is a candidate translation only; Stage 5 checks whether these
+    # texture/flat names actually exist in the selected IWAD or mod bundle.
+    props = item.supported_properties
+    anim_type = edge_unquote(props.get("type", "")).lower()
+    if anim_type not in {"flat", "texture"}:
+        return None
+    tics = edge_speed_to_tics(props.get("speed", ""))
+    if tics is None:
+        return None
+
+    keyword = "flat" if anim_type == "flat" else "texture"
+    first = edge_unquote(props.get("first", ""))
+    last = edge_unquote(props.get("last", ""))
+    if first and last:
+        return f"{keyword} {first} range {last} tics {tics}"
+
+    sequence = edge_split_sequence(props.get("sequence", ""))
+    if sequence:
+        lines = [f"{keyword} {item.label}"]
+        lines.extend(f"    pic {pic} tics {tics}" for pic in sequence)
+        return "\n".join(lines)
+    return None
+
+
+def edge_sndinfo_line(item: EdgeDdfManifestEntry) -> str | None:
+    props = item.supported_properties
+    lump = edge_unquote(props.get("lump_name") or props.get("lump", ""))
+    if not lump:
+        return None
+    return f"{item.label} {lump}"
+
+
+def build_edge_translation_summary(profile: EdgeClassicProfile) -> None:
+    summary = EdgeTranslationSummary()
+    for item in profile.ddf_manifest_entries:
+        if item.kind == "animations" and edge_animdefs_line(item) is not None:
+            summary.animdefs_entries += 1
+        elif item.kind == "sounds" and edge_sndinfo_line(item) is not None:
+            summary.sndinfo_entries += 1
+        elif item.kind in {"animations", "sounds"}:
+            summary.skipped_entries += 1
+    profile.translation_summary = summary
+
+
+def parse_edge_ddf_hints(
+    name: str, text: str, kind: str
+) -> tuple[list[EdgeDdfSectionHint], list[EdgeDdfIncludeHint], list[TextHit], list[TextHit]]:
+    sections: list[EdgeDdfSectionHint] = []
+    includes: list[EdgeDdfIncludeHint] = []
+    clearall: list[TextHit] = []
+    versions: list[TextHit] = []
+    current: EdgeDdfSectionHint | None = None
+    continuation_key: str | None = None
+
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = strip_slash_comment(raw_line).strip()
+        if not line:
+            continue
+
+        include = parse_edge_include_hint(name, line_no, line)
+        if include is not None:
+            includes.append(include)
+            continue
+
+        if re.match(r"^\s*#?\s*clearall\b", line, flags=re.IGNORECASE):
+            clearall.append(TextHit(entry=name, line=line_no, text=line[:240]))
+            continue
+
+        version = re.match(r"^\s*#?\s*version\b\s*(?:=|\s)?\s*(.+?)\s*;?\s*$", line, flags=re.IGNORECASE)
+        if version is not None:
+            versions.append(TextHit(entry=name, line=line_no, text=version.group(1).strip()[:240]))
+            continue
+
+        section = re.match(r"^\s*\[([^\]:]+)(?::([^\]]+))?\]\s*(.*)$", line)
+        if section is not None:
+            continuation_key = None
+            if current is not None:
+                sections.append(current)
+            current = EdgeDdfSectionHint(
+                entry=name,
+                line=line_no,
+                kind=kind,
+                name=section.group(1).strip(),
+                parent=section.group(2).strip() if section.group(2) else None,
+            )
+            trailing = section.group(3).strip()
+            if trailing:
+                prop_hint = parse_edge_property_hint(name, line_no, trailing)
+                if prop_hint is not None:
+                    apply_edge_property_hint(current, prop_hint)
+                    if edge_property_continues(trailing):
+                        continuation_key = prop_hint.key
+            continue
+
+        if current is None:
+            continue
+
+        # EDGE state/value lists often continue across comma-terminated lines.
+        # Those frame rows are data for the prior property, not new DDF keys.
+        if continuation_key is not None:
+            if not edge_property_continues(line):
+                continuation_key = None
+            continue
+
+        prop_hint = parse_edge_property_hint(name, line_no, line)
+        if prop_hint is None:
+            continue
+        apply_edge_property_hint(current, prop_hint)
+        if edge_property_continues(line):
+            continuation_key = prop_hint.key
+
+    if current is not None:
+        sections.append(current)
+    return sections, includes, clearall, versions
+
+
+def build_edge_profile(
+    surfaces: dict[str, list[str]], texts: dict[str, bytes], entries: Iterable[ArchiveEntry]
+) -> EdgeClassicProfile | None:
+    if "edge_ddf" not in surfaces and "edge_scripts" not in surfaces:
+        return None
+
+    profile = EdgeClassicProfile()
+    entry_sizes = {entry.name: entry.size for entry in entries}
+    profile.ddf_entries = list(surfaces.get("edge_ddf", []))
+    profile.ddf_entry_kinds = {name: edge_ddf_kind(name) for name in profile.ddf_entries}
+
+    for name in surfaces.get("edge_scripts", []):
+        profile.script_entries.append(
+            EdgeScriptHint(entry=name, kind=edge_script_kind(name), size=entry_sizes.get(name, len(texts.get(name, b""))))
+        )
+
+    for name, data in sorted(texts.items(), key=lambda kv: kv[0].lower()):
+        if not is_edge_ddf_name(name):
+            continue
+        kind = edge_ddf_kind(name)
+        text = decode_text(data)
+        sections, includes, clearall, versions = parse_edge_ddf_hints(name, text, kind)
+        profile.ddf_sections.extend(sections)
+        profile.ddf_includes.extend(includes)
+        profile.ddf_clearall.extend(clearall)
+        profile.ddf_versions.extend(versions)
+
+    resolve_edge_includes(profile)
+    build_edge_load_order(profile)
+    build_edge_conflicts(profile)
+    build_edge_neutral_manifest(profile)
+    build_edge_translation_summary(profile)
+
+    counts: dict[str, int] = {}
+    for name in profile.ddf_entries:
+        counts[profile.ddf_entry_kinds.get(name, "ddf")] = counts.get(profile.ddf_entry_kinds.get(name, "ddf"), 0) + 1
+    for section in profile.ddf_sections:
+        counts[section.kind] = max(counts.get(section.kind, 0), 0)
+    profile.kind_counts = dict(sorted(counts.items()))
+
+    profile.stage_flags = {
+        "stage1_manifest": True,
+        "stage2_include_order": True,
+        "stage2_conflict_report": True,
+        "stage3_neutral_manifest": True,
+        "stage4_candidate_translation": True,
+        "ddf_runtime_adapter": False,
+        "coal_lua_runtime_adapter": False,
+    }
+
+    if profile.ddf_entries and not profile.ddf_sections:
+        profile.notes.append("DDF resources were found, but no bracketed DDF sections were recognized by the scanner.")
+    if profile.ddf_includes and not profile.ddf_missing_includes and not profile.ddf_include_cycles:
+        profile.notes.append("DDF include directives were resolved into a deterministic load order.")
+    if profile.ddf_missing_includes:
+        profile.notes.append(f"{len(profile.ddf_missing_includes)} DDF include target(s) could not be resolved from the scanned files.")
+    if profile.ddf_include_cycles:
+        profile.notes.append(f"{len(profile.ddf_include_cycles)} DDF include cycle(s) were detected.")
+    if profile.ddf_clearall:
+        profile.notes.append("DDF reset directives were found; HCDE must report merge order instead of silently replacing base definitions.")
+    if profile.ddf_conflicts:
+        profile.notes.append(f"{len(profile.ddf_conflicts)} duplicate DDF section definition(s) need explicit merge decisions.")
+    if profile.ddf_manifest_entries:
+        bridgeable = profile.ddf_manifest_counts.get("bridgeable", 0)
+        partial = profile.ddf_manifest_counts.get("partial", 0)
+        manual = profile.ddf_manifest_counts.get("manual", 0)
+        profile.notes.append(f"Neutral DDF manifest entries: {bridgeable} bridgeable, {partial} partial, {manual} manual.")
+    if profile.translation_summary.animdefs_entries or profile.translation_summary.sndinfo_entries:
+        profile.notes.append(
+            "Stage 4 candidate translations: "
+            f"{profile.translation_summary.animdefs_entries} ANIMDEFS line(s), "
+            f"{profile.translation_summary.sndinfo_entries} SNDINFO mapping(s)."
+        )
+    if profile.script_entries:
+        profile.notes.append("COAL, Lua, RTS, or RadTrig resources are report-only until HCDE has an explicit sandbox/API compatibility layer.")
+    behavior_kinds = {section.kind for section in profile.ddf_sections}
+    if behavior_kinds.intersection({"things", "weapons", "attacks", "lines", "sectors", "sounds"}):
+        profile.notes.append("Gameplay-facing DDF categories are present and need narrow HCDE-owned shims or a reviewed adapter subset.")
+
+    return profile
+
+
 def build_eternity_profile(surfaces: dict[str, list[str]], texts: dict[str, bytes]) -> EternityValidationProfile | None:
     eternity_keys = {"eternity_edf", "eternity_extradata", "eternity_mapinfo"}
     if not any(key in surfaces for key in eternity_keys):
@@ -677,6 +1512,7 @@ def build_checks(
     surfaces: dict[str, list[str]],
     texts: dict[str, bytes],
     eternity: EternityValidationProfile | None = None,
+    edge: EdgeClassicProfile | None = None,
 ) -> list[CompatibilityCheck]:
     checks: list[CompatibilityCheck] = []
 
@@ -755,9 +1591,184 @@ def build_checks(
                 id="edge-classic-compat-surface",
                 severity="manual",
                 title="EDGE Classic compatibility surface detected",
-                detail="DDF, RTS, COAL, and Lua style resources need a future EDGE Classic compat layer. The candidate should document required behavior; do not copy DDF/script content into HCDE without license review.",
+                detail="HCDE now generates EDGE Stage 1-4 outputs for DDF, RTS, COAL, and Lua resources, including include order, definition conflicts, a neutral DDF manifest, and reviewed candidate ANIMDEFS/SNDINFO translations. Treat them as design input; do not copy DDF/script content into HCDE without license review.",
             )
         )
+        if edge and edge.ddf_sections:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-sections",
+                    severity="candidate",
+                    title="EDGE DDF definitions detected",
+                    detail="These DDF blocks describe gameplay, map, sound, or UI definitions that need an HCDE-owned adapter subset or narrow compatibility shims.",
+                    hits=[
+                        TextHit(
+                            entry=section.entry,
+                            line=section.line,
+                            text=f"{section.kind} [{edge_section_label(section)}] properties={', '.join(section.property_keys[:8])}",
+                        )
+                        for section in edge.ddf_sections[:40]
+                    ],
+                )
+            )
+        if edge and edge.ddf_manifest_entries:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-neutral-manifest",
+                    severity="info",
+                    title="EDGE neutral DDF manifest generated",
+                    detail="Stage 3 parsed DDF sections into HCDE-owned manifest entries. Bridgeable properties are separated from manual properties; no runtime translation is enabled yet.",
+                    hits=[
+                        TextHit(
+                            entry=item.entry,
+                            line=item.line,
+                            text=f"{item.kind} [{item.label}] status={item.status} supported={', '.join(item.supported_properties.keys())}",
+                        )
+                        for item in edge.ddf_manifest_entries[:40]
+                    ],
+                )
+            )
+            manual_hits = [
+                TextHit(
+                    entry=item.entry,
+                    line=item.line,
+                    text=f"{item.kind} [{item.label}] manual={', '.join(item.manual_properties[:10])}",
+                )
+                for item in edge.ddf_manifest_entries
+                if item.manual_properties
+            ]
+            if manual_hits:
+                checks.append(
+                    CompatibilityCheck(
+                        id="edge-ddf-manual-properties",
+                        severity="candidate",
+                        title="EDGE DDF properties need manual adapter decisions",
+                        detail="These DDF sections use properties outside the Stage 3 neutral bridge subset. Keep them visible until a later adapter supports them.",
+                        hits=manual_hits[:40],
+                    )
+                )
+            duplicate_hits = [
+                TextHit(
+                    entry=item.entry,
+                    line=item.line,
+                    text=f"{item.kind} [{item.label}] duplicates={', '.join(item.duplicate_properties[:10])}",
+                )
+                for item in edge.ddf_manifest_entries
+                if item.duplicate_properties
+            ]
+            if duplicate_hits:
+                checks.append(
+                    CompatibilityCheck(
+                        id="edge-ddf-duplicate-properties",
+                        severity="candidate",
+                        title="EDGE DDF duplicate properties need adapter decisions",
+                        detail="These DDF sections repeat a property key. The manifest preserves the final value for candidate generation and reports duplicates so an adapter can decide whether the repeat is intentional.",
+                        hits=duplicate_hits[:40],
+                    )
+                )
+        if edge and (edge.translation_summary.animdefs_entries or edge.translation_summary.sndinfo_entries):
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-candidate-translations",
+                    severity="candidate",
+                    title="EDGE DDF candidate translations generated",
+                    detail="Stage 4 writes candidate ANIMDEFS and SNDINFO files for narrow, data-only DDF animation and sound mappings. They are review outputs, not active resources.",
+                    hits=[
+                        TextHit(
+                            entry="edge_translation",
+                            line=1,
+                            text=(
+                                f"ANIMDEFS={edge.translation_summary.animdefs_entries}, "
+                                f"SNDINFO={edge.translation_summary.sndinfo_entries}, "
+                                f"skipped={edge.translation_summary.skipped_entries}"
+                            ),
+                        )
+                    ],
+                )
+            )
+        if edge and edge.ddf_includes:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-include-order",
+                    severity="info",
+                    title="EDGE DDF include order resolved",
+                    detail="Stage 2 resolved DDF include directives into the reported load order where possible. Missing includes and cycles are reported separately.",
+                    hits=[
+                        TextHit(
+                            entry=hint.entry,
+                            line=hint.line,
+                            text=f"{hint.target} -> {hint.resolved_entry or '<unresolved>'}",
+                        )
+                        for hint in edge.ddf_includes[:40]
+                    ],
+                )
+            )
+        if edge and edge.ddf_missing_includes:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-missing-includes",
+                    severity="candidate",
+                    title="EDGE DDF includes could not be resolved",
+                    detail="These include targets were not found in the scanned archive/folder. The mod may require additional files or a different root folder.",
+                    hits=[
+                        TextHit(entry=hint.entry, line=hint.line, text=hint.target)
+                        for hint in edge.ddf_missing_includes[:40]
+                    ],
+                )
+            )
+        if edge and edge.ddf_include_cycles:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-include-cycles",
+                    severity="candidate",
+                    title="EDGE DDF include cycles detected",
+                    detail="Cycles prevent a simple one-pass merge order. Future runtime adapters must break or explicitly model these relationships.",
+                    hits=[
+                        TextHit(entry=cycle[0], line=1, text=" -> ".join(cycle))
+                        for cycle in edge.ddf_include_cycles[:20]
+                    ],
+                )
+            )
+        if edge and edge.ddf_clearall:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-reset-order",
+                    severity="candidate",
+                    title="EDGE DDF reset directives detected",
+                    detail="Reset directives can replace base definitions. HCDE should report this explicitly before enabling any runtime DDF adapter.",
+                    hits=edge.ddf_clearall[:40],
+                )
+            )
+        if edge and edge.ddf_conflicts:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-ddf-definition-conflicts",
+                    severity="candidate",
+                    title="EDGE DDF duplicate definitions need merge decisions",
+                    detail="More than one DDF section defines the same category/name. HCDE must report or resolve these explicitly before translating definitions.",
+                    hits=[
+                        TextHit(
+                            entry=conflict.definitions[-1].entry,
+                            line=conflict.definitions[-1].line,
+                            text=f"{conflict.kind} [{conflict.name}] definitions={len(conflict.definitions)}",
+                        )
+                        for conflict in edge.ddf_conflicts[:40]
+                    ],
+                )
+            )
+        if edge and edge.script_entries:
+            checks.append(
+                CompatibilityCheck(
+                    id="edge-script-runtime-needed",
+                    severity="manual",
+                    title="EDGE COAL/Lua/RTS scripts need a sandbox layer",
+                    detail="Script files are detected and listed, but HCDE should not execute or emulate them until the accepted API surface and conflict rules are designed.",
+                    hits=[
+                        TextHit(entry=script.entry, line=1, text=f"{script.kind} script, {script.size} bytes")
+                        for script in edge.script_entries[:40]
+                    ],
+                )
+            )
 
     if "zscript" in surfaces:
         checks.append(
@@ -832,17 +1843,19 @@ def scan_mod(path: Path, slug_override: str | None = None) -> ScanResult:
     archive_type, entries, texts, warnings = read_archive(path)
     surfaces = classify_surfaces(entries)
     eternity = build_eternity_profile(surfaces, texts)
-    checks = build_checks(surfaces, texts, eternity)
+    edge = build_edge_profile(surfaces, texts, entries)
+    checks = build_checks(surfaces, texts, eternity, edge)
     return ScanResult(
         source_path=str(path.resolve()),
         archive_type=archive_type,
-        sha256=sha256_file(path),
+        sha256=sha256_path(path),
         slug=slug_override or make_slug(path),
         entries=entries,
         surfaces=surfaces,
         checks=checks,
         warnings=warnings,
         eternity=eternity,
+        edge=edge,
     )
 
 
@@ -874,6 +1887,9 @@ def render_report(result: ScanResult) -> str:
 
     if result.eternity is not None:
         lines.extend(render_eternity_profile_section(result.eternity))
+
+    if result.edge is not None:
+        lines.extend(render_edge_profile_section(result.edge))
 
     lines.append("## Candidate Checks")
     lines.append("")
@@ -941,6 +1957,99 @@ def render_eternity_profile_section(profile: EternityValidationProfile) -> list[
         with_numbers = sum(1 for thing in profile.edf_things if thing.doomednum is not None)
         behavior = sum(1 for thing in profile.edf_things if thing.behavior_properties)
         lines.append(f"- EDF thing definitions: `{len(profile.edf_things)}` total, `{with_numbers}` with DoomEdNums, `{behavior}` with behavior fields")
+    if profile.notes:
+        lines.append("")
+        lines.append("Notes:")
+        for note in profile.notes:
+            lines.append(f"- {note}")
+    lines.append("")
+    return lines
+
+
+def render_edge_profile_section(profile: EdgeClassicProfile) -> list[str]:
+    lines: list[str] = []
+    lines.append("## EDGE Classic Profile")
+    lines.append("")
+    lines.append("Stage coverage:")
+    for key, enabled in profile.stage_flags.items():
+        lines.append(f"- {key}: `{'yes' if enabled else 'no'}`")
+    lines.append("")
+
+    if profile.ddf_entries:
+        kind_preview = ", ".join(f"`{kind}`={count}" for kind, count in profile.kind_counts.items())
+        lines.append(f"- DDF entries: `{len(profile.ddf_entries)}` total ({kind_preview})")
+    if profile.ddf_load_order:
+        order_preview = ", ".join(f"`{entry}`" for entry in profile.ddf_load_order[:16])
+        if len(profile.ddf_load_order) > 16:
+            order_preview += f", ... ({len(profile.ddf_load_order)} total)"
+        lines.append(f"- DDF load order: {order_preview}")
+    if profile.ddf_sections:
+        section_preview = ", ".join(
+            f"`{section.kind}:{edge_section_label(section)}`" for section in profile.ddf_sections[:20]
+        )
+        if len(profile.ddf_sections) > 20:
+            section_preview += f", ... ({len(profile.ddf_sections)} total)"
+        lines.append(f"- DDF sections: {section_preview}")
+    if profile.ddf_includes:
+        include_preview = ", ".join(
+            f"`{hint.target}` -> `{hint.resolved_entry or '<unresolved>'}`"
+            for hint in profile.ddf_includes[:20]
+        )
+        if len(profile.ddf_includes) > 20:
+            include_preview += f", ... ({len(profile.ddf_includes)} total)"
+        lines.append(f"- DDF includes: {include_preview}")
+    if profile.ddf_missing_includes:
+        missing_preview = ", ".join(f"`{hint.target}`" for hint in profile.ddf_missing_includes[:20])
+        if len(profile.ddf_missing_includes) > 20:
+            missing_preview += f", ... ({len(profile.ddf_missing_includes)} total)"
+        lines.append(f"- Missing DDF includes: {missing_preview}")
+    if profile.ddf_include_cycles:
+        cycle_preview = ", ".join(f"`{' -> '.join(cycle)}`" for cycle in profile.ddf_include_cycles[:5])
+        if len(profile.ddf_include_cycles) > 5:
+            cycle_preview += f", ... ({len(profile.ddf_include_cycles)} total)"
+        lines.append(f"- DDF include cycles: {cycle_preview}")
+    if profile.ddf_conflicts:
+        conflict_preview = ", ".join(
+            f"`{conflict.kind}:{conflict.name}` x{len(conflict.definitions)}"
+            for conflict in profile.ddf_conflicts[:20]
+        )
+        if len(profile.ddf_conflicts) > 20:
+            conflict_preview += f", ... ({len(profile.ddf_conflicts)} total)"
+        lines.append(f"- Duplicate DDF definitions: {conflict_preview}")
+    if profile.ddf_manifest_entries:
+        status_preview = ", ".join(f"`{status}`={count}" for status, count in profile.ddf_manifest_counts.items())
+        lines.append(f"- Neutral DDF manifest: `{len(profile.ddf_manifest_entries)}` entries ({status_preview})")
+    if profile.translation_summary.animdefs_entries or profile.translation_summary.sndinfo_entries:
+        lines.append(
+            "- Candidate translations: "
+            f"`ANIMDEFS`={profile.translation_summary.animdefs_entries}, "
+            f"`SNDINFO`={profile.translation_summary.sndinfo_entries}, "
+            f"`skipped`={profile.translation_summary.skipped_entries}"
+        )
+    if profile.ddf_manual_property_counts:
+        manual_preview = ", ".join(
+            f"`{key}`={count}" for key, count in list(profile.ddf_manual_property_counts.items())[:16]
+        )
+        if len(profile.ddf_manual_property_counts) > 16:
+            manual_preview += f", ... ({len(profile.ddf_manual_property_counts)} total)"
+        lines.append(f"- Manual DDF properties: {manual_preview}")
+    if profile.ddf_duplicate_property_counts:
+        duplicate_preview = ", ".join(
+            f"`{key}`={count}" for key, count in list(profile.ddf_duplicate_property_counts.items())[:16]
+        )
+        if len(profile.ddf_duplicate_property_counts) > 16:
+            duplicate_preview += f", ... ({len(profile.ddf_duplicate_property_counts)} total)"
+        lines.append(f"- Duplicate DDF properties: {duplicate_preview}")
+    if profile.ddf_versions:
+        version_preview = ", ".join(f"`{hit.text}`" for hit in profile.ddf_versions[:10])
+        if len(profile.ddf_versions) > 10:
+            version_preview += f", ... ({len(profile.ddf_versions)} total)"
+        lines.append(f"- DDF versions: {version_preview}")
+    if profile.script_entries:
+        script_preview = ", ".join(f"`{script.kind}:{script.entry}`" for script in profile.script_entries[:20])
+        if len(profile.script_entries) > 20:
+            script_preview += f", ... ({len(profile.script_entries)} total)"
+        lines.append(f"- Script entries: {script_preview}")
     if profile.notes:
         lines.append("")
         lines.append("Notes:")
@@ -1027,6 +2136,154 @@ def render_eternity_validation(result: ScanResult, out_dir: Path | None = None) 
     return "\n".join(lines)
 
 
+def render_edge_validation(result: ScanResult, out_dir: Path | None = None) -> str:
+    profile = result.edge
+    if profile is None:
+        return "# HCDE EDGE Classic Validation\n\nNo EDGE Classic compatibility surfaces were detected.\n"
+
+    log_root = str(out_dir) if out_dir is not None else f"build\\compat-candidates\\{result.slug}"
+    lines: list[str] = []
+    lines.append(f"# HCDE EDGE Classic Validation: {result.slug}")
+    lines.append("")
+    lines.append("This file is a Stage 1-4 compatibility manifest. It contains scanner metadata, DDF include order, conflict reports, neutral DDF bridge entries, and candidate translation outputs only; it does not import or execute EDGE DDF, COAL, Lua, RTS, or RadTrig behavior.")
+    lines.append("")
+    lines.append("## Runtime Commands")
+    lines.append("")
+    lines.append("Use your local IWAD path in place of `C:\\Path\\DOOM2.WAD` when needed.")
+    lines.append("")
+    lines.append("```powershell")
+    lines.append(f"build\\RelWithDebInfo\\hcde.exe -norun -errorlog \"{log_root}\\edge-client-startup.log\" -iwad C:\\Path\\DOOM2.WAD -file \"{result.source_path}\"")
+    lines.append(f"build\\RelWithDebInfo\\hcdeserv.exe -norun -errorlog \"{log_root}\\edge-server-startup.log\" -iwad C:\\Path\\DOOM2.WAD -file \"{result.source_path}\" -nosound -nomusic")
+    lines.append("```")
+    lines.append("")
+    lines.append("## Current Boundary")
+    lines.append("")
+    lines.append("- Stage 1 is detection and manifest generation.")
+    lines.append("- Stage 2 resolves DDF includes into a deterministic load order and reports duplicate definitions, cycles, resets, and missing include targets.")
+    lines.append("- Stage 3 separates DDF properties into neutral bridgeable data and manual adapter decisions.")
+    lines.append("- Stage 4 writes candidate ANIMDEFS and SNDINFO translations for narrow data-only DDF animation and sound mappings.")
+    lines.append("- DDF definitions are not translated into HCDE actors, weapons, specials, sounds, or UI yet.")
+    lines.append("- COAL, Lua, RTS, and RadTrig resources are not executed by HCDE.")
+    lines.append("- Any future adapter must report includes, resets, and conflicts instead of silently taking the last definition.")
+    lines.append("")
+    lines.append("## DDF Load Order")
+    lines.append("")
+    if profile.ddf_load_order:
+        for index, entry in enumerate(profile.ddf_load_order, start=1):
+            lines.append(f"{index}. `{entry}`")
+    else:
+        lines.append("No DDF load order was produced.")
+    lines.append("")
+
+    if profile.ddf_includes:
+        lines.append("## DDF Includes")
+        lines.append("")
+        lines.append("| Entry | Line | Target | Resolved Entry |")
+        lines.append("| --- | ---: | --- | --- |")
+        for hint in profile.ddf_includes[:120]:
+            lines.append(f"| `{hint.entry}` | {hint.line} | `{hint.target}` | `{hint.resolved_entry or '<unresolved>'}` |")
+        if len(profile.ddf_includes) > 120:
+            lines.append(f"| ... |  | {len(profile.ddf_includes) - 120} more includes |  |")
+        lines.append("")
+
+    if profile.ddf_missing_includes:
+        lines.append("Missing includes:")
+        for hint in profile.ddf_missing_includes[:80]:
+            lines.append(f"- `{hint.entry}:{hint.line}` -> `{hint.target}`")
+        if len(profile.ddf_missing_includes) > 80:
+            lines.append(f"- ... {len(profile.ddf_missing_includes) - 80} more missing includes")
+        lines.append("")
+
+    if profile.ddf_include_cycles:
+        lines.append("Include cycles:")
+        for cycle in profile.ddf_include_cycles[:40]:
+            lines.append(f"- `{' -> '.join(cycle)}`")
+        if len(profile.ddf_include_cycles) > 40:
+            lines.append(f"- ... {len(profile.ddf_include_cycles) - 40} more cycles")
+        lines.append("")
+
+    if profile.ddf_conflicts:
+        lines.append("## DDF Definition Conflicts")
+        lines.append("")
+        lines.append("| Kind | Name | Definitions |")
+        lines.append("| --- | --- | --- |")
+        for conflict in profile.ddf_conflicts[:100]:
+            defs = "<br>".join(f"`{hit.entry}:{hit.line}`" for hit in conflict.definitions[:8])
+            if len(conflict.definitions) > 8:
+                defs += f"<br>`... {len(conflict.definitions) - 8} more`"
+            lines.append(f"| `{conflict.kind}` | `{conflict.name}` | {defs} |")
+        if len(profile.ddf_conflicts) > 100:
+            lines.append(f"| ... | {len(profile.ddf_conflicts) - 100} more conflicts |  |")
+        lines.append("")
+
+    if profile.ddf_manifest_entries:
+        lines.append("## Neutral DDF Manifest")
+        lines.append("")
+        if profile.ddf_manifest_counts:
+            counts = ", ".join(f"`{status}`={count}" for status, count in profile.ddf_manifest_counts.items())
+            lines.append(f"Manifest status counts: {counts}")
+            lines.append("")
+        lines.append("| Entry | Line | Kind | Label | Status | Supported Properties | Manual Properties | Duplicate Properties |")
+        lines.append("| --- | ---: | --- | --- | --- | --- | --- | --- |")
+        for item in profile.ddf_manifest_entries[:120]:
+            supported = ", ".join(f"{key}={value}" for key, value in item.supported_properties.items())
+            manual = ", ".join(item.manual_properties[:12])
+            duplicates = ", ".join(item.duplicate_properties[:12])
+            lines.append(
+                f"| `{item.entry}` | {item.line} | `{item.kind}` | `{item.label}` | `{item.status}` | "
+                f"`{supported}` | `{manual}` | `{duplicates}` |"
+            )
+        if len(profile.ddf_manifest_entries) > 120:
+            lines.append(f"| ... |  |  | {len(profile.ddf_manifest_entries) - 120} more entries |  |  |  |  |")
+        lines.append("")
+
+    if profile.ddf_manual_property_counts:
+        lines.append("Top manual properties:")
+        for key, count in list(profile.ddf_manual_property_counts.items())[:40]:
+            lines.append(f"- `{key}`: `{count}` section(s)")
+        lines.append("")
+
+    if profile.ddf_duplicate_property_counts:
+        lines.append("Duplicate properties:")
+        for key, count in list(profile.ddf_duplicate_property_counts.items())[:40]:
+            lines.append(f"- `{key}`: `{count}` section(s)")
+        lines.append("")
+
+    lines.append("## DDF Sections")
+    lines.append("")
+    if profile.ddf_sections:
+        lines.append("| Entry | Line | Kind | Section | Parent | Property Keys |")
+        lines.append("| --- | ---: | --- | --- | --- | --- |")
+        for section in profile.ddf_sections[:100]:
+            props = ", ".join(section.property_keys[:12])
+            lines.append(
+                f"| `{section.entry}` | {section.line} | `{section.kind}` | `{edge_section_label(section)}` | "
+                f"`{section.parent or ''}` | `{props}` |"
+            )
+        if len(profile.ddf_sections) > 100:
+            lines.append(f"| ... |  |  | {len(profile.ddf_sections) - 100} more sections |  |  |")
+    else:
+        lines.append("No bracketed DDF sections were recognized by the scanner.")
+    lines.append("")
+
+    if profile.script_entries:
+        lines.append("## Scripts")
+        lines.append("")
+        for script in profile.script_entries[:80]:
+            lines.append(f"- `{script.entry}`: `{script.kind}`, `{script.size}` bytes")
+        if len(profile.script_entries) > 80:
+            lines.append(f"- ... {len(profile.script_entries) - 80} more scripts")
+        lines.append("")
+
+    if profile.notes:
+        lines.append("Notes:")
+        for note in profile.notes:
+            lines.append(f"- {note}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def render_engine_entry(result: ScanResult) -> str:
     pascal = "".join(part.capitalize() for part in result.slug.split("_") if part)
     if not pascal:
@@ -1088,9 +2345,154 @@ def render_candidate_readme(result: ScanResult) -> str:
 
         Read `report.md` first. If this candidate detected Eternity resources,
         read `eternity_validation.md` next and compare its expected log lines
-        against a real HCDE startup log.
+        against a real HCDE startup log. If it detected EDGE Classic resources,
+        read `edge_validation.md`, `edge_manifest.json`, and `edge_translation/`
+        before designing any DDF/Lua/COAL adapter, then use
+        `edge_stage5_validation.md` for runtime smoke checks.
         """
     )
+
+
+def render_edge_manifest(result: ScanResult) -> str:
+    profile = result.edge
+    if profile is None:
+        manifest: object = {
+            "stage": "edge-classic-stage4",
+            "source_path": result.source_path,
+            "sha256": result.sha256,
+            "entries": [],
+        }
+    else:
+        manifest = {
+            "stage": "edge-classic-stage4",
+            "source_path": result.source_path,
+            "sha256": result.sha256,
+            "ddf_load_order": profile.ddf_load_order,
+            "status_counts": profile.ddf_manifest_counts,
+            "manual_property_counts": profile.ddf_manual_property_counts,
+            "duplicate_property_counts": profile.ddf_duplicate_property_counts,
+            "translation_summary": asdict(profile.translation_summary),
+            "entries": [asdict(entry) for entry in profile.ddf_manifest_entries],
+        }
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+
+
+def render_edge_animdefs(result: ScanResult) -> str:
+    profile = result.edge
+    lines = [
+        "// HCDE EDGE Classic candidate ANIMDEFS translation.",
+        "// Generated from neutral manifest data only; review before moving into wadsrc_mod_compat.",
+        f"// Source SHA-256: {result.sha256}",
+        "",
+    ]
+    if profile is None:
+        return "\n".join(lines + ["// No EDGE profile was generated.", ""])
+
+    emitted = 0
+    for item in profile.ddf_manifest_entries:
+        if item.kind != "animations":
+            continue
+        line = edge_animdefs_line(item)
+        if line is None:
+            continue
+        lines.append(f"// {item.entry}:{item.line} [{item.label}]")
+        lines.append(line)
+        lines.append("")
+        emitted += 1
+    if emitted == 0:
+        lines.append("// No safe animation translations were found.")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_edge_sndinfo(result: ScanResult) -> str:
+    profile = result.edge
+    lines = [
+        "// HCDE EDGE Classic candidate SNDINFO translation.",
+        "// Generated from neutral manifest data only; review before moving into wadsrc_mod_compat.",
+        f"// Source SHA-256: {result.sha256}",
+        "",
+    ]
+    if profile is None:
+        return "\n".join(lines + ["// No EDGE profile was generated.", ""])
+
+    emitted = 0
+    for item in profile.ddf_manifest_entries:
+        if item.kind != "sounds":
+            continue
+        line = edge_sndinfo_line(item)
+        if line is None:
+            continue
+        lines.append(f"// {item.entry}:{item.line} [{item.label}]")
+        lines.append(line)
+        lines.append("")
+        emitted += 1
+    if emitted == 0:
+        lines.append("// No safe sound translations were found.")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_edge_stage5_validation(result: ScanResult, out_dir: Path | None = None) -> str:
+    profile = result.edge
+    log_root = str(out_dir) if out_dir is not None else f"build\\compat-candidates\\{result.slug}"
+    translation_path = f"{log_root}\\edge_translation"
+    lines: list[str] = []
+    lines.append(f"# HCDE EDGE Classic Stage 5 Validation: {result.slug}")
+    lines.append("")
+    lines.append("Stage 5 validates the generated Stage 4 candidate translations with HCDE startup logs. It does not enable translations automatically.")
+    lines.append("")
+    lines.append("## Runtime Commands")
+    lines.append("")
+    lines.append("Use your local IWAD path in place of `C:\\Path\\DOOM2.WAD` when needed.")
+    lines.append("")
+    lines.append("```powershell")
+    lines.append(f"build\\RelWithDebInfo\\hcde.exe -norun -errorlog \"{log_root}\\stage5-client-translations.log\" -iwad C:\\Path\\DOOM2.WAD -file \"{translation_path}\"")
+    lines.append(f"build\\RelWithDebInfo\\hcdeserv.exe -norun -errorlog \"{log_root}\\stage5-server-translations.log\" -iwad C:\\Path\\DOOM2.WAD -file \"{translation_path}\" -nosound -nomusic")
+    lines.append("```")
+    lines.append("")
+    lines.append("## Validation Criteria")
+    lines.append("")
+    lines.append("- HCDE should load `edge_translation` as resource data without fatal script errors.")
+    lines.append("- The logs should show the translation folder being added.")
+    lines.append("- Treat `Script error`, `Unknown texture`, `Unknown flat`, `Unknown sound`, `Can't find`, and `Fatal` as blockers.")
+    lines.append("- DDF animation translations are asset-sensitive. If the selected IWAD or mod does not contain every texture/flat in a range, split or filter the candidate before merging.")
+    lines.append("- SNDINFO translations are also asset-sensitive, but missing sound lumps are usually easier to triage by checking the source WAD/PK3 lump list.")
+    lines.append("")
+    lines.append("## Candidate Output Counts")
+    lines.append("")
+    if profile is None:
+        lines.append("- No EDGE Classic profile was generated.")
+    else:
+        lines.append(f"- ANIMDEFS candidates: `{profile.translation_summary.animdefs_entries}`")
+        lines.append(f"- SNDINFO candidates: `{profile.translation_summary.sndinfo_entries}`")
+        lines.append(f"- Skipped animation/sound entries: `{profile.translation_summary.skipped_entries}`")
+        if profile.ddf_manual_property_counts:
+            manual_preview = ", ".join(
+                f"{key}={count}" for key, count in list(profile.ddf_manual_property_counts.items())[:12]
+            )
+            lines.append(f"- Top manual properties still needing adapter work: `{manual_preview}`")
+        if profile.ddf_duplicate_property_counts:
+            duplicate_preview = ", ".join(
+                f"{key}={count}" for key, count in list(profile.ddf_duplicate_property_counts.items())[:12]
+            )
+            lines.append(f"- Duplicate DDF properties needing adapter decisions: `{duplicate_preview}`")
+    lines.append("")
+    lines.append("## Result Template")
+    lines.append("")
+    lines.append("| Command | Result | Notes |")
+    lines.append("| --- | --- | --- |")
+    lines.append("| Client translation startup | pending |  |")
+    lines.append("| Server translation startup | pending |  |")
+    lines.append("")
+    lines.append("## Next Decisions")
+    lines.append("")
+    lines.append("- If startup passes, copy only the reviewed candidate lines into `wadsrc_mod_compat` or a split compat PK3.")
+    lines.append("- If startup reports missing textures/flats, filter the ANIMDEFS candidate by IWAD/mod assets before merging.")
+    lines.append("- If startup reports missing sounds, confirm whether the sound lump is shipped by the mod or should remain a manual compatibility note.")
+    lines.append("- Keep DDF things, weapons, attacks, line specials, sectors, COAL, Lua, RTS, and RadTrig out of runtime translation until their adapter rules are explicit.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def write_candidate(result: ScanResult, out_root: Path) -> Path:
@@ -1111,6 +2513,34 @@ def write_candidate(result: ScanResult, out_root: Path) -> Path:
             encoding="utf-8",
             newline="\n",
         )
+    if result.edge is not None:
+        edge_translation_dir = out_dir / "edge_translation"
+        edge_translation_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "edge_validation.md").write_text(
+            render_edge_validation(result, out_dir),
+            encoding="utf-8",
+            newline="\n",
+        )
+        (out_dir / "edge_manifest.json").write_text(
+            render_edge_manifest(result),
+            encoding="utf-8",
+            newline="\n",
+        )
+        (edge_translation_dir / "ANIMDEFS.txt").write_text(
+            render_edge_animdefs(result),
+            encoding="utf-8",
+            newline="\n",
+        )
+        (edge_translation_dir / "SNDINFO.txt").write_text(
+            render_edge_sndinfo(result),
+            encoding="utf-8",
+            newline="\n",
+        )
+        (out_dir / "edge_stage5_validation.md").write_text(
+            render_edge_stage5_validation(result, out_dir),
+            encoding="utf-8",
+            newline="\n",
+        )
     (out_dir / "suggested_hcde_mod_compat_entry.cpp.txt").write_text(
         render_engine_entry(result),
         encoding="utf-8",
@@ -1124,7 +2554,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Scan local Doom mods and generate reviewable HCDE compat-mod patch candidates."
     )
-    parser.add_argument("mods", nargs="+", type=Path, help="Mod archives to scan (.wad, .pk3, .zip).")
+    parser.add_argument("mods", nargs="+", type=Path, help="Mod archives or unpacked folders to scan (.wad, .pk3, .zip, directory).")
     parser.add_argument(
         "--out",
         type=Path,

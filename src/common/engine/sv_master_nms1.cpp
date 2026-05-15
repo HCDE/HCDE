@@ -337,7 +337,9 @@ bool WriteRegisterRequest(uint32_t requestId, const RegisterRequest& request, Pa
 		|| request.GamePort == 0
 		|| request.QueryPort == 0
 		|| !TextFits(request.BuildLabel, master_protocol::Nms1MaxBuildLabelBytes)
-		|| !TextFits(request.DisplayName, master_protocol::Nms1MaxDisplayNameBytes))
+		|| !TextFits(request.DisplayName, master_protocol::Nms1MaxDisplayNameBytes)
+		|| !TextFits(request.GameName, master_protocol::Nms1MaxGameNameBytes)
+		|| !TextFits(request.MapName, master_protocol::Nms1MaxMapNameBytes))
 	{
 		out.Size = 0;
 		return false;
@@ -366,6 +368,20 @@ bool WriteRegisterRequest(uint32_t requestId, const RegisterRequest& request, Pa
 
 	if (!request.DisplayName.empty()
 		&& !writer.WriteText(master_protocol::Nms1FieldType::DisplayName, request.DisplayName, master_protocol::Nms1MaxDisplayNameBytes))
+	{
+		out.Size = 0;
+		return false;
+	}
+
+	if (!request.GameName.empty()
+		&& !writer.WriteText(master_protocol::Nms1FieldType::GameName, request.GameName, master_protocol::Nms1MaxGameNameBytes))
+	{
+		out.Size = 0;
+		return false;
+	}
+
+	if (!request.MapName.empty()
+		&& !writer.WriteText(master_protocol::Nms1FieldType::MapName, request.MapName, master_protocol::Nms1MaxMapNameBytes))
 	{
 		out.Size = 0;
 		return false;

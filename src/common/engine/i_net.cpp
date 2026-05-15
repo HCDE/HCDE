@@ -60,6 +60,7 @@
 #include "printf.h"
 #include "version.h"
 #include "d_net.h"
+#include "startupinfo.h"
 #include "sv_master.h"
 #include "widgets/netstartwindow.h"
 #include "g_levellocals.h"
@@ -586,6 +587,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	const char* hostname = sv_hostname;
 	snapshot.HostName = hostname != nullptr && hostname[0] != 0 ? FString(hostname) : FString(GAMENAME " server");
 	snapshot.MapName = level.LevelName.IsNotEmpty() ? level.LevelName : FString("unknown");
+	snapshot.GameName = GameStartupInfo.Name.IsNotEmpty() ? GameStartupInfo.Name : FString(GAMENAME);
 	snapshot.SessionState = ConnectFlowName(NetConnectFlowState);
 	snapshot.Version = GetVersionString();
 	snapshot.GitHash = GetGitHash();
@@ -721,6 +723,9 @@ static bool SendLauncherInfo(const sockaddr_in& to, const uint8_t* request, int 
 			return false;
 		}
 	}
+
+	if (!writer.WriteString(snapshot.GameName.GetChars()))
+		return false;
 
 	if (sendto(MySocket, reinterpret_cast<const char*>(writer.Buffer.data()), static_cast<int>(writer.Offset), 0,
 	           reinterpret_cast<const sockaddr*>(&to), sizeof(to)) == SOCKET_ERROR)
@@ -992,6 +997,13 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 		player.Kills = int16_t(kills);
 		player.Deaths = int16_t(deaths);
 		snapshot.Players.Push(player);
+	}
+
+	if (offset < length && !ReadQueryString(data, offset, length, snapshot.GameName))
+	{
+		if (error != nullptr)
+			error->Format("Query game name was truncated");
+		return false;
 	}
 
 	return true;

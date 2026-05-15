@@ -56,6 +56,8 @@ struct RegisterRequest
 	uint32_t ServerFlags = 0;
 	std::string_view BuildLabel = {};
 	std::string_view DisplayName = {};
+	std::string_view GameName = {};
+	std::string_view MapName = {};
 };
 
 struct HeartbeatRequest

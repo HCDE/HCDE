@@ -3,8 +3,8 @@
 `tools/hcde_compat_patcher/hcde_compat_patcher.py` is a local helper for
 building reviewable patches for `hcde_mod_compat.pk3`.
 
-The tool scans a local `.wad`, `.pk3`, or `.zip` mod archive and writes a
-candidate folder under `build/compat-candidates/<mod-slug>/`. Candidates are
+The tool scans a local `.wad`, `.pk3`, `.zip`, or unpacked mod folder and writes
+a candidate folder under `build/compat-candidates/<mod-slug>/`. Candidates are
 not active game resources. They are reports, provenance metadata, and empty
 patch stubs for a human to review before changing `wadsrc_mod_compat`.
 
@@ -23,6 +23,7 @@ patch stubs for a human to review before changing `wadsrc_mod_compat`.
 
 ```powershell
 python tools\hcde_compat_patcher\hcde_compat_patcher.py C:\Mods\example.pk3
+python tools\hcde_compat_patcher\hcde_compat_patcher.py C:\Games\EDGE\doom_ddf
 ```
 
 Useful output files:
@@ -31,6 +32,19 @@ Useful output files:
 - `eternity_validation.md`: generated when Eternity resources are detected;
   contains HCDE launch commands, expected log lines, and EDF/EMAPINFO triage
   notes.
+- `edge_validation.md`: generated when EDGE Classic resources are detected;
+  contains DDF section manifests, include load order, conflict reports,
+  COAL/Lua/RTS script lists, and the current report-only runtime boundary.
+- `edge_manifest.json`: generated when EDGE Classic DDF resources are detected;
+  contains the Stage 3 neutral DDF bridge entries with supported and manual
+  properties split apart, plus duplicate property keys that need adapter
+  decisions instead of silent last-writer-wins handling.
+- `edge_translation/ANIMDEFS.txt` and `edge_translation/SNDINFO.txt`: generated
+  when EDGE Classic animation or sound definitions can be expressed as narrow
+  Stage 4 candidate translations.
+- `edge_stage5_validation.md`: generated with HCDE client/server startup
+  commands and log triage patterns for validating Stage 4 candidate
+  translations against a specific IWAD/resource set.
 - `metadata.json`: source path, SHA-256, archive entries, and scanner results.
 - `suggested_hcde_mod_compat_entry.cpp.txt`: matcher stub for review.
 - `static/decorate.txt`: empty DECORATE patch stub with TODO notes.
@@ -51,7 +65,9 @@ The scanner detects:
 - ZScript files, which usually need manual review.
 - MAPINFO/UMAPINFO/ZMAPINFO/EMAPINFO metadata.
 - Eternity Engine signals: EDF, EDFROOT, ExtraData, and EMAPINFO.
-- EDGE Classic signals: DDF, RTS, COAL, and Lua-style resources.
+- EDGE Classic signals: DDF, RTS, COAL, and Lua-style resources, including
+  loose DDF folders, split DDF files, and DDF lumps embedded in WADs inside
+  PK3s.
 - DeHackEd/BEX data.
 - ACS/input-related strings that may assume local player zero.
 - `A_RailAttack`, because HCDE already has a dedicated-server compatibility
@@ -73,6 +89,19 @@ Doom-format EMAPINFO maps through Eternity XLAT by default, and safely binds
 EDF DoomEdNums to already-ported HCDE/ZScript actors when there is no registry
 conflict. EDF actor behavior and advanced EMAPINFO properties remain manual
 compatibility work.
+
+EDGE Classic support starts at `docs/HCDE_EDGE_CLASSIC_COMPAT_STAGE1.md`,
+`docs/HCDE_EDGE_CLASSIC_COMPAT_STAGE2.md`, and
+`docs/HCDE_EDGE_CLASSIC_COMPAT_STAGE3.md`, and
+`docs/HCDE_EDGE_CLASSIC_COMPAT_STAGE4.md`. Stage 1 lists DDF categories,
+section names, reset directives, and COAL/Lua/RTS/RadTrig files. Stage 2
+resolves DDF includes into load order and reports missing includes, include
+cycles, and duplicate definitions. Stage 3 emits a neutral DDF manifest that
+separates bridgeable properties from manual adapter decisions and flags repeated
+scalar property keys. Stage 4 writes candidate `ANIMDEFS` and `SNDINFO`
+translations for narrow data-only animation and sound mappings without enabling
+them automatically. Stage 5 validates those candidate translations with HCDE
+startup logs and records asset-sensitive blockers before anything is merged.
 
 PK7/7z archives are not supported yet by the standard-library scanner. Unpack
 or repack them as PK3 when doing compatibility analysis.

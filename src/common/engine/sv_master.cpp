@@ -47,6 +47,7 @@
 #include "printf.h"
 #include "sv_master.h"
 #include "sv_master_nms1.h"
+#include "version.h"
 #include "hcde_master_protocol.h"
 
 CVAR(Int, sv_natport, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -538,8 +539,10 @@ static bool TryRegisterNms1Master(masterserver& master, bool force)
 
 	FServerQuerySnapshot snapshot = {};
 	I_GetLocalServerSnapshot(snapshot);
-	const std::string buildLabel = MakeNms1Text(snapshot.Version.GetChars(), hcde::master_protocol::Nms1MaxBuildLabelBytes, "HCDE");
+	const std::string buildLabel = MakeNms1Text(VERSIONSTR, hcde::master_protocol::Nms1MaxBuildLabelBytes, "HCDE");
 	const std::string displayName = MakeNms1Text(snapshot.HostName.GetChars(), hcde::master_protocol::Nms1MaxDisplayNameBytes, "HCDE server");
+	const std::string gameName = MakeNms1Text(snapshot.GameName.GetChars(), hcde::master_protocol::Nms1MaxGameNameBytes, "HCDE");
+	const std::string mapName = MakeNms1Text(snapshot.MapName.GetChars(), hcde::master_protocol::Nms1MaxMapNameBytes, "unknown");
 
 	hcde::master_nms1::RegisterRequest request = {};
 	request.Challenge = challenge;
@@ -551,6 +554,8 @@ static bool TryRegisterNms1Master(masterserver& master, bool force)
 	request.ServerFlags = 0u;
 	request.BuildLabel = buildLabel;
 	request.DisplayName = displayName;
+	request.GameName = gameName;
+	request.MapName = mapName;
 
 	const uint32_t registerRequestId = NextNms1RequestId(master);
 	if (!hcde::master_nms1::WriteRegisterRequest(registerRequestId, request, packet)

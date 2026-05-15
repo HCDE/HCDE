@@ -1,0 +1,22 @@
+// HCDE Brutal Doom sound compatibility.
+// These entries only point at sounds already present in the loaded mod.
+
+CHGNSHOT CHGNSHOT
+BIGSCREA bigscrea
+mp401 MP401
+MP402 MP402
+Explode3 Explode3
+NUKEEXPL NUKEEXP
+USASPUL1 USASPULL
+
+$alias BODYF BodyThud
+$alias DISTFMG FARHMG
+$alias DISTFRRIFLE FARRIF
+$alias EXPLOSIO Explosion
+$alias MP40 Chaingun/Fire
+$alias PRSDRAW Plasma/Draw
+$alias weapons/aim ads/in
+$alias weapons/empty Weapon/Empty
+$alias weapons/explode Explosion
+$alias weapons/fistwhoosh Melee/Swing
+$alias weapons/minigunfire CHGNSHOT

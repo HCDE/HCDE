@@ -100,6 +100,7 @@ struct FServerQuerySnapshot
 {
 	FString HostName = {};
 	FString MapName = {};
+	FString GameName = {};
 	FString SessionState = {};
 	FString Version = {};
 	FString GitHash = {};

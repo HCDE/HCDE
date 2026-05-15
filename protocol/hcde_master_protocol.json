@@ -47,6 +47,8 @@
     "maxProtocolFamilyBytes": 32,
     "maxBuildLabelBytes": 64,
     "maxDisplayNameBytes": 96,
+    "maxGameNameBytes": 64,
+    "maxMapNameBytes": 64,
     "header": [
       { "name": "magic", "offset": 0, "size": 4, "type": "ascii" },
       { "name": "version", "offset": 4, "size": 1, "type": "uint8" },
@@ -87,6 +89,8 @@
       "publicIp": 23,
       "buildLabel": 24,
       "displayName": 25,
+      "gameName": 26,
+      "mapName": 27,
       "cursor": 31,
       "pageSize": 32,
       "entryCount": 33,
@@ -123,7 +127,9 @@
         "maxPlayers",
         "serverFlags",
         "buildLabel",
-        "displayName"
+        "displayName",
+        "gameName",
+        "mapName"
       ],
       "heartbeatFields": [
         "protocolFamily",

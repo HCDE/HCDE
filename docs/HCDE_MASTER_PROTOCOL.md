@@ -132,6 +132,8 @@ wire family is defined.
 | 22 | `server_flags` | u32 | `Register`, `Heartbeat` |
 | 24 | `build_label` | UTF-8 text, max 64 bytes | `Register` |
 | 25 | `display_name` | UTF-8 text, max 96 bytes | `Register` |
+| 26 | `game_name` | UTF-8 text, max 64 bytes | `Register` |
+| 27 | `map_name` | UTF-8 text, max 64 bytes | `Register` |
 
 Registration starts with `ChallengeRequest` using purpose `1`
 (`Registration`). The master replies with a challenge token. `Register` sends
