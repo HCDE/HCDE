@@ -100,21 +100,21 @@ CUSTOM_CVAR(Float, r_quakeintensity, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 	else if (self > 1.f) self = 1.f;
 }
 
-CUSTOM_CVARD(Int, r_actorspriteshadow, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "render actor sprite shadows. 0 = off, 1 = default, 2 = always on")
+CUSTOM_CVARD(Int, r_actorspriteshadow, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "render actor sprite shadows. 0 = off, 1 = default, 2 = always on")
 {
 	if (self < 0)
 		self = 0;
 	else if (self > 2)
 		self = 2;
 }
-CUSTOM_CVARD(Float, r_actorspriteshadowdist, 1500.0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "how far sprite shadows should be rendered")
+CUSTOM_CVARD(Float, r_actorspriteshadowdist, 2200.0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "how far sprite shadows should be rendered")
 {
 	if (self < 0.f)
 		self = 0.f;
 	else if (self > 8192.f)
 		self = 8192.f;
 }
-CUSTOM_CVARD(Float, r_actorspriteshadowalpha, 0.5, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "maximum sprite shadow opacity, only effective with hardware renderers (0.0 = fully transparent, 1.0 = opaque)")
+CUSTOM_CVARD(Float, r_actorspriteshadowalpha, 0.7, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "maximum sprite shadow opacity, only effective with hardware renderers (0.0 = fully transparent, 1.0 = opaque)")
 {
 	if (self < 0.f)
 		self = 0.f;
@@ -128,7 +128,7 @@ CUSTOM_CVARD(Float, r_actorspriteshadowfadeheight, 0.0, CVAR_ARCHIVE | CVAR_GLOB
 	else if (self > 8192.f)
 		self = 8192.f;
 }
-CUSTOM_CVARD(Int, r_actorspriteshadowstyle, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "actor sprite shadow style. 0 = classic, 1 = quake-style, 2 = doom3-style")
+CUSTOM_CVARD(Int, r_actorspriteshadowstyle, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "actor sprite shadow style. 0 = classic, 1 = quake-style, 2 = doom3-style")
 {
 	if (self < 0)
 		self = 0;

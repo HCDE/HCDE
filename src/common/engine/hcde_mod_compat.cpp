@@ -51,6 +51,13 @@ static const char* const TheIslandPatterns[] =
 	nullptr
 };
 
+static const char* const MonstersAndAddonsPatterns[] =
+{
+	"Monstersandaddons*.pk3",
+	"Monsters_and_addons*.pk3",
+	nullptr
+};
+
 static unsigned int ActiveCompatFlags = 0u;
 
 static const HCDEModCompatEntry ModCompatEntries[] =
@@ -72,6 +79,12 @@ static const HCDEModCompatEntry ModCompatEntries[] =
 		"hcde_mod_compat_theisland.pk3",
 		TheIslandPatterns,
 		HCDE_MODCOMPAT_MAPINFO_TRAILING_TEXT_COMMA
+	},
+	{
+		"Monsters and Addons settings controller script compatibility",
+		nullptr,
+		MonstersAndAddonsPatterns,
+		HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS
 	}
 };
 

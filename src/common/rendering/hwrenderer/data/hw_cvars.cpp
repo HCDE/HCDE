@@ -138,7 +138,7 @@ CUSTOM_CVARD(Int, gl_texture_filter, 6, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOIN
 CVAR(Bool, gl_precache, false, CVAR_ARCHIVE)
 
 
-CUSTOM_CVAR(Int, gl_shadowmap_filter, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, gl_shadowmap_filter, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
-	if (self < 0 || self > 8) self = 1;
+	if (self < 0 || self > 8) self = 0;
 }

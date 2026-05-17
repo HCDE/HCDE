@@ -34,6 +34,7 @@
 #include "c_console.h"
 #include "c_dispatch.h"
 #include "cmdlib.h"
+#include "d_net.h"
 #include "d_player.h"
 #include "decallib.h"
 #include "doomdef.h"
@@ -10658,13 +10659,28 @@ int P_StartScript (FLevelLocals *Level, AActor *who, line_t *where, int script, 
 
 		if ((scriptdata = Level->Behaviors.FindScript (script, module)) != NULL)
 		{
+			// Some mod option menus use non-net ACS scripts as settings frontends.
+			// HCDE only permits those through reviewed compat profiles and trusted
+			// settings paths, so ordinary clients cannot request arbitrary scripts.
+			const bool allowCompatSettingsScript =
+				HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS)
+				&& Net_LocalCanControlSettings();
+
 			// Make sure only scripts flagged as Net can be ran if requesting one.
 			if ((flags & ACS_NET) && !(scriptdata->Flags & SCRIPTF_Net)
-				&& !sv_allowallscripts && (netgame || !allowsingleplayerscripts))
+				&& !sv_allowallscripts && !allowCompatSettingsScript
+				&& (netgame || !allowsingleplayerscripts))
 			{
 				if (who->Level->isConsolePlayer(who))
 				{
-					Printf(PRINT_BOLD, "Non-net scripts are currently not requestable\n");
+					if (HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS))
+					{
+						Printf(PRINT_BOLD, "Non-net settings scripts require settings controller or server/RCON console rights\n");
+					}
+					else
+					{
+						Printf(PRINT_BOLD, "Non-net scripts are currently not requestable\n");
+					}
 				}
 				else if (I_IsLocalHCDEServiceAuthority() && !IsClientSideScript(*scriptdata))
 				{

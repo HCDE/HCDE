@@ -653,7 +653,7 @@ bool D_SendServerInfoChange (FBaseCVar *cvar, UCVarValue value, ECVarType type)
 	{
 		if (netgame && !Net_LocalCanControlSettings())
 		{
-			Printf("Only setting controllers can change server CVAR %s\n", cvar->GetName());
+			Printf("Only setting controllers or server/RCON console can change server CVAR %s\n", cvar->GetName());
 			cvar->MarkSafe();
 			return true;
 		}
@@ -685,7 +685,7 @@ bool D_SendServerFlagChange (FBaseCVar *cvar, int bitnum, bool set, bool silent)
 		{
 			if (!silent)
 			{
-				Printf("Only setting controllers can change server CVAR %s\n", cvar->GetName());
+				Printf("Only setting controllers or server/RCON console can change server CVAR %s\n", cvar->GetName());
 			}
 			return true;
 		}
