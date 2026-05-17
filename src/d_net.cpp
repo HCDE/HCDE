@@ -306,6 +306,7 @@ static int 	EnterTic = 0;
 static int	LastEnterTic = 0;
 static bool bCommandsReset = false;		// If true, commands were recently cleared. Don't generate any more tics.
 static int	AuthorityWaitGraceUntil = 0;
+static int	LastTicGateStallTrace = 0;
 
 static int	CommandsAhead = 0;		// If too far ahead of the host, slow down to remove built-up latency.
 static int	SkipCommandTimer = 0;	// Tracker for when to check for skipping commands. ~0.5 seconds in a row of being ahead will start skipping.
@@ -3153,6 +3154,7 @@ void Net_ClearBuffers()
 	LevelStartAck = 0u;
 	LevelStartDelay = LevelStartDebug = 0;
 	LevelStartStatus = LST_READY;
+	LastTicGateStallTrace = 0;
 
 	FullLatencyCycle = MAXSENDTICS * 3;
 	LastLatencyUpdate = 0;
@@ -3177,9 +3179,9 @@ static bool Net_IsTicGateClient(int player)
 		return false;
 
 	// A dedicated server's reserved authority slot is only a transport endpoint.
-	// It does not generate gameplay commands, so gating the playsim on its
-	// sequence can freeze the first tic after an intermission map change.
-	if (I_IsLocalHCDEServiceAuthority() && I_IsServerReservedSlot(player))
+	// It does not generate gameplay commands on any peer, so gating the playsim
+	// on its sequence can freeze clients after a map load or respawn.
+	if (I_IsServerReservedSlot(player))
 		return false;
 
 	return true;
@@ -3374,6 +3376,7 @@ void Net_ResetCommands(bool midTic)
 	// A room/map change invalidates old waiting state. Leaving it set can stop
 	// the first command for the next map from being generated.
 	Net_ClearStaleWaitingFlags();
+	LastTicGateStallTrace = 0;
 	SkipCommandTimer = SkipCommandAmount = CommandsAhead = 0;
 	StabilityBuffer = PrevAvailableDiff = 0;
 	CurStabilityTic = 0u;
@@ -5528,6 +5531,24 @@ void TryRunTics()
 	// commands to predict.
 	if (runTics <= 0)
 	{
+		if (netgame && totalTics > 0 && EnterTic - LastTicGateStallTrace >= TICRATE)
+		{
+			LastTicGateStallTrace = EnterTic;
+			DebugTrace::Warningf("net", "tic gate stalled total=%d available=%d lowest=%d gametic=%d clienttic=%d room=%u map=%s levelstart=%s delay=%d lag=%s",
+				totalTics, availableTics, lowestSequence, gametic, ClientTic, unsigned(CurrentRoomID),
+				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+				Net_LevelStartStatusName(LevelStartStatus), LevelStartDelay, Net_LagStateName(LagState));
+			for (auto client : NetworkClients)
+			{
+				const auto& state = ClientStates[client];
+				DebugTrace::Warningf("net", "tic gate client=%d gate=%d network=%d playeringame=%d reserved=%d authority=%d waiting=%d seq=%d ack=%d flags=0x%x",
+					client, Net_IsTicGateClient(client) ? 1 : 0, NetworkClients.InGame(client) ? 1 : 0,
+					playeringame[client] ? 1 : 0, I_IsServerReservedSlot(client) ? 1 : 0,
+					I_IsHCDEServiceAuthoritySlot(client) ? 1 : 0, players[client].waiting ? 1 : 0,
+					state.CurrentSequence, state.SequenceAck, state.Flags);
+			}
+		}
+
 		// If we're in between a tic, try and balance things out.
 		if (totalTics <= 0)
 		{
