@@ -1892,8 +1892,14 @@ DEFINE_ACTION_FUNCTION(FCanvas, DrawLineFrame)
 
 void V_CalcCleanFacs(int designwidth, int designheight, int realwidth, int realheight, int* cleanx, int* cleany, int* _cx1, int* _cx2)
 {
+	if (designwidth <= 0 || designheight <= 0 || realwidth <= 0 || realheight <= 0)
+	{
+		*cleanx = *cleany = 1;
+		return;
+	}
+
 	if (designheight < 240 && realheight >= 480) designheight = 240;
-	*cleanx = *cleany = min(realwidth / designwidth, realheight / designheight);
+	*cleanx = *cleany = max(1, min(realwidth / designwidth, realheight / designheight));
 }
 
 

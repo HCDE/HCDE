@@ -43,6 +43,7 @@
 #include "debugtrace.h"
 #include "i_interface.h"
 #include "i_net.h"
+#include "i_specialpaths.h"
 #include "i_system.h"
 #include "i_time.h"
 #include "m_argv.h"
@@ -105,6 +106,29 @@ enum ELagType
 	LAG_WAITING,
 	LAG_SKIPPING,
 };
+
+static const char* Net_LevelStartStatusName(ELevelStartStatus status)
+{
+	switch (status)
+	{
+	case LST_READY: return "ready";
+	case LST_HOST: return "host";
+	case LST_WAITING: return "waiting";
+	default: return "unknown";
+	}
+}
+
+static const char* Net_LagStateName(ELagType state)
+{
+	switch (state)
+	{
+	case LAG_NONE: return "none";
+	case LAG_PREDICTING: return "predicting";
+	case LAG_WAITING: return "waiting";
+	case LAG_SKIPPING: return "skipping";
+	default: return "unknown";
+	}
+}
 
 // NETWORKING
 //
@@ -267,6 +291,7 @@ static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
 
 static int CutsceneCountdown = 0;	// If enough people are ready, count down the timer. This won't reset between unreadies, only on intermission entrance.
 static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to move to move past it.
+static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
 
 static int  LevelStartDebug = 0;
 static int	LevelStartDelay = 0; // While this is > 0, don't start generating packets yet.
@@ -280,6 +305,7 @@ static ELagType	LagState = LAG_NONE;	// What kind of lag the game is currently g
 static int 	EnterTic = 0;
 static int	LastEnterTic = 0;
 static bool bCommandsReset = false;		// If true, commands were recently cleared. Don't generate any more tics.
+static int	AuthorityWaitGraceUntil = 0;
 
 static int	CommandsAhead = 0;		// If too far ahead of the host, slow down to remove built-up latency.
 static int	SkipCommandTimer = 0;	// Tracker for when to check for skipping commands. ~0.5 seconds in a row of being ahead will start skipping.
@@ -2338,6 +2364,15 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum))
 			return rejectClientInput("packet-overflow");
 
+		usercmd_t rollingCommandBasis = {};
+		bool hasRollingCommandBasis = false;
+		uint8_t expectedCommandOffset = 0u;
+		if (const usercmd_t* basis = HCDEReceiveUserCmdBasis(playerNum, baseSequence))
+		{
+			rollingCommandBasis = *basis;
+			hasRollingCommandBasis = true;
+		}
+
 		uint64_t consistencyOffsetsSeen = 0u;
 		for (uint8_t r = 0u; r < consistencyCount; ++r)
 		{
@@ -2404,7 +2439,16 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 				return rejectClientInput("packet-overflow");
 			uint8_t* commandOutputStart = &NetBuffer[cursor];
 			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
-			WriteUserCmdMessage(command, HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset), commandOutput);
+			const usercmd_t* basis = (hasRollingCommandBasis && commandOffset == expectedCommandOffset)
+				? &rollingCommandBasis
+				: HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset);
+			WriteUserCmdMessage(command, basis, commandOutput);
+			// The legacy reader applies commands sequentially and uses the command it
+			// just read as the next basis. Mirror that here so zero yaw/pitch deltas
+			// after a nonzero turn are encoded as explicit clears, not stale repeats.
+			rollingCommandBasis = command;
+			hasRollingCommandBasis = true;
+			expectedCommandOffset = commandOffset + 1u;
 			cursor += size_t(commandOutput.Data() - commandOutputStart);
 		}
 	}
@@ -2546,6 +2590,15 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 			return rejectServerSnapshot("packet-overflow");
 		}
 
+		usercmd_t rollingCommandBasis = {};
+		bool hasRollingCommandBasis = false;
+		uint8_t expectedCommandOffset = 0u;
+		if (const usercmd_t* basis = HCDEReceiveUserCmdBasis(playerNum, baseSequence))
+		{
+			rollingCommandBasis = *basis;
+			hasRollingCommandBasis = true;
+		}
+
 		uint64_t consistencyOffsetsSeen = 0u;
 		for (uint8_t r = 0u; r < consistencyCount; ++r)
 		{
@@ -2612,7 +2665,15 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 				return rejectServerSnapshot("packet-overflow");
 			uint8_t* commandOutputStart = &NetBuffer[cursor];
 			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
-			WriteUserCmdMessage(command, HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset), commandOutput);
+			const usercmd_t* basis = (hasRollingCommandBasis && commandOffset == expectedCommandOffset)
+				? &rollingCommandBasis
+				: HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset);
+			WriteUserCmdMessage(command, basis, commandOutput);
+			// Keep the re-packed legacy stream's basis in step with the parser that
+			// consumes it immediately after unwrapping.
+			rollingCommandBasis = command;
+			hasRollingCommandBasis = true;
+			expectedCommandOffset = commandOffset + 1u;
 			cursor += size_t(commandOutput.Data() - commandOutputStart);
 		}
 	}
@@ -2881,6 +2942,7 @@ CUSTOM_CVAR(Int, cl_debugprediction, 0, CVAR_CHEAT)
 	else if (self > BACKUPTICS - 1)
 		self = BACKUPTICS - 1;
 }
+CVAR(Bool, net_desyncdebug, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 // Used to write out all network events that occured leading up to the next tick.
 static struct NetEventData
@@ -3086,6 +3148,7 @@ void Net_ClearBuffers()
 	CutsceneReady = 0u;
 	CutsceneCountdown = 0;
 	bCommandsReset = false;
+	AuthorityWaitGraceUntil = 0;
 
 	LevelStartAck = 0u;
 	LevelStartDelay = LevelStartDebug = 0;
@@ -3106,6 +3169,20 @@ static bool Net_IsCutsceneReadyParticipant(int player)
 static bool Net_IsGameplayConsistencyParticipant(int player)
 {
 	return player >= 0 && player < MAXPLAYERS && playeringame[player] && !I_IsServerReservedSlot(player);
+}
+
+static bool Net_IsTicGateClient(int player)
+{
+	if (player < 0 || player >= MAXPLAYERS || !NetworkClients.InGame(player))
+		return false;
+
+	// A dedicated server's reserved authority slot is only a transport endpoint.
+	// It does not generate gameplay commands, so gating the playsim on its
+	// sequence can freeze the first tic after an intermission map change.
+	if (I_IsLocalHCDEServiceAuthority() && I_IsServerReservedSlot(player))
+		return false;
+
+	return true;
 }
 
 static int Net_GetCutsceneReadyHost()
@@ -3150,6 +3227,16 @@ void Net_PlayerReadiedUp(int player)
 	if (!netgame || demoplayback)
 		return;
 
+	if (player < 0 || player >= MAXPLAYERS)
+		return;
+
+	// Ready is a toggle, so ignore quick duplicates from held keys or resent input packets.
+	constexpr int readyToggleDebounce = TICRATE / 4;
+	if (gametic - CutsceneReadyLastToggle[player] < readyToggleDebounce)
+		return;
+
+	CutsceneReadyLastToggle[player] = gametic;
+
 	// Allow unreadying in case a player needs to leave momentarily.
 	if (Net_IsPlayerReady(player))
 		CutsceneReady &= ~((uint64_t)1u << player);
@@ -3159,6 +3246,10 @@ void Net_PlayerReadiedUp(int player)
 
 void Net_StartCutscene()
 {
+	CutsceneReady = 0u;
+	for (int i = 0; i < MAXPLAYERS; ++i)
+		CutsceneReadyLastToggle[i] = gametic - TICRATE;
+
 	CutsceneCountdown = netgame && !demoplayback && net_cutscenecountdown > 0.0f ? static_cast<int>(ceil(net_cutscenecountdown * TICRATE)) : 0;
 }
 
@@ -3238,6 +3329,28 @@ bool Net_IsWaiting()
 	return LagState == LAG_WAITING;
 }
 
+static void Net_ClearStaleWaitingFlags()
+{
+	// Waiting flags describe the current tic stream only; carrying them across a
+	// room/map reset can deadlock the first command of the next map.
+	for (auto client : NetworkClients)
+		players[client].waiting = false;
+	HCDESetAuthorityWaiting(false);
+}
+
+static void Net_ResetAuthorityWaitWatchdog(const char* reason, bool trace = true)
+{
+	LastGameUpdate = EnterTic;
+	AuthorityWaitGraceUntil = EnterTic + MAXSENDTICS * TicDup * 3;
+	Net_ClearStaleWaitingFlags();
+	if (trace)
+	{
+		DebugTrace::Markf("net", "authority wait watchdog reset reason=%s enter=%d grace-until=%d room=%u map=%s",
+			reason != nullptr ? reason : "unknown", EnterTic, AuthorityWaitGraceUntil, unsigned(CurrentRoomID),
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	}
+}
+
 // This is needed for handling PSprite bobbing specifically since it's predicted.
 double Net_ModifyFrac(double ticFrac)
 {
@@ -3258,6 +3371,9 @@ void Net_ResetCommands(bool midTic)
 {
 	bCommandsReset = midTic;
 	++CurrentRoomID;
+	// A room/map change invalidates old waiting state. Leaving it set can stop
+	// the first command for the next map from being generated.
+	Net_ClearStaleWaitingFlags();
 	SkipCommandTimer = SkipCommandAmount = CommandsAhead = 0;
 	StabilityBuffer = PrevAvailableDiff = 0;
 	CurStabilityTic = 0u;
@@ -3300,7 +3416,16 @@ void Net_ResetCommands(bool midTic)
 void Net_SetWaiting()
 {
 	if (netgame && !demoplayback && NetworkClients.Size() > 1)
+	{
+		LevelStartAck = 0u;
+		LevelStartDelay = LevelStartDebug = 0;
+		FullLatencyCycle = 0;
+		Net_ResetAuthorityWaitWatchdog("level-wait");
 		LevelStartStatus = LST_WAITING;
+		DebugTrace::Markf("net", "level start waiting room=%u map=%s authority=%d clients=%u",
+			unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+			I_IsLocalHCDEServiceAuthority() ? 1 : 0, unsigned(NetworkClients.Size()));
+	}
 }
 
 // [RH] Rewritten to properly calculate the packet size
@@ -3465,6 +3590,25 @@ void Net_ResetClientState(int clientNum)
 
 static void DisconnectClient(int clientNum)
 {
+	if (clientNum < 0 || clientNum >= MAXPLAYERS)
+	{
+		Printf(PRINT_HIGH, "NetGame:: Ignored disconnect for invalid client %d at gametic=%d clienttic=%d room=%u\n",
+			clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+		DebugTrace::Warningf("net", "ignored invalid disconnect client=%d gametic=%d clienttic=%d room=%u",
+			clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+		return;
+	}
+
+	const auto& state = ClientStates[clientNum];
+	Printf(PRINT_HIGH, "NetGame:: Disconnecting client %d '%s' at gametic=%d clienttic=%d room=%u map=%s seq=%d ack=%d consistency=%d remoteConsistency=%d\n",
+		clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		state.CurrentSequence, state.SequenceAck, CurrentConsistency, state.CurrentNetConsistency);
+	DebugTrace::Warningf("net", "disconnect client=%d name=%s gametic=%d clienttic=%d room=%u map=%s seq=%d ack=%d consistency=%d remoteConsistency=%d",
+		clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		state.CurrentSequence, state.SequenceAck, CurrentConsistency, state.CurrentNetConsistency);
+
 	NetworkClients -= clientNum;
 	const uint64_t mask = ~((uint64_t)1u << clientNum);
 	MutedClients &= mask;
@@ -3521,9 +3665,21 @@ static void ClientQuit(int clientNum, int newHost)
 	if (!I_IsHCDEServiceAuthoritySlot(clientNum))
 	{
 		if (!I_IsLocalHCDEServiceAuthority())
+		{
+			Printf(PRINT_HIGH, "NetGame:: Ignored unexpected disconnect packet from non-authority client %d at gametic=%d clienttic=%d room=%u\n",
+				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+			DebugTrace::Warningf("net", "unexpected disconnect packet client=%d gametic=%d clienttic=%d room=%u",
+				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
 			DPrintf(DMSG_WARNING, "Received disconnect packet from client %d erroneously\n", clientNum);
+		}
 		else
+		{
+			Printf(PRINT_HIGH, "NetGame:: Client %d '%s' sent exit; queueing quit broadcast at gametic=%d clienttic=%d room=%u\n",
+				clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
+			DebugTrace::Warningf("net", "client exit queued client=%d name=%s gametic=%d clienttic=%d room=%u",
+				clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
 			ClientStates[clientNum].Flags |= CF_QUIT;
+		}
 
 		return;
 	}
@@ -3544,6 +3700,64 @@ static void ClientQuit(int clientNum, int newHost)
 static bool IsMapLoaded()
 {
 	return gamestate == GS_LEVEL;
+}
+
+static uint64_t LevelStartPlayableMask()
+{
+	uint64_t mask = 0u;
+	for (auto pNum : NetworkClients)
+	{
+		if (!I_IsHCDEServiceAuthoritySlot(pNum))
+			mask |= (uint64_t)1u << pNum;
+	}
+	return mask;
+}
+
+static bool TryReleaseLevelStart()
+{
+	const uint64_t mask = LevelStartPlayableMask();
+	if (mask == 0u || (LevelStartAck & mask) != mask || !IsMapLoaded())
+		return false;
+
+	// Beyond this point a player is likely lagging out anyway.
+	constexpr uint16_t LatencyCap = 350u;
+	uint16_t highestAvg = 0u;
+	for (auto client : NetworkClients)
+	{
+		if (I_IsHCDEServiceAuthoritySlot(client))
+			continue;
+
+		const uint16_t latency = min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap);
+		if (latency > highestAvg)
+			highestAvg = latency;
+	}
+
+	NetBuffer[0] = NCMD_LEVELREADY;
+	NetBuffer[1] = CurrentRoomID;
+	constexpr double MS2Sec = 1.0 / 1000.0;
+	for (auto client : NetworkClients)
+	{
+		int delay = 0;
+		if (!I_IsHCDEServiceAuthoritySlot(client))
+			delay = int(floor((highestAvg - min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap)) * MS2Sec * TICRATE));
+
+		NetBuffer[2] = delay >> 8;
+		NetBuffer[3] = delay;
+
+		HSendPacket(client, 4);
+	}
+
+	LevelStartAck = 0u;
+	LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
+	LevelStartDelay = LevelStartDebug = 0;
+	Net_ResetAuthorityWaitWatchdog("authority-release");
+	Printf(PRINT_HIGH, "NetGame:: Authority released level start at gametic=%d clienttic=%d room=%u map=%s clients=%u\n",
+		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		unsigned(NetworkClients.Size()));
+	DebugTrace::Markf("net", "authority released level start gametic=%d clienttic=%d room=%u map=%s clients=%u",
+		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		unsigned(NetworkClients.Size()));
+	return true;
 }
 
 static void CheckLevelStart(int client, int delayTics)
@@ -3569,54 +3783,19 @@ static void CheckLevelStart(int client, int delayTics)
 		LevelStartAck = 0u;
 		LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
 		LevelStartDelay = LevelStartDebug = delayTics;
-		LastGameUpdate = EnterTic;
+		Net_ResetAuthorityWaitWatchdog("authority-start");
+		Printf(PRINT_HIGH, "NetGame:: Authority started level for client at gametic=%d clienttic=%d room=%u map=%s delay=%d\n",
+			gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", delayTics);
+		DebugTrace::Markf("net", "client accepted authority level start gametic=%d clienttic=%d room=%u map=%s delay=%d",
+			gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", delayTics);
 		return;
 	}
 
-	uint64_t mask = 0u;
-	for (auto pNum : NetworkClients)
-	{
-		if (!I_IsHCDEServiceAuthoritySlot(pNum))
-			mask |= (uint64_t)1u << pNum;
-	}
-
 	LevelStartAck |= (uint64_t)1u << client;
-	if ((LevelStartAck & mask) == mask && IsMapLoaded())
-	{
-		// Beyond this point a player is likely lagging out anyway.
-		constexpr uint16_t LatencyCap = 350u;
-
-		NetBuffer[0] = NCMD_LEVELREADY;
-		NetBuffer[1] = CurrentRoomID;
-		uint16_t highestAvg = 0u;
-		// Wait for enough latency info to be accepted so a better average
-		// can be calculated for everyone.
-		if (FullLatencyCycle > 0)
-			return;
-
-		for (auto client : NetworkClients)
-		{
-			if (I_IsHCDEServiceAuthoritySlot(client))
-				continue;
-
-			const uint16_t latency = min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap);
-			if (latency > highestAvg)
-				highestAvg = latency;
-		}
-
-		constexpr double MS2Sec = 1.0 / 1000.0;
-		for (auto client : NetworkClients)
-		{
-			int delay = 0;
-			if (!I_IsHCDEServiceAuthoritySlot(client))
-				delay = int(floor((highestAvg - min<uint16_t>(ClientStates[client].AverageLatency, LatencyCap)) * MS2Sec * TICRATE));
-
-			NetBuffer[2] = (delay << 8);
-			NetBuffer[3] = delay;
-
-			HSendPacket(client, 4);
-		}
-	}
+	DebugTrace::Markf("net", "level start ack client=%d ack=%llu mask=%llu loaded=%d room=%u",
+		client, (unsigned long long)LevelStartAck, (unsigned long long)LevelStartPlayableMask(),
+		IsMapLoaded() ? 1 : 0, unsigned(CurrentRoomID));
+	TryReleaseLevelStart();
 }
 
 struct FLatencyAck
@@ -3640,6 +3819,10 @@ static void GetPackets()
 
 		if (NetBuffer[0] & NCMD_EXIT)
 		{
+			Printf(PRINT_HIGH, "NetGame:: Received exit packet from client %d at gametic=%d clienttic=%d room=%u\n",
+				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+			DebugTrace::Warningf("net", "received exit packet client=%d gametic=%d clienttic=%d room=%u",
+				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
 			ClientQuit(clientNum, I_IsHCDEServiceAuthoritySlot(clientNum) ? NetBuffer[1] : -1);
 			continue;
 		}
@@ -3707,6 +3890,16 @@ static void GetPackets()
 		{
 			clientState.Flags |= CF_UPDATED;
 			clientState.SequenceAck = (NetBuffer[2] << 24) | (NetBuffer[3] << 16) | (NetBuffer[4] << 8) | NetBuffer[5];
+			if (!I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(clientNum))
+			{
+				const bool wasWaiting = players[clientNum].waiting;
+				Net_ResetAuthorityWaitWatchdog("authority-packet", wasWaiting);
+				if (wasWaiting)
+				{
+					DebugTrace::Markf("net", "authority wait cleared by current-room packet client=%d seq=%d ack=%d room=%u",
+						clientNum, clientState.CurrentSequence, clientState.SequenceAck, unsigned(CurrentRoomID));
+				}
+			}
 		}
 
 		const int consistencyAck = (NetBuffer[6] << 24) | (NetBuffer[7] << 16) | (NetBuffer[8] << 8) | NetBuffer[9];
@@ -3716,7 +3909,14 @@ static void GetPackets()
 		{
 			int numPlayers = NetBuffer[curByte++];
 			for (int i = 0; i < numPlayers; ++i)
-				DisconnectClient(NetBuffer[curByte++]);
+			{
+				const int quitter = NetBuffer[curByte++];
+				Printf(PRINT_HIGH, "NetGame:: Authority reported client %d quit at gametic=%d clienttic=%d room=%u\n",
+					quitter, gametic, ClientTic, unsigned(CurrentRoomID));
+				DebugTrace::Warningf("net", "authority quit broadcast client=%d from=%d gametic=%d clienttic=%d room=%u",
+					quitter, clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+				DisconnectClient(quitter);
+			}
 		}
 
 		const int playerCount = NetBuffer[curByte++];
@@ -3886,6 +4086,8 @@ static void SendHeartbeat()
 	}
 }
 
+static void Net_DumpSyncDiagnostics(int client, int consistency, int16_t localConsistency, int16_t netConsistency);
+
 static void CheckConsistencies()
 {
 	// Check consistencies retroactively to see if there was a desync at some point. We still
@@ -3916,12 +4118,20 @@ static void CheckConsistencies()
 				const int tic = clientState.LastVerifiedConsistency % BACKUPTICS;
 				if (clientState.LocalConsistency[tic] != clientState.NetConsistency[tic])
 				{
-					Printf(PRINT_BOLD, "Net consistency mismatch for player %d at consistency %d (local=%d net=%d)\n",
-						client, clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic]);
-					DebugTrace::Warningf("net", "consistency mismatch player=%d consistency=%d local=%d net=%d current=%d remote=%d",
-						client, clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic],
+					Printf(PRINT_BOLD, "Net consistency mismatch for player %d '%s' at consistency %d (local=%d net=%d gametic=%d clienttic=%d room=%u map=%s current=%d remote=%d)\n",
+						client, players[client].userinfo.GetName(), clientState.LastVerifiedConsistency,
+						clientState.LocalConsistency[tic], clientState.NetConsistency[tic], gametic, ClientTic, unsigned(CurrentRoomID),
+						primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 						CurrentConsistency, clientState.CurrentNetConsistency);
-					DebugTrace::Dump("net");
+					DebugTrace::Warningf("net", "consistency mismatch player=%d name=%s consistency=%d local=%d net=%d gametic=%d clienttic=%d room=%u map=%s current=%d remote=%d",
+						client, players[client].userinfo.GetName(), clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic],
+						gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+						CurrentConsistency, clientState.CurrentNetConsistency);
+					DebugTrace::Warningf("net", "out-of-sync latencies player=%d seq=%d seqAck=%d consistencyAck=%d lastVerified=%d averageLatency=%d",
+						client, clientState.CurrentSequence, clientState.SequenceAck, clientState.ConsistencyAck,
+						clientState.LastVerifiedConsistency, clientState.AverageLatency);
+					Net_DumpSyncDiagnostics(client, clientState.LastVerifiedConsistency,
+						clientState.LocalConsistency[tic], clientState.NetConsistency[tic]);
 					players[client].inconsistant = true;
 					clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
 					break;
@@ -3967,6 +4177,100 @@ static int16_t CalculateConsistency(int client, uint32_t seed)
 	return (seed & 0xFFFF) ? seed : 1;
 }
 
+static void Net_TraceUserCmdSnapshot(const char* label, int client, int tic, const usercmd_t& cmd)
+{
+	DebugTrace::Warningf("net", "desync %s client=%d tic=%d buttons=0x%08x pitch=%d yaw=%d roll=%d fwd=%d side=%d up=%d",
+		label != nullptr ? label : "cmd", client, tic, cmd.buttons, cmd.pitch, cmd.yaw, cmd.roll,
+		cmd.forwardmove, cmd.sidemove, cmd.upmove);
+}
+
+static void Net_DumpSyncDiagnostics(int client, int consistency, int16_t localConsistency, int16_t netConsistency)
+{
+	if (!net_desyncdebug)
+	{
+		DebugTrace::Dump("net");
+		return;
+	}
+
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	DebugTrace::Warningf("net", "DESYNC REPORT BEGIN player=%d name=%s consistency=%d local=%d net=%d",
+		client, players[client].userinfo.GetName(), consistency, localConsistency, netConsistency);
+	DebugTrace::Warningf("net", "desync session role=%s authority-slot=%d console=%d room=%u map=%s gametic=%d clienttic=%d ticdup=%u enter=%d last-game=%d",
+		I_IsLocalHCDEServiceAuthority() ? "authority" : "client", authoritySlot, consoleplayer,
+		unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		gametic, ClientTic, unsigned(TicDup), EnterTic, LastGameUpdate);
+	DebugTrace::Warningf("net", "desync gates levelstart=%s delay=%d debug=%d lag=%s commands-reset=%d ahead=%d skip-timer=%d skip-amount=%d full-latency-cycle=%d",
+		Net_LevelStartStatusName(LevelStartStatus), LevelStartDelay, LevelStartDebug, Net_LagStateName(LagState),
+		bCommandsReset ? 1 : 0, CommandsAhead, SkipCommandTimer, SkipCommandAmount, FullLatencyCycle);
+	DebugTrace::Warningf("net", "desync rng spawn=%d acs=%d chase=%d damagemobj=%d sum=%u current-consistency=%d last-sent-consistency=%d",
+		pr_spawnmobj.Seed(), pr_acs.Seed(), pr_chase.Seed(), pr_damagemobj.Seed(),
+		StaticSumSeeds(), CurrentConsistency, LastSentConsistency);
+
+	for (auto pNum : NetworkClients)
+	{
+		const auto& netState = ClientStates[pNum];
+		const auto& peer = HCDELivePeers[pNum];
+		const auto& player = players[pNum];
+		DebugTrace::Warningf("net", "desync client=%d name=%s in-game=%d waiting=%d inconsistent=%d state=%d flags=0x%x seq=%d ack=%d resend-seq=%d con=%d con-ack=%d resend-con=%d verified=%d avg-lat=%u cur-lat=%u stability=%u",
+			pNum, player.userinfo.GetName(), playeringame[pNum] ? 1 : 0, player.waiting ? 1 : 0,
+			player.inconsistant ? 1 : 0, int(player.playerstate), netState.Flags, netState.CurrentSequence,
+			netState.SequenceAck, netState.ResendSequenceFrom, netState.CurrentNetConsistency,
+			netState.ConsistencyAck, netState.ResendConsistencyFrom, netState.LastVerifiedConsistency,
+			unsigned(netState.AverageLatency), unsigned(netState.CurrentLatency), unsigned(netState.StabilityBuffer));
+
+		if (player.mo != nullptr)
+		{
+			DebugTrace::Warningf("net", "desync pawn client=%d pos=(%.3f,%.3f,%.3f) yaw=%d pitch=%d health=%d player-health=%d",
+				pNum, player.mo->X(), player.mo->Y(), player.mo->Z(),
+				player.mo->Angles.Yaw.BAMs(), player.mo->Angles.Pitch.BAMs(),
+				player.mo->health, player.health);
+		}
+		else
+		{
+			DebugTrace::Warningf("net", "desync pawn client=%d missing", pNum);
+		}
+
+		for (int offset = -2; offset <= 2; ++offset)
+		{
+			const int con = consistency + offset;
+			if (con < 0)
+				continue;
+
+			const int index = con % BACKUPTICS;
+			DebugTrace::Warningf("net", "desync con-window client=%d con=%d local=%d net=%d marker=%s",
+				pNum, con, netState.LocalConsistency[index], netState.NetConsistency[index],
+				con == consistency ? "mismatch" : "nearby");
+		}
+
+		const int commandStart = max<int>(netState.CurrentSequence - 3, 0);
+		for (int seq = commandStart; seq <= netState.CurrentSequence + 1; ++seq)
+		{
+			if (seq < 0)
+				continue;
+
+			Net_TraceUserCmdSnapshot("netcmd", pNum, seq, netState.Tics[seq % BACKUPTICS].Command);
+		}
+
+		DebugTrace::Warningf("net", "desync live-peer client=%d tx=%u rx=%u dup=%u control-tx=%u control-rx=%u cmd-tx=%u cmd-rx=%u snap-tx=%u snap-rx=%u unsupported=%u rejected=%u deltas=%u repairs=%u drift=%u reconciliations=%u hard=%u",
+			pNum, peer.TxSequence, peer.RxSequence, peer.DuplicateCount, peer.ControlSent, peer.ControlReceived,
+			peer.ClientCommandSent, peer.ClientCommandReceived, peer.SnapshotSent, peer.SnapshotReceived,
+			peer.UnsupportedReceived, peer.AuthorityRejected, peer.WorldDeltaReceived, peer.BaselineRepairs,
+			peer.BaselineLocalDrift, peer.Reconciliations, peer.HardReconciliations);
+	}
+
+	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+	{
+		for (int tic = max<int>(ClientTic - 6, 0); tic <= ClientTic + 1; ++tic)
+			Net_TraceUserCmdSnapshot("localcmd", consoleplayer, tic, LocalCmds[tic % LOCALCMDTICS]);
+	}
+
+	const FString tracePath = FStringf("%s/hcde-net-desync-%llu.txt",
+		M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(I_msTime()));
+	DebugTrace::Warning("net", "DESYNC REPORT END");
+	DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+	DebugTrace::Dump("net");
+}
+
 // Ran a tick, so prep the next consistencies to send out.
 // [RH] Include some random seeds and player stuff in the consistancy
 // check, not just the player's x position like BOOM.
@@ -4008,7 +4312,7 @@ static bool Net_UpdateStatus()
 	// Check against the previous tick in case we're recovering from a huge
 	// system hiccup. If the game has taken too long to update, it's likely
 	// another client is hanging up the game.
-	if (LastEnterTic - LastGameUpdate >= MAXSENDTICS * TicDup)
+	if (LastEnterTic - LastGameUpdate >= MAXSENDTICS * TicDup && LastEnterTic >= AuthorityWaitGraceUntil)
 	{
 		// Try again in the next MaxDelay tics.
 		LastGameUpdate = EnterTic;
@@ -4040,6 +4344,11 @@ static bool Net_UpdateStatus()
 			// our data back over in case the host is waiting for us.
 			ClientStates[authoritySlot].Flags |= CF_MISSING;
 			HCDESetAuthorityWaiting(true);
+			DebugTrace::Warningf("net", "authority wait armed client=%d gametic=%d clienttic=%d room=%u map=%s seq=%d ack=%d levelstart=%s lag=%s",
+				authoritySlot, gametic, ClientTic, unsigned(CurrentRoomID),
+				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+				ClientStates[authoritySlot].CurrentSequence, ClientStates[authoritySlot].SequenceAck,
+				Net_LevelStartStatusName(LevelStartStatus), Net_LagStateName(LagState));
 		}
 	}
 
@@ -4165,6 +4474,10 @@ void NetUpdate(int tics)
 				// If we got stuck in limbo waiting, force start the map.
 				CheckLevelStart(I_GetHCDEServiceAuthoritySlot(), 0);
 			}
+			else if (I_IsLocalHCDEServiceAuthority())
+			{
+				TryReleaseLevelStart();
+			}
 			else
 			{
 				if (!I_IsLocalHCDEServiceAuthority() && IsMapLoaded())
@@ -4187,8 +4500,16 @@ void NetUpdate(int tics)
 					lowestSeq = ClientStates[client].CurrentSequence;
 			}
 
-			if (lowestSeq >= curTic)
+			// Let normal tic availability gate the actual playsim. Requiring the
+			// first post-load tic here can deadlock clients that are waiting for the
+			// authority's first snapshot before they release their next command.
+			if (lowestSeq >= curTic - 1)
+			{
+				DebugTrace::Markf("net", "authority level start host gate released curtic=%d lowestseq=%d room=%u map=%s",
+					curTic, lowestSeq, unsigned(CurrentRoomID),
+					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 				LevelStartStatus = LST_READY;
+			}
 		}
 	}
 	else if (LevelStartDelay > 0)
@@ -4863,7 +5184,13 @@ bool D_CheckNetGame()
 	for (auto client : NetworkClients)
 	{
 		if (I_IsServerReservedSlot(client))
+		{
+			// The dedicated authority is a transport slot, not a pawn. Keeping it
+			// in playeringame lets it consume/block coop starts on maps with a
+			// single player start, which can trap real clients on respawn.
+			playeringame[client] = false;
 			continue;
+		}
 		playeringame[client] = true;
 	}
 
@@ -4889,10 +5216,20 @@ bool D_CheckNetGame()
 // Called before quitting to leave a net game
 // without hanging the other players
 //
-void D_QuitNetGame()
+void D_QuitNetGame(const char* reason)
 {
 	if (!netgame || !usergame || consoleplayer == -1 || demoplayback || NetworkClients.Size() == 1)
 		return;
+
+	const char* quitReason = reason != nullptr && reason[0] != '\0' ? reason : "unspecified";
+	Printf(PRINT_HIGH, "NetGame:: Local player %d '%s' leaving net game reason=%s at gametic=%d clienttic=%d room=%u map=%s gamestate=%d gameaction=%d levelstart=%d clients=%u\n",
+		consoleplayer, players[consoleplayer].userinfo.GetName(), quitReason, gametic, ClientTic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		int(gamestate), int(gameaction), int(LevelStartStatus), unsigned(NetworkClients.Size()));
+	DebugTrace::Warningf("net", "local quit player=%d name=%s reason=%s gametic=%d clienttic=%d room=%u map=%s gamestate=%d gameaction=%d levelstart=%d clients=%u",
+		consoleplayer, players[consoleplayer].userinfo.GetName(), quitReason, gametic, ClientTic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+		int(gamestate), int(gameaction), int(LevelStartStatus), unsigned(NetworkClients.Size()));
 
 	// Send a bunch of packets for stability.
 	NetBuffer[0] = NCMD_EXIT;
@@ -5144,11 +5481,18 @@ void TryRunTics()
 	// Get the amount of tics the client can actually run. This accounts for waiting for other
 	// players over the network.
 	int lowestSequence = INT_MAX;
+	bool hasTicGateClient = false;
 	for (auto client : NetworkClients)
 	{
+		if (!Net_IsTicGateClient(client))
+			continue;
+
+		hasTicGateClient = true;
 		if (ClientStates[client].CurrentSequence < lowestSequence)
 			lowestSequence = ClientStates[client].CurrentSequence;
 	}
+	if (!hasTicGateClient)
+		lowestSequence = ClientTic / TicDup;
 
 	// Test player prediction code in singleplayer by pretending there is another player
 	// that is running exactly x ticks behind us, emulating having a specific amount of ping
@@ -6071,6 +6415,8 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			else if (NetworkClients.InGame(pNum))
 			{
 				Printf("%s [%d] has been kicked from the game\n", players[pNum].userinfo.GetName(), pNum);
+				DebugTrace::Warningf("net", "kick command disconnecting player=%d by=%d gametic=%d clienttic=%d room=%u",
+					pNum, player, gametic, ClientTic, unsigned(CurrentRoomID));
 				DisconnectClient(pNum);
 			}
 		}

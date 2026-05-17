@@ -345,9 +345,24 @@ public:
 
 		if (drawer)
 		{
-			V_CalcCleanFacs(320, 200, drawer->GetWidth(), drawer->GetHeight(), &CleanXfac, &CleanYfac);
-			CleanWidth = drawer->GetWidth() / CleanXfac;
-			CleanHeight = drawer->GetHeight() / CleanYfac;
+			const int realwidth = drawer->GetWidth();
+			const int realheight = drawer->GetHeight();
+			if (realwidth > 0 && realheight > 0)
+			{
+				V_CalcCleanFacs(320, 200, realwidth, realheight, &CleanXfac, &CleanYfac);
+				if (CleanXfac < 1) CleanXfac = 1;
+				if (CleanYfac < 1) CleanYfac = 1;
+				CleanWidth = realwidth / CleanXfac;
+				CleanHeight = realheight / CleanYfac;
+			}
+			else
+			{
+				// Dedicated servers have no real render target, but intermission scripts still
+				// execute for gameplay flow. Keep clean scaling valid for those headless paths.
+				CleanXfac = CleanYfac = 1;
+				CleanWidth = 320;
+				CleanHeight = 200;
+			}
 		}
 	}
 

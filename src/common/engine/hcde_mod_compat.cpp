@@ -44,15 +44,20 @@ static const char* const AliensEradicationMapsetPatterns[] =
 	nullptr
 };
 
+static const char* const TheIslandPatterns[] =
+{
+	"theisland*.pk3",
+	"the_island*.pk3",
+	nullptr
+};
+
 static unsigned int ActiveCompatFlags = 0u;
 
 static const HCDEModCompatEntry ModCompatEntries[] =
 {
-	// Keep mod-specific resources in one PK3 for now; split when dependencies
-	// between different mods make one shared archive too fragile.
 	{
 		"Brutal Doom railgun server compatibility",
-		"hcde_mod_compat.pk3",
+		"hcde_mod_compat_brutaldoom.pk3",
 		BrutalDoomRailgunPatterns,
 		0u
 	},
@@ -61,6 +66,12 @@ static const HCDEModCompatEntry ModCompatEntries[] =
 		nullptr,
 		AliensEradicationPatterns,
 		HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT
+	},
+	{
+		"The Island MAPINFO and sound compatibility",
+		"hcde_mod_compat_theisland.pk3",
+		TheIslandPatterns,
+		HCDE_MODCOMPAT_MAPINFO_TRAILING_TEXT_COMMA
 	}
 };
 

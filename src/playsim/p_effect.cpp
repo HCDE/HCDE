@@ -673,6 +673,11 @@ struct TrailSegment
 
 void P_DrawRailTrail(AActor *source, TArray<SPortalHit> &portalhits, int color1, int color2, double maxdiff, int flags, PClassActor *spawnclass, DAngle angle, int duration, double sparsity, double drift, int SpiralOffset, DAngle pitch)
 {
+	if (source == nullptr || source->Level == nullptr || portalhits.Size() < 2)
+	{
+		return;
+	}
+
 	double length = 0;
 	int steps, i;
 	TArray<TrailSegment> trail;
@@ -708,11 +713,11 @@ void P_DrawRailTrail(AActor *source, TArray<SPortalHit> &portalhits, int color1,
 		length += seg.length;
 
 		auto player = source->Level->GetConsolePlayer();
-		if (player)
+		AActor *mo = player != nullptr ? player->camera : nullptr;
+		if (mo != nullptr && seg.length > 0)
 		{
 			// Only consider sound in 2D (for now, anyway)
 			// [BB] You have to divide by lengthsquared here, not multiply with it.
-			AActor *mo = player->camera;
 			double r = ((seg.start.Y - mo->Y()) * (-seg.dir.Y) - (seg.start.X - mo->X()) * (seg.dir.X)) / (seg.length * seg.length);
 			r = clamp<double>(r, 0., 1.);
 			seg.soundpos = seg.start.XY() + r * seg.dir.XY();
@@ -735,7 +740,8 @@ void P_DrawRailTrail(AActor *source, TArray<SPortalHit> &portalhits, int color1,
 		if (!(flags & RAF_SILENT))
 		{
 			auto player = source->Level->GetConsolePlayer();
-			if (player)
+			AActor *mo = player != nullptr ? player->camera : nullptr;
+			if (mo != nullptr)
 			{
 				FSoundID sound;
 
@@ -747,8 +753,6 @@ void P_DrawRailTrail(AActor *source, TArray<SPortalHit> &portalhits, int color1,
 
 				// The railgun's sound is special. It gets played from the
 				// point on the slug's trail that is closest to the hearing player.
-				AActor *mo = player->camera;
-
 				if (fabs(mo->X() - trail[0].start.X) < 20 && fabs(mo->Y() - trail[0].start.Y) < 20)
 				{ // This player (probably) fired the railgun
 					S_Sound (mo, CHAN_WEAPON, 0, sound, 1, ATTN_NORM);

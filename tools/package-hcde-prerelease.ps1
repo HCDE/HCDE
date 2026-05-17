@@ -2,6 +2,8 @@ param(
     [string]$Version = "0.3.0",
     [string]$Configuration = "RelWithDebInfo",
     [string]$OpenALSoftVersion = "1.25.2",
+    [string]$SndFileDll = "",
+    [string]$SndFileLicense = "",
     [switch]$Build,
     [switch]$IncludeSymbols
 )
@@ -72,6 +74,95 @@ function Resolve-OpenALSoftRuntime {
     }
 }
 
+function Resolve-SndFileRuntime {
+    param(
+        [string]$BuildRoot,
+        [string]$BuildConfigDir,
+        [string]$ExplicitDll,
+        [string]$ExplicitLicense
+    )
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitDll)) {
+        $candidates += $ExplicitDll
+    }
+    $candidates += (Join-Path $BuildConfigDir "sndfile.dll")
+    $candidates += (Join-Path $BuildRoot "deps/sndfile.dll")
+
+    $userProfile = [Environment]::GetFolderPath("UserProfile")
+    if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+        $candidates += (Join-Path $userProfile "Downloads/gzdoom-4-14-2-windows/sndfile.dll")
+    }
+
+    $missingLicenseDll = $null
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        $dll = Resolve-RequiredPath $candidate
+        $licenseCandidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($ExplicitLicense)) {
+            $licenseCandidates += $ExplicitLicense
+        }
+        $dllDir = Split-Path -Parent $dll
+        $licenseCandidates += (Join-Path $dllDir "lgpl.txt")
+        $licenseCandidates += (Join-Path $dllDir "COPYING.LIB")
+        $licenseCandidates += (Join-Path $dllDir "COPYING.LESSER")
+
+        $license = $licenseCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        $licensesZip = Join-Path $dllDir "licenses.zip"
+        if (-not $license -and (Test-Path -LiteralPath $licensesZip)) {
+            $licenseDir = Join-Path $BuildRoot "deps/sndfile-license"
+            if (-not (Test-Path -LiteralPath $licenseDir)) {
+                New-Item -Path $licenseDir -ItemType Directory | Out-Null
+            }
+            Expand-Archive -LiteralPath $licensesZip -DestinationPath $licenseDir -Force
+            $license = Get-ChildItem -LiteralPath $licenseDir -Recurse -File |
+                Where-Object { $_.Name -match '^(lgpl|copying)' } |
+                Select-Object -ExpandProperty FullName -First 1
+        }
+
+        if ($license) {
+            return [pscustomobject]@{
+                Dll = $dll
+                License = Resolve-RequiredPath $license
+            }
+        }
+
+        $missingLicenseDll = $dll
+    }
+
+    if ($missingLicenseDll) {
+        throw "Found sndfile.dll at $missingLicenseDll, but no LGPL/license text beside any candidate. Pass -SndFileLicense to keep the release package complete."
+    }
+
+    throw "Required sndfile.dll not found. HCDE uses it for WAV/OGG mod sounds; pass -SndFileDll or place sndfile.dll in build\\deps."
+}
+
+function Copy-ModCompatRuntime {
+    param(
+        [string]$BuildRoot,
+        [string]$BuildConfigDir,
+        [string]$StageDir
+    )
+
+    $compatFiles = @()
+    $compatFiles += Get-ChildItem -LiteralPath $BuildConfigDir -Filter "hcde_mod_compat*.pk3" -File -ErrorAction SilentlyContinue
+    $compatFiles += Get-ChildItem -LiteralPath $BuildRoot -Filter "hcde_mod_compat*.pk3" -File -ErrorAction SilentlyContinue
+    $compatFiles = $compatFiles |
+        Group-Object Name |
+        ForEach-Object { $_.Group | Sort-Object FullName -Descending | Select-Object -First 1 }
+
+    if (-not $compatFiles -or $compatFiles.Count -eq 0) {
+        throw "Required HCDE mod compatibility PK3 files were not found. Build the compat targets before packaging."
+    }
+
+    foreach ($file in $compatFiles) {
+        Copy-Item -LiteralPath $file.FullName -Destination $StageDir
+    }
+}
+
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $buildRoot = Join-Path $repoRoot "build"
 $buildConfigDir = Join-Path $buildRoot $Configuration
@@ -104,7 +195,6 @@ $runtimeFiles = @(
     "hcde.exe",
     "hcdeserv.exe",
     "hcde.pk3",
-    "hcde_mod_compat.pk3",
     "game_support.pk3",
     "brightmaps.pk3",
     "lights.pk3",
@@ -114,6 +204,7 @@ $runtimeFiles = @(
 foreach ($file in $runtimeFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir $file)) -Destination $stageDir
 }
+Copy-ModCompatRuntime -BuildRoot $buildRoot -BuildConfigDir $buildConfigDir -StageDir $stageDir
 
 $runtimeDirs = @("fm_banks")
 foreach ($dir in $runtimeDirs) {
@@ -133,6 +224,10 @@ $openALSoft = Resolve-OpenALSoftRuntime -BuildRoot $buildRoot -Version $OpenALSo
 Copy-Item -LiteralPath $openALSoft.Dll -Destination $stageDir
 Copy-Item -LiteralPath $openALSoft.License -Destination (Join-Path $stageDir "OPENAL-SOFT-COPYING.txt")
 
+$sndFile = Resolve-SndFileRuntime -BuildRoot $buildRoot -BuildConfigDir $buildConfigDir -ExplicitDll $SndFileDll -ExplicitLicense $SndFileLicense
+Copy-Item -LiteralPath $sndFile.Dll -Destination (Join-Path $stageDir "sndfile.dll")
+Copy-Item -LiteralPath $sndFile.License -Destination (Join-Path $stageDir "SNDFILE-LICENSE.txt")
+
 @"
 HCDE $Version
 
@@ -144,6 +239,7 @@ Included:
 - HCDE runtime PK3 files
 - FM bank and soundfont assets
 - OpenAL Soft runtime for client audio
+- libsndfile runtime for WAV/OGG mod sounds
 
 Bring your own IWAD, such as DOOM2.WAD.
 

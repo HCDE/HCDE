@@ -127,7 +127,7 @@ void NetUpdate(int tics);
 
 // Broadcasts special packets to other players
 //	to notify of game exit
-void D_QuitNetGame (void);
+void D_QuitNetGame (const char* reason = nullptr);
 
 //? how many ticks to run?
 void TryRunTics (void);

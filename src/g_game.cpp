@@ -1207,7 +1207,7 @@ static void G_FullConsole()
 		D_ToggleHud();
 	if (demoplayback)
 		G_CheckDemoStatus();
-	D_QuitNetGame();
+	D_QuitNetGame("full-console");
 	advancedemo = false;
 	C_FullConsole();
 

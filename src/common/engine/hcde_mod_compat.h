@@ -20,6 +20,7 @@ class FConfigFile;
 enum EHCDEModCompatFlags : unsigned int
 {
 	HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT = 1u << 0,
+	HCDE_MODCOMPAT_MAPINFO_TRAILING_TEXT_COMMA = 1u << 1,
 };
 
 void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConfigFile* config);

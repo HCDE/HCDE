@@ -1,5 +1,5 @@
 // HCDE mod compatibility resource.
-// Loaded automatically by HCDE after matched user add-on files.
+// Loaded automatically by HCDE after matched Brutal Doom add-on files.
 
 Actor HCDERailGunCompat : RailGun replaces RailGun
 {

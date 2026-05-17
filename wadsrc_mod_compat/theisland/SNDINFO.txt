@@ -1,0 +1,12 @@
+// HCDE The Island sound compatibility.
+// The Island references a few sound lump names that are not shipped in the PK3.
+// Keep those logical sounds alive by routing them to nearby sounds from the mod.
+monster/vulsi4 DSVULSI3
+Hanger/Active GK_IDLE1
+weapons/gntidl DSSHOCK
+// The MicroUzi replaces the pistol but some lookup paths canonicalize or
+// fall back to weapon aliases before resolving the mod's mixed-case name.
+microuzi/fire DSUZIFIR
+weapons/uzi DSUZIFIR
+weapons/uzifire DSUZIFIR
+weapons/pistol DSUZIFIR

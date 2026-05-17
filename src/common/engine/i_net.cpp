@@ -1173,9 +1173,12 @@ static void SetConnectFlow(ENetConnectFlow flow)
 // Gracefully closes the net window so that any error messaging can be properly displayed.
 static void I_NetError(const char* error)
 {
+	const char* message = error != nullptr ? error : "unknown network error";
+	I_NetLog("Fatal network error: %s", message);
+	DebugTrace::Warningf("net", "fatal network error: %s", message);
 	if (!DedicatedServerMode && !SilentNetStartMode)
 		NetStartWindow::NetClose();
-	I_FatalError("%s", error);
+	I_FatalError("%s", message);
 }
 
 static void I_NetInit(const char* msg, bool host)
@@ -1268,9 +1271,17 @@ static void I_NetClientUpdated(int client)
 	NetStartWindow::NetUpdate(client, Connected[client].Status);
 }
 
-static void I_NetClientDisconnected(int client)
+static void I_NetClientDisconnected(int client, const char* reason = nullptr)
 {
-	Printf("%s:: Client '%s' disconnected.\n", DedicatedServerMode ? "NetServer" : "NetSession", Net_GetClientName(client, 0u));
+	const bool hasReason = reason != nullptr && reason[0] != '\0';
+	Printf("%s:: Client '%s' disconnected%s%s%s.\n",
+		DedicatedServerMode ? "NetServer" : "NetSession",
+		Net_GetClientName(client, 0u),
+		hasReason ? " (" : "",
+		hasReason ? reason : "",
+		hasReason ? ")" : "");
+	if (hasReason)
+		DebugTrace::Warningf("net", "client disconnected client=%d name=%s reason=%s", client, Net_GetClientName(client, 0u), reason);
 	NetStartWindow::NetDisconnect(client);
 }
 
@@ -1472,6 +1483,8 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 			{
 				// The remote node aborted unexpectedly, so pretend it sent an exit packet. If it was the
 				// authority, the game is too bricked to continue because authority migration owns recovery.
+				I_NetLog("Connection reset by client %d '%s'", client, Net_GetClientName(client, 0u));
+				DebugTrace::Warningf("net", "connection reset client=%d name=%s", client, Net_GetClientName(client, 0u));
 				if (I_IsHCDEServiceAuthoritySlot(client))
 					I_NetError("Authority unexpectedly disconnected");
 
@@ -1694,13 +1707,16 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	}
 }
 
-static void RemoveClientConnection(int client)
+static void RemoveClientConnection(int client, const char* reason = nullptr)
 {
-	I_NetClientDisconnected(client);
+	I_NetClientDisconnected(client, reason);
 	players[client].settings_controller = false;
 	I_ClearClient(client);
 	NetworkClients -= client;
-	I_NetLog("Client %u %s", client, DedicatedServerMode ? "disconnected from server" : "left the host");
+	if (reason != nullptr && reason[0] != '\0')
+		I_NetLog("Client %u %s: %s", client, DedicatedServerMode ? "disconnected from server" : "left the host", reason);
+	else
+		I_NetLog("Client %u %s", client, DedicatedServerMode ? "disconnected from server" : "left the host");
 
 	// Let everyone else know the user left as well.
 	NetBuffer[0] = NCMD_SETUP;
@@ -1741,7 +1757,7 @@ static bool DropClientForHCDETimeout(int client, int* connectedPlayers, const ch
 		client, context, HCDEServiceName(service), key, sequence, (unsigned long long)elapsed, sends);
 
 	RejectConnection(timedOutAddress, PRE_SETUP_TIMEOUT);
-	RemoveClientConnection(client);
+	RemoveClientConnection(client, "HCDE service setup timeout");
 	if (connectedPlayers != nullptr && *connectedPlayers > 0)
 	{
 		--*connectedPlayers;
@@ -1794,7 +1810,7 @@ static bool Host_CheckForConnections(void* connected)
 
 		sockaddr_in booted = Connected[client].Address;
 
-		RemoveClientConnection(client);
+		RemoveClientConnection(client, "kicked during setup");
 		--*connectedPlayers;
 		I_NetUpdatePlayers(*connectedPlayers, MaxClients);
 
@@ -1810,7 +1826,7 @@ static bool Host_CheckForConnections(void* connected)
 		sockaddr_in booted = Connected[client].Address;
 		BannedConnections.Push(booted);
 
-		RemoveClientConnection(client);
+		RemoveClientConnection(client, "banned during setup");
 		--*connectedPlayers;
 		I_NetUpdatePlayers(*connectedPlayers, MaxClients);
 
@@ -1824,7 +1840,7 @@ static bool Host_CheckForConnections(void* connected)
 		{
 			if (RemoteClient >= 0)
 			{
-				RemoveClientConnection(RemoteClient);
+				RemoveClientConnection(RemoteClient, "exit packet during setup");
 				--*connectedPlayers;
 				I_NetUpdatePlayers(*connectedPlayers, MaxClients);
 			}
@@ -2222,7 +2238,7 @@ static bool Host_CheckStartGameAcks(void* connected)
 		{
 			if (RemoteClient > 0)
 			{
-				RemoveClientConnection(RemoteClient);
+				RemoveClientConnection(RemoteClient, "exit packet while waiting for start acknowledgement");
 				--*connectedPlayers;
 				I_NetUpdatePlayers(*connectedPlayers, MaxClients);
 			}
@@ -2533,7 +2549,7 @@ static bool Guest_ContactHost(void* unused)
 			I_ClearClient(NetBuffer[2]);
 			NetworkClients -= NetBuffer[2];
 			SetClientAck(consoleplayer, NetBuffer[2], false);
-			I_NetClientDisconnected(NetBuffer[2]);
+			I_NetClientDisconnected(NetBuffer[2], "host reported disconnect");
 		}
 		else if (NetBuffer[1] == PRE_FULL)
 		{

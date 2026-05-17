@@ -1406,11 +1406,23 @@ void D_Display ()
 // Cleanup after a recoverable error or a restart
 //==========================================================================
 
-void D_ErrorCleanup ()
+void D_ErrorCleanup (const char* reason = nullptr)
 {
+	const char* cleanupReason = reason != nullptr && reason[0] != '\0' ? reason : "unspecified";
+	const bool normalShutdown = strcmp(cleanupReason, "engine-shutdown") == 0;
+	if (!normalShutdown)
+	{
+		Printf(PRINT_HIGH, "HCDE error cleanup: reason=%s gamestate=%d gameaction=%d gametic=%d\n",
+			cleanupReason, int(gamestate), int(gameaction), gametic);
+		DebugTrace::Warningf("main", "error cleanup reason=%s gamestate=%d gameaction=%d gametic=%d",
+			cleanupReason, int(gamestate), int(gameaction), gametic);
+	}
 	savegamerestore = false;
-	primaryLevel->BotInfo.RemoveAllBots (primaryLevel, true);
-	D_QuitNetGame ();
+	if (primaryLevel != nullptr)
+	{
+		primaryLevel->BotInfo.RemoveAllBots(primaryLevel, true);
+	}
+	D_QuitNetGame (cleanupReason);
 	if (demorecording || demoplayback)
 		G_CheckDemoStatus ();
 	Net_ClearBuffers ();
@@ -1478,6 +1490,15 @@ void D_DoomLoop ()
 
 			if (wantToRestart)
 			{
+				if (netgame && !demoplayback)
+				{
+					Printf(PRINT_HIGH, "HCDE ignored engine restart request during netgame at gametic=%d map=%s\n",
+						gametic, primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+					DebugTrace::Warningf("main", "ignored engine restart request during netgame gametic=%d map=%s",
+						gametic, primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+					wantToRestart = false;
+					continue;
+				}
 				DebugTrace::Info("main", "restart request detected, exiting D_DoomLoop");
 				wantToRestart = false;
 				return;
@@ -1488,25 +1509,32 @@ void D_DoomLoop ()
 			DebugTrace::Errorf("main", "CRecoverableError: %s", error.GetMessage() ? error.GetMessage() : "unknown");
 			if (error.GetMessage ())
 			{
+				Printf(PRINT_HIGH, "\nHCDE recoverable error: %s\n", error.GetMessage());
 				Printf (static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "\n%s\n", error.GetMessage());
 			}
-			D_ErrorCleanup ();
+			D_ErrorCleanup ("recoverable-error");
 		}
 		catch (const FileSystemException& error) // in case this propagates up to here it should be treated as a recoverable error.
 		{
 			DebugTrace::Errorf("main", "FileSystemException: %s", error.what() ? error.what() : "unknown");
 			if (error.what())
 			{
+				Printf(PRINT_HIGH, "\nHCDE filesystem error: %s\n", error.what());
 				Printf(static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "\n%s\n", error.what());
 			}
-			D_ErrorCleanup();
+			D_ErrorCleanup("filesystem-error");
 		}
 		catch (CVMAbortException &error)
 		{
 			DebugTrace::Error("main", "CVMAbortException occurred - stacktrace available");
+			Printf(PRINT_HIGH, "\nHCDE VM abort forced game cleanup.\n");
 			error.MaybePrintMessage();
+			if (error.stacktrace.IsNotEmpty())
+			{
+				Printf(PRINT_HIGH, "%s", error.stacktrace.GetChars());
+			}
 			Printf(static_cast<PrintFlag>(PRINT_NONOTIFY | PRINT_BOLD), "%s", error.stacktrace.GetChars());
-			D_ErrorCleanup();
+			D_ErrorCleanup("vm-abort");
 		}
 	}
 }
@@ -4477,6 +4505,15 @@ int GameMain()
 
 void D_Cleanup()
 {
+	if (netgame && !demoplayback)
+	{
+		Printf(PRINT_HIGH, "HCDE engine cleanup while netgame active at gametic=%d gameaction=%d map=%s\n",
+			gametic, int(gameaction), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+		DebugTrace::Warningf("main", "engine cleanup while netgame active gametic=%d gameaction=%d wantToRestart=%d map=%s",
+			gametic, int(gameaction), wantToRestart ? 1 : 0,
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	}
+
 	if (debugServer)
 	{
 		debugServer->Stop();
@@ -4500,7 +4537,7 @@ void D_Cleanup()
 	DeleteScreenJob();
 
 	// clean up game state
-	D_ErrorCleanup ();
+	D_ErrorCleanup ("engine-shutdown");
 	P_Shutdown();
 
 	M_SaveDefaults(NULL);			// save config before the restart
@@ -4563,6 +4600,15 @@ void D_Cleanup()
 
 UNSAFE_CCMD(debug_restart)
 {
+	if (netgame && !demoplayback)
+	{
+		Printf(PRINT_HIGH, "HCDE ignored debug_restart during netgame at gametic=%d map=%s\n",
+			gametic, primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+		DebugTrace::Warningf("main", "ignored debug_restart during netgame gametic=%d map=%s",
+			gametic, primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+		return;
+	}
+
 	// remove command line args that would get in the way during restart
 
 	Args->RemoveArgs(FArg_iwad);

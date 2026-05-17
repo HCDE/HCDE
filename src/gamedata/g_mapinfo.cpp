@@ -39,6 +39,7 @@
 #include "g_levellocals.h"
 #include "events.h"
 #include "hcde_emapinfo.h"
+#include "hcde_mod_compat.h"
 #include "i_system.h"
 #include "screenjob.h"
 #include "texturemanager.h"
@@ -654,12 +655,37 @@ bool FMapInfoParser::ParseLookupName(FString &dest)
 	{
 		sc.UnGet();
 		dest = "";
-		do
+		bool reportedTrailingCommaCompat = false;
+		for (;;)
 		{
 			sc.MustGetString();
 			dest << sc.String << '\n';
+			if (sc.CheckString(","))
+			{
+				if (HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_MAPINFO_TRAILING_TEXT_COMMA))
+				{
+					if (!sc.GetString())
+					{
+						break;
+					}
+					if (sc.Compare("}"))
+					{
+						sc.UnGet();
+						if (!reportedTrailingCommaCompat)
+						{
+							Printf("HCDE: tolerated trailing comma in MAPINFO text list for known mod compatibility.\n");
+							reportedTrailingCommaCompat = true;
+						}
+						break;
+					}
+					sc.UnGet();
+				}
+			}
+			else
+			{
+				break;
+			}
 		}
-		while (sc.CheckString(","));
 		// strip off the last newline
 		dest.Truncate(dest.Len()-1);
 		return false;

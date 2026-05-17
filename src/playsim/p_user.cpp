@@ -75,6 +75,9 @@ CVAR(Float, snd_footstepvolume, 1.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, cl_predict_specials, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // Deprecated
 CVAR(Bool, cl_noprediction, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+// Legacy toggle retained so old configs do not warn, but dedicated HCDE
+// clients always predict short-lived view, weapon, and sound effects.
+CVAR(Bool, cl_hcde_predict_dedicated, true, CVAR_GLOBALCONFIG)
 CVAR(Float, cl_predict_lerpscale, 0.05f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Float, cl_predict_lerpthreshold, 2.00f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
@@ -1784,6 +1787,9 @@ void P_PredictClient()
 		return;
 
 	if (netgame && I_IsServerReservedSlot(consoleplayer))
+		return;
+
+	if (cl_noprediction)
 		return;
 
 	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS)

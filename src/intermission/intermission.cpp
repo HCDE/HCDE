@@ -1009,6 +1009,17 @@ bool DIntermissionController::Responder (FInputEvent *ev)
 		}
 
 		if (mScreen->mTicker < 2) return false;	// prevent some leftover events from auto-advancing
+		if (netgame && !demoplayback)
+		{
+			if (ev->Type == EV_KeyDown)
+			{
+				// In multiplayer, intentional intermission input means ready up, not local-only page advance.
+				Net_WriteInt8(DEM_READIED);
+				return true;
+			}
+			return false;
+		}
+
 		int res = mScreen->Responder(ev);
 		if (res == -1)
 		{

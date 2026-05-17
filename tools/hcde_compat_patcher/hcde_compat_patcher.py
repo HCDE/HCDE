@@ -651,11 +651,81 @@ def find_line_hits(texts: dict[str, bytes], pattern: str, *, flags: int = re.IGN
     return hits
 
 
+def find_mapinfo_unterminated_text_assignments(texts: dict[str, bytes]) -> list[TextHit]:
+    """Find old MAPINFO text lists that HCDE rejects when they trail off."""
+    hits: list[TextHit] = []
+    text_keys = "entertext|exittext|exittextsecret|intertext|intertextsecret"
+    assign_rx = re.compile(rf"^\s*({text_keys})\s*=", re.IGNORECASE)
+    block_start_rx = re.compile(r"^\s*(clusterdef|episode|map)\b", re.IGNORECASE)
+
+    for name, data in sorted(texts.items(), key=lambda kv: kv[0].lower()):
+        base = archive_base_name(name)
+        suffix = archive_suffix(name)
+        if base not in ("MAPINFO", "ZMAPINFO", "UMAPINFO") and suffix != ".mapinfo":
+            continue
+
+        lines = decode_text(data).splitlines()
+        index = 0
+        while index < len(lines):
+            stripped = strip_script_comment(lines[index]).strip()
+            match = assign_rx.search(stripped)
+            if match is None:
+                index += 1
+                continue
+
+            start_line = index + 1
+            key = match.group(1)
+            if ";" in stripped:
+                index += 1
+                continue
+
+            probe = index + 1
+            while probe < len(lines):
+                probe_line = strip_script_comment(lines[probe]).strip()
+                if ";" in probe_line:
+                    break
+                if probe_line == "}" or block_start_rx.search(probe_line):
+                    previous_text = ""
+                    for previous in range(probe - 1, index - 1, -1):
+                        previous_text = strip_script_comment(lines[previous]).strip()
+                        if previous_text:
+                            break
+                    reason = (
+                        f"{key} text list has a trailing comma before line {probe + 1}"
+                        if previous_text.endswith(",")
+                        else f"{key} assignment reaches line {probe + 1} without a clear terminator"
+                    )
+                    hits.append(
+                        TextHit(
+                            entry=name,
+                            line=start_line,
+                            text=reason,
+                        )
+                    )
+                    break
+                probe += 1
+            else:
+                hits.append(
+                        TextHit(
+                            entry=name,
+                            line=start_line,
+                            text=f"{key} assignment reaches end of file without a clear terminator",
+                        )
+                )
+
+            index = max(index + 1, probe)
+
+    return hits
+
+
 def archive_base_name(name: str) -> str:
     normalized = name.replace("\\", "/")
     if ":" in normalized:
         normalized = normalized.rsplit(":", 1)[1]
-    return Path(normalized).name.upper()
+    path = Path(normalized)
+    if path.suffix.lower() == ".lmp":
+        return path.stem.upper()
+    return path.name.upper()
 
 
 def archive_suffix(name: str) -> str:
@@ -1823,6 +1893,18 @@ def build_checks(
                 severity="info",
                 title="DeHackEd/DEHEXTRA style data is present",
                 detail="Check whether the mod expects vanilla, Boom, MBF, MBF21, or DEHEXTRA behavior and document the intended compatibility profile.",
+            )
+        )
+
+    mapinfo_text_hits = find_mapinfo_unterminated_text_assignments(texts)
+    if mapinfo_text_hits:
+        checks.append(
+            CompatibilityCheck(
+                id="mapinfo-unterminated-text-list",
+                severity="blocker",
+                title="MAPINFO text list has an invalid ending",
+                detail="HCDE rejects MAPINFO text assignments that run into a closing brace or new block with a trailing comma or no clear terminator. Remove the final trailing comma or repair the local mod copy before launch.",
+                hits=mapinfo_text_hits[:40],
             )
         )
 

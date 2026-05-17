@@ -26,6 +26,7 @@
 #include <stdlib.h>
 
 #include "c_cvars.h"
+#include "filesystem.h"
 #include "gamestate.h"
 #include "i_soundinternal.h"
 #include "m_haptics.h"
@@ -779,6 +780,8 @@ sfxinfo_t *SoundEngine::LoadSound(sfxinfo_t *sfx)
 		{
 			if (sfx->lumpnum != sfx_empty)
 			{
+				Printf(TEXTCOLOR_ORANGE "Sound \"%s\" from lump \"%s\" could not be decoded; using silence.\n",
+					sfx->name.GetChars(), fileSystem.GetFileShortName(sfx->lumpnum));
 				sfx->lumpnum = sfx_empty;
 				continue;
 			}

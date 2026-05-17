@@ -1208,6 +1208,7 @@ SoundHandle OpenALSoundRenderer::LoadSound(uint8_t *sfxdata, int length, int def
 	data.resize(total);
 	if (total == 0)
 	{
+		SoundDecoder_Close(decoder);
 		return retval;
 	}
 	SoundDecoder_Close(decoder);
