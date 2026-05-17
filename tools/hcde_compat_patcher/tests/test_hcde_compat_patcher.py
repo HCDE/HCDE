@@ -176,6 +176,54 @@ class HcdeCompatPatcherTests(unittest.TestCase):
             self.assertIn("EDGE Classic Profile", report)
             self.assertIn("Duplicate DDF properties", report)
 
+    def test_zip_scan_keeps_acs_scripts_out_of_edge_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod = root / "AcsOnly.pk3"
+            with zipfile.ZipFile(mod, "w") as zf:
+                zf.writestr("scripts/bots.acs", "script 1 OPEN {}\n")
+
+            result = patcher.scan_mod(mod)
+
+            self.assertIn("acs", result.surfaces)
+            self.assertNotIn("edge_scripts", result.surfaces)
+            self.assertIsNone(result.edge)
+
+    def test_zip_scan_reports_non_asset_files_inside_asset_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod = root / "MessyPk3.pk3"
+            with zipfile.ZipFile(mod, "w") as zf:
+                zf.writestr("Sprites/Monsters/monster.wad", b"PWAD\x00\x00")
+                zf.writestr("Patches/desktop.ini", "[LocalizedFileNames]\n")
+                zf.writestr("Textures/TEXTURE1", b"\x00\x00\x00\x00")
+                zf.writestr("Sounds/desktop.ini", "[LocalizedFileNames]\n")
+
+            result = patcher.scan_mod(mod)
+            check = next(check for check in result.checks if check.id == "pk3-asset-namespace-conflicts")
+
+            self.assertEqual(check.severity, "candidate")
+            self.assertTrue(any(hit.entry == "Sprites/Monsters/monster.wad" for hit in check.hits))
+            self.assertTrue(any(hit.entry == "Patches/desktop.ini" for hit in check.hits))
+            self.assertTrue(any(hit.entry == "Textures/TEXTURE1" for hit in check.hits))
+            self.assertTrue(any(hit.entry == "Sounds/desktop.ini" for hit in check.hits))
+
+    def test_zip_scan_reports_skininfo_prefix_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod = root / "SkinCollision.pk3"
+            with zipfile.ZipFile(mod, "w") as zf:
+                zf.writestr("SKININFO.txt", '{\nname = "Daisy"\nsprite = DAIS\n}\n')
+                zf.writestr("Decorate/Addons/DaisyRabbit/DaisyRabbitM.txt", "actor DaisyHelper : Inventory {}\n")
+                zf.writestr("Sprites/Daisy/DAISA1", b"\x89PNG\r\n\x1a\n")
+
+            result = patcher.scan_mod(mod)
+            check = next(check for check in result.checks if check.id == "skininfo-prefix-collisions")
+
+            self.assertEqual(check.severity, "candidate")
+            self.assertTrue(any(hit.entry == "Decorate/Addons/DaisyRabbit/DaisyRabbitM.txt" for hit in check.hits))
+            self.assertFalse(any(hit.entry == "Sprites/Daisy/DAISA1" for hit in check.hits))
+
     def test_zip_scan_reads_embedded_wad_text_lumps(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

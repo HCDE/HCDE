@@ -5482,6 +5482,50 @@ msgid "GLLIGHTMNU_TITLE"
 msgstr "Dynamic Lights"
 
 #, fuzzy
+msgid "GLLIGHTMNU_SHADOWPROFILE"
+msgstr "HCDE shadow profile"
+
+#, fuzzy
+msgid "GLLIGHTMNU_TOOLTIP_SHADOWPROFILE"
+msgstr "Applies grouped shadow settings for mod testing without tuning every shadow CVAR by hand."
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_MANUAL"
+msgstr "Manual"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_PERFORMANCE"
+msgstr "Performance"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_BALANCED"
+msgstr "Balanced"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_ENHANCED"
+msgstr "Enhanced"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_CINEMATIC"
+msgstr "Cinematic"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_QUAKE"
+msgstr "Quake-style"
+
+#, fuzzy
+msgid "GLLIGHTMNU_PROFILE_DOOM3"
+msgstr "Doom 3-style"
+
+#, fuzzy
+msgid "GLLIGHTMNU_APPLYENHANCEDSHADOWS"
+msgstr "Apply enhanced shadow preset"
+
+#, fuzzy
+msgid "GLLIGHTMNU_TOOLTIP_APPLYENHANCEDSHADOWS"
+msgstr "Enables dynamic light shadows, 2048 shadowmaps, medium filtering, and balanced actor sprite shadows."
+
+#, fuzzy
 msgid "GLLIGHTMNU_LIGHTSENABLED"
 msgstr "Dynamic Lights (Hardware)"
 
@@ -5504,6 +5548,50 @@ msgstr "Shadowmap quality"
 #, fuzzy
 msgid "GLLIGHTMNU_LIGHTSHADOWMAPFILTER"
 msgstr "Shadowmap filter"
+
+#, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPBUDGET"
+msgstr "Shadowmapped light budget"
+
+#, fuzzy
+msgid "GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPBUDGET"
+msgstr "Limits how many active dynamic lights can render shadowmap rows each frame."
+
+#, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPPRIORITY"
+msgstr "Prioritize shadowmapped lights"
+
+#, fuzzy
+msgid "GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPPRIORITY"
+msgstr "Gives nearer, larger dynamic lights the first shadowmap rows when the light budget is capped."
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWDIST"
+msgstr "Sprite shadow distance"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWSTYLE"
+msgstr "Sprite shadow style"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWSTYLE_CLASSIC"
+msgstr "Classic"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWSTYLE_QUAKE"
+msgstr "Quake-style"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWSTYLE_DOOM3"
+msgstr "Doom 3-style"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWALPHA"
+msgstr "Sprite shadow opacity"
+
+#, fuzzy
+msgid "GLLIGHTMNU_SPRITESHADOWFADEHEIGHT"
+msgstr "Sprite shadow fade height"
 
 #, fuzzy
 msgid "GLPREFMNU_FOGFORCEFULLBRIGHT"

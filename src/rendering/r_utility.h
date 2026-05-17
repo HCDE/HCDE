@@ -168,6 +168,8 @@ extern void R_FreePastViewers ();
 extern void R_ClearPastViewer (AActor *actor);
 
 bool R_ShouldDrawSpriteShadow(AActor *thing);
+double R_GetSpriteShadowFlatten();
+float R_GetSpriteShadowAlpha(float baseAlpha, double heightAboveFloor);
 
 int WorldPaused(bool checkLag);
 

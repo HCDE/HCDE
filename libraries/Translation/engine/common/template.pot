@@ -1617,6 +1617,15 @@ msgstr ""
 msgid "PICKER_ADDPARM"
 msgstr ""
 
+msgid "PICKER_ADDONS"
+msgstr ""
+
+msgid "PICKER_ADDONS_BROWSE"
+msgstr ""
+
+msgid "PICKER_ADDONS_CLEAR"
+msgstr ""
+
 msgid "PICKER_WELCOME"
 msgstr ""
 

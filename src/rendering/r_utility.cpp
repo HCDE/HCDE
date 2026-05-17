@@ -128,6 +128,13 @@ CUSTOM_CVARD(Float, r_actorspriteshadowfadeheight, 0.0, CVAR_ARCHIVE | CVAR_GLOB
 	else if (self > 8192.f)
 		self = 8192.f;
 }
+CUSTOM_CVARD(Int, r_actorspriteshadowstyle, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "actor sprite shadow style. 0 = classic, 1 = quake-style, 2 = doom3-style")
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 2)
+		self = 2;
+}
 
 int 			viewwindowx;
 int 			viewwindowy;
@@ -1299,4 +1306,25 @@ bool R_ShouldDrawSpriteShadow(AActor *thing)
 	}
 	return doit;
 
+}
+
+// Keep HCDE shadow styling centralized so hardware and software paths match.
+double R_GetSpriteShadowFlatten()
+{
+	switch (r_actorspriteshadowstyle)
+	{
+	case 1: return 0.08; // Quake-style: very flat, blob-like actor grounding.
+	case 2: return 0.12; // Doom 3-style: hard grounding without over-flattening taller sprites.
+	default: return 0.15;
+	}
+}
+
+float R_GetSpriteShadowAlpha(float baseAlpha, double heightAboveFloor)
+{
+	float shadowAlpha = float(r_actorspriteshadowalpha);
+	if (r_actorspriteshadowfadeheight > 0.0)
+	{
+		shadowAlpha = clamp(0.0f, float(shadowAlpha - heightAboveFloor * (1.0 / r_actorspriteshadowfadeheight)), shadowAlpha);
+	}
+	return baseAlpha * shadowAlpha;
 }

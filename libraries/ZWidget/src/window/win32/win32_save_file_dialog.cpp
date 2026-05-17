@@ -49,7 +49,8 @@ bool Win32SaveFileDialog::Show()
 
 		if ((size_t)filterindex < filters.size())
 		{
-			result = save_dialog->SetFileTypeIndex(filterindex);
+			// ZWidget exposes 0-based filter indexes; IFileDialog uses 1-based indexes.
+			result = save_dialog->SetFileTypeIndex(filterindex + 1);
 			throw_if_failed(result, "IFileOpenDialog.SetFileTypeIndex() failed");
 		}
 	}

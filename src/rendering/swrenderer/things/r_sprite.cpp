@@ -61,6 +61,7 @@
 #include "swrenderer/things/r_sprite.h"
 #include "swrenderer/viewport/r_viewport.h"
 #include "r_memory.h"
+#include "r_utility.h"
 #include "swrenderer/r_renderthread.h"
 #include "a_dynlight.h"
 #include "r_data/r_vanillatrans.h"
@@ -198,7 +199,7 @@ namespace swrenderer
 		{
 			vis->RenderStyle = LegacyRenderStyles[STYLE_TranslucentStencil];
 			vis->FillColor = 0;
-			vis->Alpha *= 0.5;
+			vis->Alpha = R_GetSpriteShadowAlpha(vis->Alpha, thing->Z() - thing->floorz);
 		}
 
 		if (r_dynlights && gl_light_sprites)

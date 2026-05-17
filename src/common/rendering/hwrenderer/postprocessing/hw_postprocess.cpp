@@ -887,7 +887,7 @@ void PPShadowMap::Update(PPRenderState* renderstate)
 	renderstate->Clear();
 	renderstate->Shader = &ShadowMap;
 	renderstate->Uniforms.Set(uniforms);
-	renderstate->Viewport = { 0, 0, gl_shadowmap_quality, 1024 };
+	renderstate->Viewport = { 0, 0, gl_shadowmap_quality, screen->mShadowMap.ActiveLightRows() };
 	renderstate->SetShadowMapBuffers(true);
 	renderstate->SetOutputShadowMap();
 	renderstate->SetNoBlend();

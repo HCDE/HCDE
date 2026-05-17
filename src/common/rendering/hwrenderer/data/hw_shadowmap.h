@@ -37,12 +37,21 @@ public:
 
 	static cycle_t UpdateCycles;
 	static int LightsProcessed;
+	static int LightsEligible;
 	static int LightsShadowmapped;
+	static int LightsBudgetedOut;
+	static int LightRowsUpdated;
+	static int LightPriorityEnabled;
 
 	bool PerformUpdate();
 	void FinishUpdate()
 	{
 		UpdateCycles.Clock();
+	}
+
+	int ActiveLightRows() const
+	{
+		return mActiveLightRows > 0 ? mActiveLightRows : 1;
 	}
 
 	unsigned int NodesCount() const
@@ -74,6 +83,15 @@ public:
 		mLights[index + 3] = r;
 	}
 
+	void SetActiveLightRows(int count)
+	{
+		if (count < 0) count = 0;
+		else if (count > 1024) count = 1024;
+
+		mActiveLightRows = count;
+		LightRowsUpdated = ActiveLightRows();
+	}
+
 	bool Enabled() const
 	{
 		return mAABBTree != nullptr;
@@ -90,6 +108,7 @@ protected:
 	// AABB-tree of the level, used for ray tests, owned by the playsim, not the renderer.
 	hwrenderer::LevelAABBTree* mAABBTree = nullptr;
 	bool mNewTree = false;
+	int mActiveLightRows = 1;
 
 	IShadowMap(const IShadowMap &) = delete;
 	IShadowMap &operator=(IShadowMap &) = delete;

@@ -42,6 +42,7 @@ TEXT_LUMP_NAMES = {
     "MODELDEF",
     "SNDINFO",
     "SNDSEQ",
+    "SKININFO",
     "TERRAIN",
     "UMAPINFO",
     "VOXELDEF",
@@ -187,6 +188,44 @@ TEXT_EXTENSIONS = {
     ".rts",
     ".txt",
     ".zs",
+}
+
+ASSET_NAMESPACE_PREFIXES = (
+    "flats/",
+    "graphics/",
+    "hires/",
+    "patches/",
+    "sprites/",
+    "textures/",
+)
+
+SOUND_NAMESPACE_PREFIXES = (
+    "sounds/",
+)
+
+NON_ASSET_SUFFIXES = {
+    ".acs",
+    ".bcs",
+    ".bex",
+    ".cfg",
+    ".deh",
+    ".ini",
+    ".txt",
+    ".wad",
+}
+
+NON_ASSET_BASE_NAMES = {
+    "DESKTOP.INI",
+    "F_END",
+    "F_START",
+    "P_END",
+    "P_START",
+    "PNAMES",
+    "PP_END",
+    "PP_START",
+    "TEXTURE1",
+    "TEXTURE2",
+    "THUMBS.DB",
 }
 
 MAX_TEXT_BYTES = 1_048_576
@@ -624,7 +663,7 @@ def classify_surfaces(entries: Iterable[ArchiveEntry]) -> dict[str, list[str]]:
             add_surface(surfaces, "eternity_extradata", name)
         if base in EDGE_DDF_LUMP_NAMES or suffix == ".ddf" or lower.startswith("ddf/"):
             add_surface(surfaces, "edge_ddf", name)
-        if base in EDGE_SCRIPT_LUMP_NAMES or suffix in (".coal", ".lua", ".rts") or lower.startswith(("coal/", "scripts/")):
+        if base in EDGE_SCRIPT_LUMP_NAMES or suffix in (".coal", ".lua", ".rts") or lower.startswith("coal/"):
             add_surface(surfaces, "edge_scripts", name)
         if base == "DEHACKED" or suffix in (".deh", ".bex"):
             add_surface(surfaces, "dehacked", name)
@@ -648,6 +687,73 @@ def find_line_hits(texts: dict[str, bytes], pattern: str, *, flags: int = re.IGN
         for line_no, line in enumerate(text.splitlines(), start=1):
             if rx.search(line):
                 hits.append(TextHit(entry=name, line=line_no, text=line.strip()[:240]))
+    return hits
+
+
+def find_asset_namespace_conflicts(entries: Iterable[ArchiveEntry]) -> list[TextHit]:
+    """Find files that HCDE may try to decode through the wrong asset loader."""
+    hits: list[TextHit] = []
+    for entry in sorted(entries, key=lambda candidate: candidate.name.lower()):
+        normalized = entry.name.replace("\\", "/")
+        lower = normalized.lower()
+        base = archive_base_name(normalized)
+        suffix = archive_suffix(normalized)
+
+        if lower.startswith(ASSET_NAMESPACE_PREFIXES):
+            if base in NON_ASSET_BASE_NAMES:
+                hits.append(TextHit(entry=entry.name, line=1, text=f"{base} marker/system lump is inside an image namespace"))
+            elif suffix in NON_ASSET_SUFFIXES:
+                hits.append(TextHit(entry=entry.name, line=1, text=f"{suffix or '<no extension>'} file is inside an image namespace"))
+        elif lower.startswith(SOUND_NAMESPACE_PREFIXES):
+            if base in NON_ASSET_BASE_NAMES:
+                hits.append(TextHit(entry=entry.name, line=1, text=f"{base} marker/system lump is inside the sound namespace"))
+            elif suffix in NON_ASSET_SUFFIXES:
+                hits.append(TextHit(entry=entry.name, line=1, text=f"{suffix or '<no extension>'} file is inside the sound namespace"))
+
+    return hits
+
+
+def archive_stem_name(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    if ":" in normalized:
+        normalized = normalized.rsplit(":", 1)[1]
+    return Path(normalized).stem.upper()
+
+
+def find_skin_sprite_prefix_conflicts(entries: Iterable[ArchiveEntry], texts: dict[str, bytes]) -> list[TextHit]:
+    """Find non-sprite files whose basenames can be mistaken for SKININFO frames."""
+    sprite_prefixes: set[str] = set()
+    assignment_rx = re.compile(r'^\s*(?:sprite|crouchsprite)\s*=\s*"?([A-Za-z0-9_\\\-\[\]]+)"?', re.IGNORECASE | re.MULTILINE)
+
+    for name, data in texts.items():
+        if archive_stem_name(name) != "SKININFO":
+            continue
+        for match in assignment_rx.finditer(decode_text(data)):
+            sprite = match.group(1).strip().upper()
+            if len(sprite) >= 4:
+                sprite_prefixes.add(sprite[:4])
+
+    if not sprite_prefixes:
+        return []
+
+    hits: list[TextHit] = []
+    for entry in sorted(entries, key=lambda candidate: candidate.name.lower()):
+        normalized = entry.name.replace("\\", "/")
+        lower = normalized.lower()
+        stem = archive_stem_name(normalized)
+        if len(stem) < 6 or stem[:4] not in sprite_prefixes:
+            continue
+        if lower.startswith(ASSET_NAMESPACE_PREFIXES):
+            continue
+
+        hits.append(
+            TextHit(
+                entry=entry.name,
+                line=1,
+                text=f"{stem} starts with SKININFO sprite prefix {stem[:4]} and is outside a sprite/image namespace",
+            )
+        )
+
     return hits
 
 
@@ -1581,10 +1687,35 @@ def build_eternity_profile(surfaces: dict[str, list[str]], texts: dict[str, byte
 def build_checks(
     surfaces: dict[str, list[str]],
     texts: dict[str, bytes],
+    entries: Iterable[ArchiveEntry],
     eternity: EternityValidationProfile | None = None,
     edge: EdgeClassicProfile | None = None,
 ) -> list[CompatibilityCheck]:
     checks: list[CompatibilityCheck] = []
+
+    asset_conflict_hits = find_asset_namespace_conflicts(entries)
+    if asset_conflict_hits:
+        checks.append(
+            CompatibilityCheck(
+                id="pk3-asset-namespace-conflicts",
+                severity="candidate",
+                title="PK3 has non-asset files inside asset namespaces",
+                detail="HCDE and other Doom-family ports use path namespaces to pick asset loaders. Text files, WADs, marker lumps, or system files inside image/sound folders can be selected as textures or sounds by short-name lookup; move or remove them in a local fixed copy before writing an engine compat shim.",
+                hits=asset_conflict_hits[:80],
+            )
+        )
+
+    skin_prefix_hits = find_skin_sprite_prefix_conflicts(entries, texts)
+    if skin_prefix_hits:
+        checks.append(
+            CompatibilityCheck(
+                id="skininfo-prefix-collisions",
+                severity="candidate",
+                title="SKININFO sprite prefixes collide with non-sprite files",
+                detail="HCDE's skin loader scans archive entries by the first four characters of each SKININFO sprite name. DECORATE helpers, sounds, or other non-image files with the same prefix can be opened as skin sprites and fail texture decoding; rename the helper path or move the non-sprite file in a local fixed copy.",
+                hits=skin_prefix_hits[:80],
+            )
+        )
 
     eternity_surfaces = [key for key in ("eternity_edf", "eternity_extradata", "eternity_mapinfo") if key in surfaces]
     if eternity_surfaces:
@@ -1926,7 +2057,7 @@ def scan_mod(path: Path, slug_override: str | None = None) -> ScanResult:
     surfaces = classify_surfaces(entries)
     eternity = build_eternity_profile(surfaces, texts)
     edge = build_edge_profile(surfaces, texts, entries)
-    checks = build_checks(surfaces, texts, eternity, edge)
+    checks = build_checks(surfaces, texts, entries, eternity, edge)
     return ScanResult(
         source_path=str(path.resolve()),
         archive_type=archive_type,

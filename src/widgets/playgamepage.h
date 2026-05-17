@@ -18,12 +18,15 @@
 #pragma once
 
 #include <zwidget/core/widget.h>
+#include "tarray.h"
+#include "zstring.h"
 
 class LauncherWindow;
 class TextLabel;
 class ListView;
 class LineEdit;
 class CheckboxLabel;
+class PushButton;
 struct WadStuff;
 struct FStartupSelectionInfo;
 
@@ -38,15 +41,26 @@ private:
 	void OnGeometryChanged() override;
 	void OnSetFocus() override;
 	void OnGamesListActivated();
+	void OnBrowseAddonsClicked();
+	void OnClearAddonsClicked();
 	bool OnFileDrop(std::string) override;
+	void AddAddonFile(FString path);
+	void SetAddonFiles(FString files);
+	FString GetAddonFiles() const;
+	void UpdateAddonFilesEdit();
 
 	LauncherWindow* Launcher = nullptr;
 
 	TextLabel* WelcomeLabel = nullptr;
 	TextLabel* VersionLabel = nullptr;
 	TextLabel* SelectLabel = nullptr;
+	TextLabel* AddonsLabel = nullptr;
 	TextLabel* ParametersLabel = nullptr;
 	ListView* GamesList = nullptr;
+	LineEdit* AddonsEdit = nullptr;
+	PushButton* AddonsBrowseButton = nullptr;
+	PushButton* AddonsClearButton = nullptr;
 	LineEdit* ParametersEdit = nullptr;
 	CheckboxLabel* SaveArgsCheckbox = nullptr;
+	TArray<FString> AddonFiles;
 };

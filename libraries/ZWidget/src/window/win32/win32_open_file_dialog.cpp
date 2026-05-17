@@ -116,7 +116,8 @@ bool Win32OpenFileDialog::ShowWorkerThread()
 
 		if ((size_t)filterindex < filters.size())
 		{
-			result = open_dialog->SetFileTypeIndex(filterindex);
+			// ZWidget exposes 0-based filter indexes; IFileDialog uses 1-based indexes.
+			result = open_dialog->SetFileTypeIndex(filterindex + 1);
 			throw_if_failed(result, "IFileOpenDialog.SetFileTypeIndex() failed");
 		}
 	}

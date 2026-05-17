@@ -6934,6 +6934,27 @@ inline int getshort (int *&pc)
 	return res;
 }
 
+static void ACS_RunConsoleCommandString(const char *command)
+{
+	if (command == nullptr || command[0] == '\0')
+	{
+		return;
+	}
+
+	for (const char *scan = command; *scan != '\0'; ++scan)
+	{
+		if (*scan == '\r' || *scan == '\n')
+		{
+			Printf(TEXTCOLOR_RED GAMENAME " blocked script console command containing a line break\n");
+			return;
+		}
+	}
+
+	// Keep script-triggered commands inside the normal unsafe-command guard.
+	UnsafeExecutionScope scope;
+	AddCommandString(command);
+}
+
 static bool CharArrayParms(int &capacity, int &offset, int &a, FACSStackMemory& Stack, int &sp, bool ranged)
 {
 	if (ranged)
@@ -10395,12 +10416,13 @@ scriptwait:
 			break;
 
 		case PCD_CONSOLECOMMAND:
+			ACS_RunConsoleCommandString(Level->Behaviors.LookupString(STACK(3)));
+			sp -= 3;
+			break;
+
 		case PCD_CONSOLECOMMANDDIRECT:
-			Printf (TEXTCOLOR_RED GAMENAME " doesn't support execution of console commands from scripts\n");
-			if (pcd == PCD_CONSOLECOMMAND)
-				sp -= 3;
-			else
-				pc += 3;
+			ACS_RunConsoleCommandString(Level->Behaviors.LookupString(TAGSTR(uallong(pc[0]))));
+			pc += 3;
 			break;
 		}
 	}

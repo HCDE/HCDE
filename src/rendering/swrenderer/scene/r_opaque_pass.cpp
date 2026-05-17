@@ -53,6 +53,7 @@
 #include "c_console.h"
 #include "p_maputl.h"
 #include "m_round.h"
+#include "r_utility.h"
 
 // State.
 #include "doomstat.h"
@@ -966,7 +967,7 @@ namespace swrenderer
 							{
 								// squash Y scale
 								DVector2 shadowScale = sprite.spriteScale;
-								shadowScale.Y *= 0.15;
+								shadowScale.Y *= R_GetSpriteShadowFlatten();
 
 								// snap to floor Z
 								DVector3 shadowPos = sprite.pos;

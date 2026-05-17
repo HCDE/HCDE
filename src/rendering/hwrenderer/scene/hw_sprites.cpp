@@ -62,8 +62,6 @@ const float MY_SQRT2    = 1.41421356237309504880; // sqrt(2)
 
 EXTERN_CVAR(Bool, r_debug_disable_vis_filter)
 EXTERN_CVAR(Float, transsouls)
-EXTERN_CVAR(Float, r_actorspriteshadowalpha)
-EXTERN_CVAR(Float, r_actorspriteshadowfadeheight)
 
 //==========================================================================
 //
@@ -1092,7 +1090,7 @@ void HWSprite::Process(HWDrawInfo *di, AActor* thing, sector_t * sector, area_t 
 			}
 		}
 
-		r.Scale(sprscale.X, isSpriteShadow ? sprscale.Y * 0.15 * thing->isoscaleY : sprscale.Y * thing->isoscaleY);
+		r.Scale(sprscale.X, isSpriteShadow ? sprscale.Y * R_GetSpriteShadowFlatten() * thing->isoscaleY : sprscale.Y * thing->isoscaleY);
 
 		if (((thing->renderflags & RF_ROLLSPRITE) || (thing->renderflags2 & RF2_SQUAREPIXELS)) && !(thing->renderflags2 & RF2_STRETCHPIXELS))
 		{
@@ -1396,12 +1394,7 @@ void HWSprite::Process(HWDrawInfo *di, AActor* thing, sector_t * sector, area_t 
 	{
 		RenderStyle = STYLE_Stencil;
 		ThingColor = MAKEARGB(255, 0, 0, 0);
-		// fade shadow progressively as the thing moves higher away from the floor
-		if (r_actorspriteshadowfadeheight > 0.0) {
-			trans *= clamp(0.0f, float(r_actorspriteshadowalpha - (thingpos.Z - thing->floorz) * (1.0 / r_actorspriteshadowfadeheight)), float(r_actorspriteshadowalpha));
-		} else {
-			trans *= r_actorspriteshadowalpha;
-		}
+		trans = R_GetSpriteShadowAlpha(trans, thingpos.Z - thing->floorz);
 		hw_styleflags = STYLEHW_NoAlphaTest;
 	}
 

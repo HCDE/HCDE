@@ -55,6 +55,7 @@ CVAR(Bool, saveargs, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, savenetfile, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, savenetargs, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(String, defaultiwad, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(String, defaultaddonfiles, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(String, defaultargs, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(String, defaultnetiwad, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(String, defaultnetargs, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -87,6 +88,31 @@ CUSTOM_CVAR(String, language, "auto", CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOB
 FARG(pride, "Launcher", "Show pride colors", "",
 	 "Show pride colors in launcher.");
 
+static FString QuoteStartupArg(FString arg)
+{
+	arg.Substitute("\"", "\\\"");
+	return FStringf("\"%s\"", arg.GetChars());
+}
+
+static FString BuildStartupFileArgs(FString addonFiles)
+{
+	FString args;
+	TArray<FString> files = addonFiles.Split(StartupAddonFileSeparator, FString::TOK_SKIPEMPTY);
+	for (auto& file : files)
+	{
+		file.StripLeftRight();
+		if (file.IsEmpty())
+			continue;
+		if (args.IsNotEmpty())
+			args += " ";
+		// The launcher stores add-ons as plain paths, but HCDE's command line
+		// still needs an explicit -file switch for each selected PWAD/PK3.
+		args += "-file ";
+		args += QuoteStartupArg(file);
+	}
+	return args;
+}
+
 // Some of this info has to be passed and managed from the front end since it's game-engine specific.
 FStartupSelectionInfo::FStartupSelectionInfo(const TArray<WadStuff>& wads, FArgs& args, int startFlags) : Wads(&wads), Args(&args), DefaultStartFlags(startFlags)
 {
@@ -106,6 +132,7 @@ FStartupSelectionInfo::FStartupSelectionInfo(const TArray<WadStuff>& wads, FArgs
 			}
 		}
 	}
+	DefaultAddonFiles = defaultaddonfiles;
 	DefaultArgs = defaultargs;
 	bSaveArgs = saveargs;
 
@@ -147,6 +174,7 @@ int FStartupSelectionInfo::SaveInfo()
 {
 	DefaultLanguage.StripLeftRight();
 
+	DefaultAddonFiles.StripLeftRight();
 	DefaultArgs.StripLeftRight();
 
 	DefaultNetArgs.StripLeftRight();
@@ -197,10 +225,21 @@ int FStartupSelectionInfo::SaveInfo()
 
 	defaultiwad = (*Wads)[DefaultIWAD].Name.GetChars();
 	saveargs = bSaveArgs;
+	// Keep launcher-selected add-ons separate from hand-written parameters so
+	// the UI can show paths plainly while launch still feeds them through -file.
+	defaultaddonfiles = saveargs ? DefaultAddonFiles.GetChars() : "";
 	defaultargs = saveargs ? DefaultArgs.GetChars() : "";
 
-	if (!DefaultArgs.IsEmpty())
-		Args->AppendRawArgsString(DefaultArgs);
+	FString localArgs = BuildStartupFileArgs(DefaultAddonFiles);
+	if (DefaultArgs.IsNotEmpty())
+	{
+		if (localArgs.IsNotEmpty())
+			localArgs += " ";
+		localArgs += DefaultArgs;
+	}
+
+	if (!localArgs.IsEmpty())
+		Args->AppendRawArgsString(localArgs);
 
 	return DefaultIWAD;
 }

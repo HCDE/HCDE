@@ -67,6 +67,20 @@ EXTERN_CVAR(Float, vid_fixgamma)
 EXTERN_CVAR(Float, vid_blackpoint)
 EXTERN_CVAR(Float, vid_whitepoint)
 EXTERN_CVAR(Int, gl_satformula)
+EXTERN_CVAR(Bool, r_dynlights)
+EXTERN_CVAR(Bool, gl_lights)
+EXTERN_CVAR(Bool, gl_light_sprites)
+EXTERN_CVAR(Bool, gl_light_particles)
+EXTERN_CVAR(Bool, gl_light_shadowmap)
+EXTERN_CVAR(Int, gl_shadowmap_quality)
+EXTERN_CVAR(Int, gl_shadowmap_filter)
+EXTERN_CVAR(Int, gl_shadowmap_maxlights)
+EXTERN_CVAR(Bool, gl_shadowmap_prioritize)
+EXTERN_CVAR(Int, r_actorspriteshadow)
+EXTERN_CVAR(Float, r_actorspriteshadowdist)
+EXTERN_CVAR(Float, r_actorspriteshadowalpha)
+EXTERN_CVAR(Float, r_actorspriteshadowfadeheight)
+EXTERN_CVAR(Int, r_actorspriteshadowstyle)
 
 EXTERN_CVAR(Int, m_tooltip_lines)
 EXTERN_CVAR(Float, m_tooltip_speed)
@@ -80,6 +94,18 @@ EXTERN_CVAR(Int, snd_mididevice)
 
 CVAR(Bool, m_simpleoptions, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG);
 CVAR(Bool, m_simpleoptions_view, true, 0);
+
+enum EHCDEShadowProfile
+{
+	HCDE_SHADOWPROFILE_MANUAL,
+	HCDE_SHADOWPROFILE_OFF,
+	HCDE_SHADOWPROFILE_PERFORMANCE,
+	HCDE_SHADOWPROFILE_BALANCED,
+	HCDE_SHADOWPROFILE_ENHANCED,
+	HCDE_SHADOWPROFILE_CINEMATIC,
+	HCDE_SHADOWPROFILE_QUAKE,
+	HCDE_SHADOWPROFILE_DOOM3,
+};
 
 typedef void(*hfunc)();
 DMenu* CreateMessageBoxMenu(DMenu* parent, const char* message, int messagemode, bool playsound, FName action = NAME_None, hfunc handler = nullptr);
@@ -636,6 +662,160 @@ CCMD(vid_reset2defaults)
 	vid_blackpoint->ResetToDefault();
 	vid_whitepoint->ResetToDefault();
 	gl_satformula->ResetToDefault();
+}
+
+static const char* M_GetHCDEShadowProfileName(int profile)
+{
+	switch (profile)
+	{
+	case HCDE_SHADOWPROFILE_OFF: return "Off";
+	case HCDE_SHADOWPROFILE_PERFORMANCE: return "Performance";
+	case HCDE_SHADOWPROFILE_BALANCED: return "Balanced";
+	case HCDE_SHADOWPROFILE_ENHANCED: return "Enhanced";
+	case HCDE_SHADOWPROFILE_CINEMATIC: return "Cinematic";
+	case HCDE_SHADOWPROFILE_QUAKE: return "Quake-style";
+	case HCDE_SHADOWPROFILE_DOOM3: return "Doom 3-style";
+	default: return "Manual";
+	}
+}
+
+static void M_ApplyHCDEShadowProfile(int profile, bool announce)
+{
+	bool useLightShadows = false;
+	int shadowMapQuality = 1024;
+	int shadowMapFilter = 1;
+	int shadowMapMaxLights = 256;
+	bool prioritizeShadowMaps = true;
+	int spriteShadowMode = 1;
+	float spriteShadowDist = 1500.f;
+	float spriteShadowAlpha = 0.5f;
+	float spriteShadowFadeHeight = 0.f;
+	int spriteShadowStyle = 0;
+
+	switch (profile)
+	{
+	case HCDE_SHADOWPROFILE_MANUAL:
+		if (announce)
+		{
+			Printf("HCDE shadow profile: Manual; current shadow CVARs left unchanged.\n");
+		}
+		return;
+
+	case HCDE_SHADOWPROFILE_OFF:
+		gl_light_shadowmap = false;
+		gl_shadowmap_maxlights = 0;
+		r_actorspriteshadow = 0;
+		r_actorspriteshadowstyle = 0;
+		if (announce)
+		{
+			Printf("HCDE shadow profile applied: %s.\n", M_GetHCDEShadowProfileName(profile));
+		}
+		return;
+
+	case HCDE_SHADOWPROFILE_PERFORMANCE:
+		shadowMapQuality = 512;
+		shadowMapFilter = 0;
+		shadowMapMaxLights = 128;
+		spriteShadowDist = 1200.f;
+		spriteShadowAlpha = 0.35f;
+		spriteShadowFadeHeight = 256.f;
+		break;
+
+	case HCDE_SHADOWPROFILE_ENHANCED:
+		useLightShadows = true;
+		shadowMapQuality = 2048;
+		shadowMapFilter = 2;
+		shadowMapMaxLights = 512;
+		spriteShadowDist = 2000.f;
+		spriteShadowAlpha = 0.55f;
+		spriteShadowFadeHeight = 384.f;
+		break;
+
+	case HCDE_SHADOWPROFILE_CINEMATIC:
+		useLightShadows = true;
+		shadowMapQuality = 4096;
+		shadowMapFilter = 3;
+		shadowMapMaxLights = 1024;
+		spriteShadowMode = 2;
+		spriteShadowDist = 3000.f;
+		spriteShadowAlpha = 0.65f;
+		spriteShadowFadeHeight = 512.f;
+		break;
+
+	case HCDE_SHADOWPROFILE_QUAKE:
+		shadowMapQuality = 512;
+		shadowMapFilter = 0;
+		shadowMapMaxLights = 0;
+		spriteShadowMode = 2;
+		spriteShadowDist = 2200.f;
+		spriteShadowAlpha = 0.70f;
+		spriteShadowFadeHeight = 0.f;
+		spriteShadowStyle = 1;
+		break;
+
+	case HCDE_SHADOWPROFILE_DOOM3:
+		useLightShadows = true;
+		shadowMapQuality = 4096;
+		shadowMapFilter = 0;
+		shadowMapMaxLights = 1024;
+		spriteShadowMode = 2;
+		spriteShadowDist = 2800.f;
+		spriteShadowAlpha = 0.85f;
+		spriteShadowFadeHeight = 0.f;
+		spriteShadowStyle = 2;
+		break;
+
+	case HCDE_SHADOWPROFILE_BALANCED:
+	default:
+		useLightShadows = true;
+		shadowMapQuality = 1024;
+		shadowMapFilter = 1;
+		shadowMapMaxLights = 256;
+		spriteShadowDist = 1500.f;
+		spriteShadowAlpha = 0.5f;
+		spriteShadowFadeHeight = 384.f;
+		break;
+	}
+
+	r_dynlights = true;
+	gl_lights = true;
+	gl_light_sprites = true;
+	gl_light_particles = true;
+	gl_light_shadowmap = useLightShadows;
+	gl_shadowmap_quality = shadowMapQuality;
+	gl_shadowmap_filter = shadowMapFilter;
+	gl_shadowmap_maxlights = shadowMapMaxLights;
+	gl_shadowmap_prioritize = prioritizeShadowMaps;
+
+	r_actorspriteshadow = spriteShadowMode;
+	r_actorspriteshadowdist = spriteShadowDist;
+	r_actorspriteshadowalpha = spriteShadowAlpha;
+	r_actorspriteshadowfadeheight = spriteShadowFadeHeight;
+	r_actorspriteshadowstyle = spriteShadowStyle;
+
+	if (announce)
+	{
+		Printf("HCDE shadow profile applied: %s.\n", M_GetHCDEShadowProfileName(profile));
+	}
+}
+
+CUSTOM_CVARD(Int, hcde_shadowprofile, HCDE_SHADOWPROFILE_MANUAL, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL, "applies HCDE grouped shadow settings. 0 = manual, 1 = off, 2 = performance, 3 = balanced, 4 = enhanced, 5 = cinematic, 6 = quake-style, 7 = doom3-style")
+{
+	if (self < HCDE_SHADOWPROFILE_MANUAL)
+	{
+		self = HCDE_SHADOWPROFILE_MANUAL;
+	}
+	else if (self > HCDE_SHADOWPROFILE_DOOM3)
+	{
+		self = HCDE_SHADOWPROFILE_DOOM3;
+	}
+
+	M_ApplyHCDEShadowProfile(self, true);
+}
+
+CCMD(hcde_enhancedshadows)
+{
+	hcde_shadowprofile = HCDE_SHADOWPROFILE_ENHANCED;
 }
 
 CCMD(acc_reset2defaults)

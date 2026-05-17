@@ -951,6 +951,8 @@ OptionMenu "VideoOptions" protected
 	Submenu "$GLMNU_TEXOPT",                   GLTextureGLOptions
 	Submenu "$GLMNU_DYNLIGHT",                 GLLightOptions
 	StaticText " "
+	Slider "$DSPLYMNU_GAMMA",                  vid_fixgamma,          -1.0, 1.0, 0.01, 2
+	Tooltip "$DSPLYMNU_TOOLTIP_GAMMA"
 	Slider "$DSPLYMNU_SCREENSIZE",             screenblocks,           3.0, 12.0, 1.0, 0
 	StaticText " "
 	Slider "$DSPLYMNU_FOV",                    fov,                    75.0, 120.0, 0.1, 1, "", 0, Gray, 1.0, "$VALFORMAT_DEGREES"
@@ -1355,6 +1357,25 @@ OptionValue ShadowMapFilter
 	3, "$OPTVAL_PCF_HIGH"
 }
 
+OptionValue SpriteShadowStyles
+{
+	0, "$GLLIGHTMNU_SPRITESHADOWSTYLE_CLASSIC"
+	1, "$GLLIGHTMNU_SPRITESHADOWSTYLE_QUAKE"
+	2, "$GLLIGHTMNU_SPRITESHADOWSTYLE_DOOM3"
+}
+
+OptionValue HCDEShadowProfiles
+{
+	0, "$GLLIGHTMNU_PROFILE_MANUAL"
+	1, "$OPTVAL_OFF"
+	2, "$GLLIGHTMNU_PROFILE_PERFORMANCE"
+	3, "$GLLIGHTMNU_PROFILE_BALANCED"
+	4, "$GLLIGHTMNU_PROFILE_ENHANCED"
+	5, "$GLLIGHTMNU_PROFILE_CINEMATIC"
+	6, "$GLLIGHTMNU_PROFILE_QUAKE"
+	7, "$GLLIGHTMNU_PROFILE_DOOM3"
+}
+
 OptionMenu "GLTextureGLOptions" protected
 {
 	Title "$GLTEXMNU_TITLE"
@@ -1381,6 +1402,11 @@ OptionMenu "GLLightOptions" protected
 {
 	Title "$GLLIGHTMNU_TITLE"
 
+	Option "$GLLIGHTMNU_SHADOWPROFILE",         hcde_shadowprofile,   HCDEShadowProfiles
+	Tooltip "$GLLIGHTMNU_TOOLTIP_SHADOWPROFILE"
+	Command "$GLLIGHTMNU_APPLYENHANCEDSHADOWS", "hcde_enhancedshadows"
+	Tooltip "$GLLIGHTMNU_TOOLTIP_APPLYENHANCEDSHADOWS"
+	StaticText " "
 	Option "$TCMNU_DYNLIGHTS",                  r_dynlights,          OnOff
 	Option "$GLLIGHTMNU_LIGHTSENABLED",         gl_lights,            OnOff
 	Option "$GLLIGHTMNU_LIGHTSPRITES",          gl_light_sprites,     YesNo
@@ -1388,6 +1414,16 @@ OptionMenu "GLLightOptions" protected
 	Option "$GLLIGHTMNU_LIGHTSHADOWMAP",        gl_light_shadowmap,   YesNo
 	Option "$GLLIGHTMNU_LIGHTSHADOWMAPQUALITY", gl_shadowmap_quality, ShadowMapQuality
 	Option "$GLLIGHTMNU_LIGHTSHADOWMAPFILTER",  gl_shadowmap_filter,  ShadowMapFilter
+	Slider "$GLLIGHTMNU_LIGHTSHADOWMAPBUDGET",  gl_shadowmap_maxlights, 0.0, 1024.0, 32.0, 0
+	Tooltip "$GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPBUDGET"
+	Option "$GLLIGHTMNU_LIGHTSHADOWMAPPRIORITY", gl_shadowmap_prioritize, YesNo
+	Tooltip "$GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPPRIORITY"
+	StaticText " "
+	Option "$DSPLYMNU_SPRITESHADOW",            r_actorspriteshadow,           SpriteShadowModes
+	Option "$GLLIGHTMNU_SPRITESHADOWSTYLE",     r_actorspriteshadowstyle,      SpriteShadowStyles
+	Slider "$GLLIGHTMNU_SPRITESHADOWDIST",      r_actorspriteshadowdist,       0.0, 8192.0, 128.0, 0
+	Slider "$GLLIGHTMNU_SPRITESHADOWALPHA",     r_actorspriteshadowalpha,      0.0, 1.0, 0.05, 2, "", 0, Gray, 100, "$VALFORMAT_PERCENT"
+	Slider "$GLLIGHTMNU_SPRITESHADOWFADEHEIGHT", r_actorspriteshadowfadeheight, 0.0, 2048.0, 64.0, 0
 }
 
 OptionMenu "OpenGLOptions" protected

@@ -52,14 +52,30 @@
 
 cycle_t IShadowMap::UpdateCycles;
 int IShadowMap::LightsProcessed;
+int IShadowMap::LightsEligible;
 int IShadowMap::LightsShadowmapped;
+int IShadowMap::LightsBudgetedOut;
+int IShadowMap::LightRowsUpdated;
+int IShadowMap::LightPriorityEnabled;
 
 CVAR(Bool, gl_light_shadowmap, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, gl_shadowmap_prioritize, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+CUSTOM_CVAR(Int, gl_shadowmap_maxlights, 512, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 1024)
+		self = 1024;
+}
 
 ADD_STAT(shadowmap)
 {
 	FString out;
-	out.Format("upload=%04.2f ms  lights=%d  shadowmapped=%d", IShadowMap::UpdateCycles.TimeMS(), IShadowMap::LightsProcessed, IShadowMap::LightsShadowmapped);
+	out.Format("upload=%04.2f ms  lights=%d  eligible=%d  shadowmapped=%d  dropped=%d  rows=%d  priority=%s",
+		IShadowMap::UpdateCycles.TimeMS(), IShadowMap::LightsProcessed, IShadowMap::LightsEligible,
+		IShadowMap::LightsShadowmapped, IShadowMap::LightsBudgetedOut, IShadowMap::LightRowsUpdated,
+		IShadowMap::LightPriorityEnabled ? "on" : "off");
 	return out;
 }
 
@@ -94,7 +110,11 @@ bool IShadowMap::PerformUpdate()
 	UpdateCycles.Reset();
 
 	LightsProcessed = 0;
+	LightsEligible = 0;
 	LightsShadowmapped = 0;
+	LightsBudgetedOut = 0;
+	LightRowsUpdated = 1;
+	LightPriorityEnabled = 0;
 
 	// CollectLights will be null if the calling code decides that shadowmaps are not needed.
 	if (CollectLights != nullptr)
@@ -109,7 +129,10 @@ bool IShadowMap::PerformUpdate()
 
 void IShadowMap::UploadLights()
 {
-	mLights.Resize(1024 * 4);
+	if (mLights.Size() != 1024 * 4)
+	{
+		mLights.Resize(1024 * 4);
+	}
 	CollectLights();
 
 	if (mLightList == nullptr)

@@ -1772,6 +1772,18 @@ msgid "PICKER_ADDPARM"
 msgstr "Additional Parameters:"
 
 #, fuzzy
+msgid "PICKER_ADDONS"
+msgstr "PWAD / PK3 add-ons:"
+
+#, fuzzy
+msgid "PICKER_ADDONS_BROWSE"
+msgstr "Add files..."
+
+#, fuzzy
+msgid "PICKER_ADDONS_CLEAR"
+msgstr "Clear"
+
+#, fuzzy
 msgid "PICKER_WELCOME"
 msgstr "Welcome to %s!"
 

@@ -440,7 +440,7 @@ void OpenGLFrameBuffer::UpdateShadowMap()
 		GLRenderer->mShadowMapShader->Uniforms.SetData();
 		static_cast<GLDataBuffer*>(GLRenderer->mShadowMapShader->Uniforms.GetBuffer())->BindBase();
 
-		glViewport(0, 0, gl_shadowmap_quality, 1024);
+		glViewport(0, 0, gl_shadowmap_quality, screen->mShadowMap.ActiveLightRows());
 		GLRenderer->RenderScreenQuad();
 
 		const auto& viewport = screen->mScreenViewport;

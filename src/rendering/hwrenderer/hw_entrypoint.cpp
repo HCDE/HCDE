@@ -15,6 +15,9 @@
 **
 */
 
+#include <algorithm>
+#include <vector>
+
 #include "gi.h"
 #include "a_dynlight.h"
 #include "m_png.h"
@@ -56,30 +59,84 @@ void CleanSWDrawer()
 #include "g_levellocals.h"
 #include "a_dynlight.h"
 
+namespace
+{
+	struct FShadowLightCandidate
+	{
+		FDynamicLight* Light = nullptr;
+		double Score = 0.;
+	};
 
-void CollectLights(FLevelLocals* Level)
+	double ShadowLightPriorityScore(FDynamicLight* light, const DVector3& viewPos, int viewPortalGroup)
+	{
+		// Lower scores win. Radius is squared with distance so larger nearby
+		// lights keep useful shadows when the per-frame row budget is capped.
+		const double radius = light->GetRadius();
+		const double radiusScale = radius > 1.0 ? radius * radius : 1.0;
+		const double distanceSq = (light->PosRelative(viewPortalGroup) - viewPos).LengthSquared();
+		return distanceSq / radiusScale;
+	}
+}
+
+void CollectLights(FLevelLocals* Level, const DVector3& viewPos, int viewPortalGroup)
 {
 	IShadowMap* sm = &screen->mShadowMap;
 	int lightindex = 0;
+	int shadowLightLimit = gl_shadowmap_maxlights;
 
-	// Todo: this should go through the blockmap in a spiral pattern around the player so that closer lights are preferred.
+	if (shadowLightLimit < 0)
+	{
+		shadowLightLimit = 0;
+	}
+	else if (shadowLightLimit > 1024)
+	{
+		shadowLightLimit = 1024;
+	}
+
+	std::vector<FShadowLightCandidate> candidates;
 	for (auto light = Level->lights; light; light = light->next)
 	{
 		IShadowMap::LightsProcessed++;
-		if (light->shadowmapped && light->IsActive() && lightindex < 1024)
-		{
-			IShadowMap::LightsShadowmapped++;
+		light->mShadowmapIndex = 1024;
 
-			light->mShadowmapIndex = lightindex;
-			sm->SetLight(lightindex, (float)light->X(), (float)light->Y(), (float)light->Z(), light->GetRadius());
-			lightindex++;
-		}
-		else
+		if (light->shadowmapped && light->IsActive())
 		{
-			light->mShadowmapIndex = 1024;
+			candidates.push_back({ light, ShadowLightPriorityScore(light, viewPos, viewPortalGroup) });
 		}
-
 	}
+
+	IShadowMap::LightsEligible = int(candidates.size());
+	IShadowMap::LightPriorityEnabled = gl_shadowmap_prioritize ? 1 : 0;
+
+	if (gl_shadowmap_prioritize)
+	{
+		std::stable_sort(candidates.begin(), candidates.end(), [](const FShadowLightCandidate& left, const FShadowLightCandidate& right)
+		{
+			return left.Score < right.Score;
+		});
+	}
+
+	for (const auto& candidate : candidates)
+	{
+		if (lightindex >= shadowLightLimit)
+		{
+			break;
+		}
+
+		auto light = candidate.Light;
+		IShadowMap::LightsShadowmapped++;
+		light->mShadowmapIndex = lightindex;
+		sm->SetLight(lightindex, (float)light->X(), (float)light->Y(), (float)light->Z(), light->GetRadius());
+		lightindex++;
+	}
+
+	IShadowMap::LightsBudgetedOut = int(candidates.size()) - lightindex;
+	if (IShadowMap::LightsBudgetedOut < 0)
+	{
+		IShadowMap::LightsBudgetedOut = 0;
+	}
+
+	sm->SetActiveLightRows(lightindex);
 
 	for (; lightindex < 1024; lightindex++)
 	{
@@ -103,8 +160,10 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && camera->Level->HasDynamicLights && gl_light_shadowmap && screen->allowSSBO() && (screen->hwcaps & RFL_SHADER_STORAGE_BUFFER))
 	{
 		screen->SetAABBTree(camera->Level->aabbTree);
+		const DVector3 viewPos = mainvp.Pos;
+		const int viewPortalGroup = mainvp.sector != nullptr ? mainvp.sector->PortalGroup : 0;
 		screen->mShadowMap.SetCollectLights([=] {
-			CollectLights(camera->Level);
+			CollectLights(camera->Level, viewPos, viewPortalGroup);
 		});
 		screen->UpdateShadowMap();
 	}

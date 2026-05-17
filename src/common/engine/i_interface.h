@@ -79,6 +79,8 @@ struct WadStuff
 	FString Name;
 };
 
+static constexpr const char* StartupAddonFileSeparator = "|";
+
 struct FStartupSelectionInfo
 {
 	const TArray<WadStuff>* Wads = nullptr;
@@ -86,6 +88,7 @@ struct FStartupSelectionInfo
 
 	// Local game info
 	int DefaultIWAD = 0;
+	FString DefaultAddonFiles = {};
 	FString DefaultArgs = {};
 	bool bSaveArgs = true;
 	bool isNewRelease = true;
