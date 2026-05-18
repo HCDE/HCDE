@@ -85,6 +85,17 @@ void LauncherWindow::UpdatePlayButton()
 	Buttonbar->UpdateLanguage();
 }
 
+void LauncherWindow::SetUpdateNotice(const FString& text, bool visible)
+{
+	Buttonbar->SetUpdateNotice(text, visible);
+}
+
+void LauncherWindow::OpenAboutPage()
+{
+	Pages->SetCurrentIndex(Pages->GetPageIndex(About));
+	Pages->GetCurrentWidget()->SetFocus();
+}
+
 bool LauncherWindow::IsInMultiplayer() const
 {
 	return Pages->GetCurrentIndex() >= 0 ? Pages->GetCurrentWidget() == Network : false;

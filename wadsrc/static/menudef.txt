@@ -2519,6 +2519,14 @@ OptionValue MusicModes
 	2, "$OPTVAL_SUPERSTEREO"
 }
 
+OptionValue HCDEEnvironmentProfiles
+{
+	0, "Classic"
+	1, "Doomsday Room"
+	2, "Doomsday Cave"
+	3, "Doomsday Cinematic"
+}
+
 OptionMenu OpenALSoundItems protected
 {
 	Title "$OPENALMNU_TITLE"
@@ -2571,6 +2579,7 @@ OptionMenu SoundOptions protected
 	Slider "$SNDMNU_CHANNELS",          "snd_channels",        64, 256, 8, 0
 	Option "$SNDMNU_BACKGROUND",        "i_soundinbackground", "OnOff"
 	Option "$SNDMNU_UNDERWATERREVERB",  "snd_waterreverb",     "OnOff"
+	Option "Environment reverb profile", "snd_environmentprofile", "HCDEEnvironmentProfiles"
 	Option "$SNDMNU_RANDOMIZEPITCHES",  "snd_pitched",         "OnOff"
 	Option "$ADVSNDMNU_SAMPLERATE",     "snd_samplerate",      "SampleRates"
 	Option "$ADVSNDMNU_HRTF",           "snd_hrtf",            "AutoOffOn"

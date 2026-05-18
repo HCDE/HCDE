@@ -57,6 +57,12 @@ CVARD(String, snd_aldriver, DEFAULT_DRIVER, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "See
 CVAR(Bool, snd_waterreverb, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR (String, snd_aldevice, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, snd_efx, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+CUSTOM_CVARD(Int, snd_environmentprofile, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL,
+	"Global reverb profile. 0=classic, 1=doomsday room, 2=doomsday cave, 3=doomsday cinematic.")
+{
+	if (self < 0) self = 0;
+	else if (self > 3) self = 3;
+}
 CVAR (String, snd_alresampler, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Int, snd_musicmode, 0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CUSTOM_CVAR (Float, snd_superstereowidth, 0.45f, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
@@ -123,6 +129,7 @@ ReverbContainer *ForcedEnvironment;
 EXTERN_CVAR (Int, snd_channels)
 EXTERN_CVAR (Int, snd_samplerate)
 EXTERN_CVAR (Bool, snd_waterreverb)
+EXTERN_CVAR (Int, snd_environmentprofile)
 EXTERN_CVAR (Int, snd_hrtf)
 
 #define MAKE_PTRID(x)  ((void*)(uintptr_t)(x))
@@ -1749,6 +1756,31 @@ void OpenALSoundRenderer::UpdateSoundParams3D(SoundListener *listener, FISoundCh
 	getALError();
 }
 
+static const ReverbContainer* HCDE_SelectEnvironmentProfile(const ReverbContainer* env)
+{
+	if (!env || *snd_environmentprofile == 0)
+	{
+		return env;
+	}
+
+	int profileId = 0;
+	switch (*snd_environmentprofile)
+	{
+	case 1: profileId = 0x1A00; break; // HCDE Doomsday Room
+	case 2: profileId = 0x1A01; break; // HCDE Doomsday Cave
+	case 3: profileId = 0x1A02; break; // HCDE Doomsday Cinematic
+	default: profileId = 0; break;
+	}
+
+	if (profileId == 0)
+	{
+		return env;
+	}
+
+	const ReverbContainer* overrideEnv = S_FindEnvironment(profileId);
+	return overrideEnv ? overrideEnv : env;
+}
+
 void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 {
 	if(!listener->valid)
@@ -1782,6 +1814,13 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		env = listener->Environment;
 		if(!env)
 			env = DefaultEnvironments[0];
+
+		// Optional global profile overrides for modders who want a Doomsday-like
+		// wet mix without hand-editing dozens of reverb CVARs.
+		if (!(listener->underwater || env->SoftwareWater))
+		{
+			env = HCDE_SelectEnvironmentProfile(env);
+		}
 	}
 	if(env != PrevEnvironment || env->Modified)
 	{

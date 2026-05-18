@@ -20,6 +20,7 @@
 
 class LauncherWindow;
 class TextEdit;
+class TextLabel;
 class PushButton;
 struct FStartupSelectionInfo;
 
@@ -33,9 +34,30 @@ public:
 private:
 	void OnLanguageChanged(int i);
 	void OnGeometryChanged() override;
+#ifdef _WIN32
+	void OnCheckUpdatesClicked();
+	void OnInstallUpdateClicked();
+	void OnOpenUpdateLogsClicked();
+	void OnOpenLastUpdateLogClicked();
+	void SetUpdateActionBusy(bool busy);
+	void UpdateInstallButtonState();
+#endif
 
 	LauncherWindow* Launcher = nullptr;
 
 	TextEdit* Text = nullptr;
 	PushButton* Notes = nullptr;
+#ifdef _WIN32
+	TextLabel* UpdateStatus = nullptr;
+	PushButton* CheckUpdates = nullptr;
+	PushButton* InstallUpdate = nullptr;
+	PushButton* OpenUpdateLogs = nullptr;
+	PushButton* OpenLastUpdateLog = nullptr;
+	FString PendingUpdateVersion = {};
+	FString PendingUpdateUrl = {};
+	FString PendingAssetName = {};
+	bool AutoCheckOnStartup = true;
+	bool UpdateActionBusy = false;
+	bool UpdateLockActive = false;
+#endif
 };

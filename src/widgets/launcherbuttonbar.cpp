@@ -15,6 +15,8 @@
 **
 */
 
+#include <algorithm>
+
 #include <zwidget/widgets/pushbutton/pushbutton.h>
 
 #include "gstrings.h"
@@ -25,9 +27,12 @@ LauncherButtonbar::LauncherButtonbar(LauncherWindow* parent) : Widget(parent)
 {
 	PlayButton = new PushButton(this);
 	ExitButton = new PushButton(this);
+	UpdateButton = new PushButton(this);
 
 	PlayButton->OnClick = [this]() { OnPlayButtonClicked(); };
 	ExitButton->OnClick = [this]() { OnExitButtonClicked(); };
+	UpdateButton->OnClick = [this]() { OnUpdateButtonClicked(); };
+	UpdateButton->SetVisible(false);
 }
 
 void LauncherButtonbar::UpdateLanguage()
@@ -43,6 +48,18 @@ void LauncherButtonbar::UpdateLanguage()
 	ExitButton->SetText(GStrings.GetString("PICKER_EXIT"));
 }
 
+void LauncherButtonbar::SetUpdateNotice(const FString& text, bool visible)
+{
+	const bool hasText = visible && text.IsNotEmpty();
+	UpdateButton->SetVisible(hasText);
+	UpdateButton->SetEnabled(hasText);
+	if (hasText)
+	{
+		UpdateButton->SetText(text.GetChars());
+	}
+	OnGeometryChanged();
+}
+
 double LauncherButtonbar::GetPreferredHeight()
 {
 	return 20.0 + std::max(PlayButton->GetPreferredHeight(), ExitButton->GetPreferredHeight());
@@ -55,6 +72,15 @@ void LauncherButtonbar::OnGeometryChanged()
 	w = 10 + std::max(PlayButton->GetPreferredWidth(), ExitButton->GetPreferredWidth());
 	PlayButton->SetFrameGeometry(20.0, 10.0, w, h);
 	ExitButton->SetFrameGeometry(GetWidth() - 20.0 - w, 10.0, w, h);
+	if (UpdateButton->IsVisible())
+	{
+		const double updateWidth = std::min<double>(GetWidth() * 0.45, 20.0 + UpdateButton->GetPreferredWidth());
+		UpdateButton->SetFrameGeometry((GetWidth() - updateWidth) * 0.5, 10.0, updateWidth, h);
+	}
+	else
+	{
+		UpdateButton->SetFrameGeometry(0.0, 0.0, 0.0, 0.0);
+	}
 }
 
 void LauncherButtonbar::OnPlayButtonClicked()
@@ -65,6 +91,11 @@ void LauncherButtonbar::OnPlayButtonClicked()
 void LauncherButtonbar::OnExitButtonClicked()
 {
 	GetLauncher()->Exit();
+}
+
+void LauncherButtonbar::OnUpdateButtonClicked()
+{
+	GetLauncher()->OpenAboutPage();
 }
 
 LauncherWindow* LauncherButtonbar::GetLauncher() const

@@ -71,6 +71,7 @@ EXTERN_CVAR (Int, autosavecount)
 EXTERN_CVAR (Bool, cl_capfps)
 EXTERN_CVAR (Bool, vid_vsync)
 EXTERN_CVAR (Int, vid_maxfps)
+EXTERN_CVAR (Int, sv_gametype)
 
 EXTERN_FARG(loadgame);
 
@@ -2925,6 +2926,14 @@ CUSTOM_CVAR(Float, net_cutscenereadypercent, 0.5f, CVAR_SERVERINFO | CVAR_NOSAVE
 		self = 1.0f;
 }
 CVAR(Float, net_cutscenecountdown, 30.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+CUSTOM_CVAR(Float, sv_invasioncountdowntime, 30.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	// Compatibility/server-ops cvar:
+	// keep this accepted now so launchers/admin scripts can tune invasion/horde
+	// countdown timing even while that mode is still being expanded.
+	if (self < 0.0f)
+		self = 0.0f;
+}
 
 CVAR(Bool, cl_noboldchat, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, cl_nochatsound, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -3252,7 +3261,13 @@ void Net_StartCutscene()
 	for (int i = 0; i < MAXPLAYERS; ++i)
 		CutsceneReadyLastToggle[i] = gametic - TICRATE;
 
-	CutsceneCountdown = netgame && !demoplayback && net_cutscenecountdown > 0.0f ? static_cast<int>(ceil(net_cutscenecountdown * TICRATE)) : 0;
+	float countdownSeconds = net_cutscenecountdown;
+	// sv_gametype 4 currently maps to the Horde stub path. Use the invasion
+	// countdown override here so server operators can tune mode-specific pacing.
+	if (sv_gametype == 4)
+		countdownSeconds = sv_invasioncountdowntime;
+
+	CutsceneCountdown = netgame && !demoplayback && countdownSeconds > 0.0f ? static_cast<int>(ceil(countdownSeconds * TICRATE)) : 0;
 }
 
 // Allow the game to automatically start after a set amount of time.

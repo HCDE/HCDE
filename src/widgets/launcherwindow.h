@@ -45,6 +45,8 @@ public:
 	bool IsInMultiplayer() const;
 	bool IsHosting() const;
 	void UpdatePlayButton();
+	void SetUpdateNotice(const FString& text, bool visible);
+	void OpenAboutPage();
 
 private:
 	void OnClose() override;

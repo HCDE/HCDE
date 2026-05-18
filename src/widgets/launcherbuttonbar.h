@@ -19,6 +19,8 @@
 
 #include <zwidget/core/widget.h>
 
+#include "zstring.h"
+
 class LauncherWindow;
 class PushButton;
 
@@ -27,6 +29,7 @@ class LauncherButtonbar : public Widget
 public:
 	LauncherButtonbar(LauncherWindow* parent);
 	void UpdateLanguage();
+	void SetUpdateNotice(const FString& text, bool visible);
 
 	double GetPreferredHeight() override;
 
@@ -34,9 +37,11 @@ private:
 	void OnGeometryChanged() override;
 	void OnPlayButtonClicked();
 	void OnExitButtonClicked();
+	void OnUpdateButtonClicked();
 
 	LauncherWindow* GetLauncher() const;
 
 	PushButton* PlayButton = nullptr;
 	PushButton* ExitButton = nullptr;
+	PushButton* UpdateButton = nullptr;
 };

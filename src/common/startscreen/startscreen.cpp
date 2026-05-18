@@ -772,7 +772,9 @@ bool FStartScreen::DrawLaunchCountdown()
 	CountdownWasStalled = stalled;
 
 	const int bannerheight = 64;
-	int bannery = StartupBitmap.GetHeight() - 30 - bannerheight;
+	// Keep the "Get Ready!" banner slightly above the bottom edge so it does
+	// not crowd HUD-like overlays on dense startup images.
+	int bannery = StartupBitmap.GetHeight() - 42 - bannerheight;
 	if (bannery < 0)
 	{
 		bannery = 0;
@@ -785,14 +787,16 @@ bool FStartScreen::DrawLaunchCountdown()
 			bannery = 0;
 		}
 	}
-	RgbQuad bg = { 0, 0, 0, 255 };
-	RgbQuad titlefg = { 255, 200, 64, 255 };
-	RgbQuad bodyfg = { 255, 255, 255, 255 };
+	// Slight transparency keeps the banner readable without fully obscuring
+	// startup art behind it.
+	RgbQuad bg = { 0, 0, 0, 176 };
+	RgbQuad titlefg = { 255, 200, 64, 236 };
+	RgbQuad bodyfg = { 255, 255, 255, 224 };
 	const char* headline = "Get Ready!";
 	char line2[96];
 
 	ClearBlock(StartupBitmap, bg, 0, bannery, StartupBitmap.GetWidth(), bannerheight);
-	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(headline) >> 1), bannery / 16 + 0.5, headline, titlefg, bg);
+	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(headline) >> 1), bannery / 16 + 0.4, headline, titlefg, bg);
 	if (complete)
 	{
 		mysnprintf(line2, sizeof(line2), "Loading %d%% - launching", percent);
@@ -810,7 +814,7 @@ bool FStartScreen::DrawLaunchCountdown()
 	{
 		mysnprintf(line2, sizeof(line2), "Loading %d%% - estimating", percent);
 	}
-	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(line2) >> 1), bannery / 16 + 1.5, line2, bodyfg, bg);
+	DrawString(StartupBitmap, (StartupBitmap.GetWidth() >> 4) - (SizeOfText(line2) >> 1), bannery / 16 + 1.35, line2, bodyfg, bg);
 
 	return true;
 }

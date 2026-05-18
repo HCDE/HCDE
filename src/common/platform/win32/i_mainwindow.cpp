@@ -198,6 +198,7 @@ static const ServerGuiSettingDefinition ServerGuiSettings[] =
 	{ L"Pause Policy", "net_disablepause", ServerGuiSettingKind::Choice, L"0", 0, 2, false, 1, ServerGuiPauseChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiPauseChoices) },
 	{ L"Ready Mode", "net_cutscenereadytype", ServerGuiSettingKind::Choice, L"0", 0, 2, false, 1, ServerGuiReadyChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiReadyChoices) },
 	{ L"Ready Time", "net_cutscenecountdown", ServerGuiSettingKind::Decimal, L"30", 0, 600, false, 8 },
+	{ L"Invasion Ready Time", "sv_invasioncountdowntime", ServerGuiSettingKind::Decimal, L"30", 0, 600, false, 8 },
 };
 
 static constexpr int ServerGuiSettingCount = sizeof(ServerGuiSettings) / sizeof(ServerGuiSettings[0]);

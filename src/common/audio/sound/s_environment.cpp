@@ -129,9 +129,42 @@ static ReverbContainer DSPWater =
 	true
 };
 
-static ReverbContainer Psychotic =
+static ReverbContainer HCDEDoomsdayCinematic =
 {
 	&DSPWater,
+	"HCDE Doomsday Cinematic",
+	0x1A02,
+	true,
+	false,
+	{0, 8,	45.0f,	0.70f, -800,  -700,   0,   3.60f,  0.62f, 1.0f,  -1200, 0.031f, 0.0f,0.0f,0.0f,   640, 0.039f, 0.0f,0.0f,0.0f, 0.250f, 0.04f, 0.62f, 0.110f, -5.0f, 5000.0f, 250.0f, 0.0f, 100.0f, 100.0f, 0x3f },
+	false
+};
+
+static ReverbContainer HCDEDoomsdayCave =
+{
+	&HCDEDoomsdayCinematic,
+	"HCDE Doomsday Cave",
+	0x1A01,
+	true,
+	false,
+	{0, 8,	26.0f,	0.75f, -900,  -900,   0,   2.95f,  0.70f, 1.0f,  -1400, 0.024f, 0.0f,0.0f,0.0f,   520, 0.032f, 0.0f,0.0f,0.0f, 0.250f, 0.03f, 0.48f, 0.090f, -5.0f, 5000.0f, 250.0f, 0.0f, 100.0f, 100.0f, 0x3f },
+	false
+};
+
+static ReverbContainer HCDEDoomsdayRoom =
+{
+	&HCDEDoomsdayCave,
+	"HCDE Doomsday Room",
+	0x1A00,
+	true,
+	false,
+	{0, 3,	14.0f,	0.78f, -950,  -500,   0,   2.15f,  0.82f, 1.0f,  -1700, 0.017f, 0.0f,0.0f,0.0f,   320, 0.024f, 0.0f,0.0f,0.0f, 0.250f, 0.02f, 0.36f, 0.070f, -5.0f, 5000.0f, 250.0f, 0.0f, 100.0f, 100.0f, 0x3f },
+	false
+};
+
+static ReverbContainer Psychotic =
+{
+	&HCDEDoomsdayRoom,
 	"Psychotic",
 	0x1900,
 	true,
