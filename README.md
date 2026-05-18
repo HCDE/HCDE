@@ -78,8 +78,6 @@ HCDE dedicated flow is intentionally a two-process model:
 1. start `hcdeserv` as the authority
 2. join it with `hcde` using dedicated join flags
 
-This is the launch shape Doom Connector expects.
-
 ## Dedicated Server Launch Commands (Complete HCDE Operator Set)
 
 This section documents the server-launch commands used by HCDE dedicated operation from this codebase.
