@@ -2,9 +2,10 @@
 
 ## Game Engine Ports Used / Referenced
 
-- HCDE (primary engine codebase in this repository)
+- UZDOOM (primary engine codebase in this repository)
 - Odamex (upstream reference lineage used during HCDE development)
-- GZDoom compatibility target (mod-behavior and content compatibility work)
+- Eternity, Edge Classic (mod-behavior and content compatibility work)
+- K8VAvoom (renderer)
 
 ## Code Written for This Project
 
