@@ -17,7 +17,7 @@ This README is the operator/dev reference for:
 - licensing (GPL-3.0-or-later + asset exceptions)
 - core tech/libraries used by this project
 
-## What HCDE Is
+## What HCDE is
 
 HCDE currently ships three primary binaries from this tree:
 
