@@ -3623,7 +3623,7 @@ static PClassActor* Net_SelectInvasionMonsterForSpot(const FInvasionSpawnSpotRec
 
 		auto checkSpot = [&](const char* className) {
 			auto cls = PClass::FindActor(className);
-			return cls != nullptr && spot.SpotClass->IsA(cls);
+			return cls != nullptr && spot.SpotClass->IsDescendantOf(cls);
 		};
 
 		if (checkSpot("ImpSpot")) return Net_ResolveInvasionMonsterClass("DoomImp");
@@ -7823,22 +7823,10 @@ DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionMaxWaves, Net_GetInvasionM
 	ACTION_RETURN_INT(Net_GetInvasionMaxWaves());
 }
 
-DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionState, Net_GetInvasionState)
-{
-	PARAM_PROLOGUE;
-	ACTION_RETURN_INT(int(Net_GetInvasionState()));
-}
-
 DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionActiveMonsterCount, Net_GetInvasionActiveMonsterCount)
 {
 	PARAM_PROLOGUE;
 	ACTION_RETURN_INT(Net_GetInvasionActiveMonsterCount());
-}
-
-DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_IsInvasionBossWave, Net_IsInvasionBossWave)
-{
-	PARAM_PROLOGUE;
-	ACTION_RETURN_BOOL(Net_IsInvasionBossWave());
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionWaveBudget, Net_GetInvasionWaveBudget)
@@ -7890,16 +7878,6 @@ DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionSpawnPlanBudget, Net_GetIn
 {
 	PARAM_PROLOGUE;
 	ACTION_RETURN_INT(Net_GetInvasionSpawnPlanBudget());
-}
-
-int Net_GetInvasionActiveSpawnSpotCount()
-{
-	return max(InvasionSpawnDirectory.ActiveSpotCount, 0);
-}
-
-int Net_GetInvasionSpawnPlanBudget()
-{
-	return max(InvasionSpawnDirectory.TotalSpawnBudget, 0);
 }
 
 int Net_GetInvasionSpawnActiveTag()

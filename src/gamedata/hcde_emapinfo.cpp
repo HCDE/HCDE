@@ -48,7 +48,7 @@ namespace
 		std::vector<EMapInfoUnsupportedSample> UnsupportedSamples;
 	};
 
-	TSet<FName> EMapInfoMaps;
+	TMap<FName, bool> EMapInfoMaps;
 	TMap<FName, int> EMapInfoExtraDataLumps;
 
 	static std::string TrimCopy(const std::string& value)
@@ -117,7 +117,7 @@ namespace
 
 	static void RememberEMapInfoMap(const char* mapname)
 	{
-		EMapInfoMaps.Insert(FName(mapname));
+		EMapInfoMaps[FName(mapname)] = true;
 	}
 
 	static std::string StripLineComment(const std::string& line)
@@ -863,7 +863,7 @@ bool HCDE_EMapInfo_IsEternityMap(const char* mapname)
 		return false;
 	}
 
-	return EMapInfoMaps.CheckElement(FName(mapname));
+	return EMapInfoMaps.CheckKey(FName(mapname)) != nullptr;
 }
 
 int HCDE_EMapInfo_FindExtraDataLump(const char* mapname, const char* edname)
