@@ -1430,8 +1430,11 @@ void D_ErrorCleanup (const char* reason = nullptr)
 	Net_ClearBuffers ();
 	G_NewInit ();
 	M_ClearMenus ();
-	playeringame[0] = 1;
-	players[0].playerstate = PST_LIVE;
+	if (consoleplayer != -1)
+	{
+		playeringame[0] = 1;
+		players[0].playerstate = PST_LIVE;
+	}
 	gameaction = ga_fullconsole;
 	if (gamestate == GS_DEMOSCREEN)
 	{
@@ -1468,7 +1471,10 @@ void D_DoomLoop ()
 	{
 		try
 		{
-			GStrings.SetDefaultGender(players[consoleplayer].userinfo.GetGender()); // cannot be done when the CVAR changes because we don't know if it's for the consoleplayer.
+			if (consoleplayer != -1)
+			{
+				GStrings.SetDefaultGender(players[consoleplayer].userinfo.GetGender()); // cannot be done when the CVAR changes because we don't know if it's for the consoleplayer.
+			}
 
 			// frame syncronous IO operations
 			if (gametic > lasttic)

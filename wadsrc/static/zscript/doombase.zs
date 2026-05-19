@@ -231,7 +231,7 @@ extend class Object
 	native static int InvasionGetSpawnActiveTag();
 	native static bool InvasionIsSpawnUsingFallback();
 	native static int InvasionGetSpawnFallbackSource();
-	native static bool InvasionControl(int action);
+	native static bool InvasionControl(int command);
 }
 
 class Thinker : Object native play

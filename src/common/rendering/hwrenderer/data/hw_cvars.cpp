@@ -82,12 +82,18 @@ EXTERN_CVAR(Float, vid_fixgamma)
 
 CUSTOM_CVARD(Float, vid_gamma, GAMMA_DEFAULT, CVAR_NOINITCALL, "(internal) target output gamma")
 {
-	self = HCDE_ClampGamma(self);
+	const float clamped = HCDE_ClampGamma(self);
 	if (!gamma_syncing)
 	{
 		gamma_syncing = true;
-		vid_gamma_compat = self;
-		vid_fixgamma = HCDE_GammaToFixGamma(self);
+		// FBaseCVar callbacks fire even when assigning the same value. Guard
+		// self-normalization so this callback cannot recurse indefinitely.
+		if (clamped != float(self))
+		{
+			self = clamped;
+		}
+		vid_gamma_compat = clamped;
+		vid_fixgamma = HCDE_GammaToFixGamma(clamped);
 		gamma_syncing = false;
 	}
 }
@@ -95,25 +101,31 @@ CUSTOM_CVARD(Float, vid_gamma, GAMMA_DEFAULT, CVAR_NOINITCALL, "(internal) targe
 // Keep the classic gamma cvar live without creating a second archived gamma source.
 CUSTOM_CVAR_NAMED(Float, vid_gamma_compat, gamma, GAMMA_DEFAULT, CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
-	self = HCDE_ClampGamma(self);
+	const float clamped = HCDE_ClampGamma(self);
 	if (!gamma_syncing)
 	{
 		gamma_syncing = true;
-		vid_gamma = self;
-		vid_fixgamma = HCDE_GammaToFixGamma(self);
+		if (clamped != float(self))
+		{
+			self = clamped;
+		}
+		vid_gamma = clamped;
+		vid_fixgamma = HCDE_GammaToFixGamma(clamped);
 		gamma_syncing = false;
 	}
 }
 
 CUSTOM_CVARD(Float, vid_fixgamma, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "adjusts gamma component of gamma ramp")
 {
-	if (self < GAMMA_LOW_FIX) self = GAMMA_LOW_FIX;
-	else if (self > 1.0f) self = 1.0f;
+	const float clamped = std::clamp(float(self), GAMMA_LOW_FIX, 1.0f);
 	if (!gamma_syncing)
 	{
 		gamma_syncing = true;
-		vid_gamma = HCDE_FixGammaToGamma(self);
-		vid_gamma_compat = float(vid_gamma);
+		if (clamped != float(self))
+		{
+			self = clamped;
+		}
+		vid_gamma = HCDE_FixGammaToGamma(clamped);
 		gamma_syncing = false;
 	}
 }
