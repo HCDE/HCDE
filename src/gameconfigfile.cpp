@@ -76,6 +76,17 @@ EXTERN_CVAR (Bool, i_pauseinbackground)
 EXTERN_CVAR (Bool, i_soundinbackground)
 EXTERN_CVAR (Bool, i_is_new_release)
 EXTERN_CVAR (String, language)
+EXTERN_CVAR (Float, vid_fixgamma)
+
+static float LegacyGammaToFixGamma(float value)
+{
+	// Old configs stored raw gamma (0.1..3.0). New path persists vid_fixgamma.
+	// Translate legacy values once so migrated configs keep the same brightness.
+	if (value < 0.1f) value = 0.1f;
+	else if (value > 3.0f) value = 3.0f;
+
+	return (value - 2.2f) / (3.0f - 2.2f);
+}
 
 FARG(config, "Configuration", "Specifies an alternative configuration file to use.", "configfile",
 	"Causes " GAMENAME " to use an alternative configuration file. If configfile does not exist,"
@@ -616,6 +627,7 @@ void FGameConfigFile::DoGlobalSetup ()
 				{
 					UCVarValue v = var->GetGenericRep(CVAR_Float);
 					vid_gamma = v.Float;
+					vid_fixgamma = LegacyGammaToFixGamma(v.Float);
 				}
 				var = FindCVar("fullscreen", NULL);
 				if (var != NULL)

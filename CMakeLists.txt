@@ -192,19 +192,23 @@ else()
 	set(HCDE_RESOURCE_DIR "${PROJECT_BINARY_DIR}")
 endif()
 
-option(HCDE_STAGE_PERSONAL_EXTRAS "Stage local optional Boko announcer and skin extras into the build output" OFF)
-set(HCDE_BOKO_ANNOUNCER_ZIP "//192.168.1.2/Main_Data/WADS/BokoAnnouncerV3.zip" CACHE FILEPATH "Boko announcer ZIP source")
-set(HCDE_BOKO_SKIN_PK3 "//192.168.1.2/Main_Data/WADS/RBCSkins12_NOSTDN.pk3" CACHE FILEPATH "Boko/RBC skin PK3 source")
+option(HCDE_STAGE_PERSONAL_EXTRAS "Stage local optional extras into the build output" OFF)
+set(HCDE_PERSONAL_ANNOUNCER_ZIP "" CACHE FILEPATH "Personal announcer ZIP source path")
+set(HCDE_PERSONAL_SKIN_PK3 "" CACHE FILEPATH "Personal skin PK3 source path")
 
 if(HCDE_STAGE_PERSONAL_EXTRAS)
-	add_custom_target(hcde_personal_extras ALL
-		COMMAND Python3::Interpreter -B -E -s
-			"${CMAKE_SOURCE_DIR}/tools/stage_hcde_personal_extras.py"
-			--output "${HCDE_RESOURCE_DIR}/extras"
-			--announcer-zip "${HCDE_BOKO_ANNOUNCER_ZIP}"
-			--skin-pk3 "${HCDE_BOKO_SKIN_PK3}"
-		COMMENT "Staging optional HCDE personal extras"
-		VERBATIM)
+	if (NOT HCDE_PERSONAL_ANNOUNCER_ZIP OR NOT HCDE_PERSONAL_SKIN_PK3)
+		message(WARNING "HCDE_STAGE_PERSONAL_EXTRAS is ON but personal paths are not set. Extras will not be staged.")
+	else()
+		add_custom_target(hcde_personal_extras ALL
+			COMMAND Python3::Interpreter -B -E -s
+				"${CMAKE_SOURCE_DIR}/tools/stage_hcde_personal_extras.py"
+				--output "${HCDE_RESOURCE_DIR}/extras"
+				--announcer-zip "${HCDE_PERSONAL_ANNOUNCER_ZIP}"
+				--skin-pk3 "${HCDE_PERSONAL_SKIN_PK3}"
+			COMMENT "Staging optional HCDE personal extras"
+			VERBATIM)
+	endif()
 endif()
 
 # Replacement variables for a possible long list of C/C++ compilers compatible with GCC

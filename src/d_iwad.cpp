@@ -51,12 +51,12 @@ EXTERN_CVAR(Int, i_exit_on_not_found);
 
 // Disabled in net games.
 CVARD(Bool, i_loadsupportwad, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "Load id24.wad");
-// Does this run open the release notes?
+// Does this run open the changelog page?
 CVARD(Bool, i_is_new_release, true, CVAR_HIDDEN, "");
 // Search game distributors' (Steam, GOG, Bethesda) paths for installed IWADs
 CVARD(Bool, i_searchdistributors, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "Search storefront intallations for IWADS");
-// Show release notes upon update 0:no, 1: yes, 2: always for testing
-CVARD(Int, i_display_new_release, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "Show release notes upon update");
+// Show changelog upon update 0:no, 1: yes, 2: always for testing
+CVARD(Int, i_display_new_release, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "Show changelog upon update");
 
 EXTERN_FARG(iwad);
 EXTERN_FARG(host);

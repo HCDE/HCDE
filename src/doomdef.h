@@ -239,6 +239,8 @@ enum ELevelCompatFlag2 : uint32_t
 	COMPATF2_NOACSARGCHECK	= 1 << 17,	// Disable arg count checking for ACS
 	COMPATF2_NOVDOLLLOCKMSG = 1 << 18,	// Voodoo dolls no longer trigger lock messages
 	COMPATF2_EMULATEMIKOPORTALS = 1 << 19, // Emulate Mikoportals Z Underflow
+	COMPATF2_RESERVEDLINEFLAG = 1 << 20, // MBF21: line flag 0x0800 masks extended line flags.
+	COMPATF2_NOFRIENDLYSPAWN = 1 << 21, // MBF: A_Spawn keeps the spawned actor's default friendliness.
 };
 using ELevelCompatFlags2 = TFlags<ELevelCompatFlag2>;
 DEFINE_TFLAGS_OPERATORS(ELevelCompatFlags2)

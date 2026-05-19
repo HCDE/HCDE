@@ -5519,11 +5519,11 @@ msgstr "Doom 3-style"
 
 #, fuzzy
 msgid "GLLIGHTMNU_APPLYENHANCEDSHADOWS"
-msgstr "Apply enhanced shadow preset"
+msgstr "Apply selected shadow profile"
 
 #, fuzzy
 msgid "GLLIGHTMNU_TOOLTIP_APPLYENHANCEDSHADOWS"
-msgstr "Enables dynamic light shadows, 2048 shadowmaps, medium filtering, and balanced actor sprite shadows."
+msgstr "Reapplies the currently selected HCDE shadow profile so all grouped shadow CVARs are refreshed."
 
 #, fuzzy
 msgid "GLLIGHTMNU_LIGHTSENABLED"

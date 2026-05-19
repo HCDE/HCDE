@@ -64,7 +64,7 @@ LauncherWindow::LauncherWindow(FStartupSelectionInfo& info) : Widget(nullptr, Wi
 	if (releasenotes)
 	{
 		Release = new ReleasePage(this, info);
-		Pages->AddTab(Release, "Release Notes");
+		Pages->AddTab(Release, "Changelog");
 	}
 
 	Pages->AddTab(PlayGame, "Play");

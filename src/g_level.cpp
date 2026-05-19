@@ -471,6 +471,13 @@ void G_NewInit ()
 	netgame = false;
 	multiplayer = multiplayernext;
 	multiplayernext = false;
+	// Regular single-player startup should never inherit net-only game mode flags
+	// from previously hosted sessions (for example sv_gametype-based deathmatch).
+	if (!multiplayer)
+	{
+		deathmatch = false;
+		teamplay = false;
+	}
 	if (demoplayback)
 	{
 		C_RestoreCVars ();

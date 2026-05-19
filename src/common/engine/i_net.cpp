@@ -26,13 +26,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <array>
+#include <mutex>
 
 /* [Petteri] Use Winsock if compiling for Win32: */
 #ifdef _WIN32
 #	define WIN32_LEAN_AND_MEAN
 #	define NOMINMAX
 #	include <windows.h>
-#	include <winsock.h>
+#	include <winsock2.h>
+#	include <ws2tcpip.h>
 #else
 #	include <arpa/inet.h>
 #	include <errno.h>
@@ -74,6 +76,7 @@ extern void I_SetDedicatedServerConsoleStatus(const char* status);
 
 EXTERN_CVAR(Int, fraglimit)
 EXTERN_CVAR(Float, timelimit)
+EXTERN_CVAR(Int, sv_gametype)
 CVAR(String, sv_hostname, GAMENAME " server", CVAR_ARCHIVE | CVAR_SERVERINFO)
 CVAR(String, sv_motd, "Welcome to " GAMENAME, CVAR_ARCHIVE | CVAR_SERVERINFO)
 CUSTOM_CVAR(Int, sv_maxplayers, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
@@ -575,6 +578,42 @@ static const char* ConnectFlowName(ENetConnectFlow flow)
 	}
 }
 
+static const char* ServerGameModeName(uint8_t gameMode, bool isDeathmatch, bool isTeamplay)
+{
+	switch (gameMode)
+	{
+	case 1: return "Deathmatch";
+	case 2: return "Team Deathmatch";
+	case 3: return "CTF";
+	case 4: return "Invasion";
+	default: break;
+	}
+
+	if (isDeathmatch)
+		return isTeamplay ? "Deathmatch + Teamplay" : "Deathmatch";
+	return isTeamplay ? "Co-op + Teamplay" : "Co-op";
+}
+
+static const char* ServerInvasionStateName(uint8_t invasionState)
+{
+	switch (invasionState)
+	{
+	case INVS_DISABLED: return "disabled";
+	case INVS_WAITING: return "waiting";
+	case INVS_COUNTDOWN: return "countdown";
+	case INVS_SPAWNING: return "spawning";
+	case INVS_CLEANUP: return "cleanup";
+	case INVS_INTERMISSION: return "intermission";
+	case INVS_VICTORY: return "victory";
+	case INVS_FAILURE: return "failure";
+	default: return "unknown";
+	}
+}
+
+constexpr uint8_t INVSPAWNQF_FALLBACK = 1u << 0;
+constexpr uint8_t INVSPAWNQF_SOURCE_SHIFT = 1u;
+constexpr uint8_t INVSPAWNQF_SOURCE_MASK = 0x0Eu;
+
 static int CountConnectedClients()
 {
 	int count = 0;
@@ -605,6 +644,31 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
 	snapshot.Teamplay = teamplay;
+	snapshot.GameMode = uint8_t(clamp<int>(sv_gametype, 0, UINT8_MAX));
+	snapshot.GameModeName = ServerGameModeName(snapshot.GameMode, snapshot.Deathmatch, snapshot.Teamplay);
+	snapshot.InvasionState = uint8_t(Net_GetInvasionState());
+	snapshot.InvasionStateTics = uint16_t(clamp<int>(Net_GetInvasionStateTics(), 0, UINT16_MAX));
+	const char* invasionStateName = Net_GetInvasionStateName();
+	if (invasionStateName != nullptr && invasionStateName[0] != 0)
+		snapshot.InvasionStateName = invasionStateName;
+	snapshot.InvasionWave = uint16_t(clamp<int>(Net_GetInvasionWave(), 0, UINT16_MAX));
+	snapshot.InvasionMaxWaves = uint16_t(clamp<int>(Net_GetInvasionMaxWaves(), 0, UINT16_MAX));
+	snapshot.InvasionWaveBudget = uint16_t(clamp<int>(Net_GetInvasionWaveBudget(), 0, UINT16_MAX));
+	snapshot.InvasionWaveSpawned = uint16_t(clamp<int>(Net_GetInvasionWaveSpawned(), 0, UINT16_MAX));
+	snapshot.InvasionWaveCleared = uint16_t(clamp<int>(Net_GetInvasionWaveCleared(), 0, UINT16_MAX));
+	snapshot.InvasionWaveFlags = Net_IsInvasionBossWave() ? 1u : 0u;
+	snapshot.InvasionSpawnSpotCount = uint16_t(clamp<int>(Net_GetInvasionSpawnSpotCount(), 0, UINT16_MAX));
+	snapshot.InvasionSpawnActiveSpotCount = uint16_t(clamp<int>(Net_GetInvasionActiveSpawnSpotCount(), 0, UINT16_MAX));
+	snapshot.InvasionSpawnPlanBudget = uint16_t(clamp<int>(Net_GetInvasionSpawnPlanBudget(), 0, UINT16_MAX));
+	snapshot.InvasionSpawnActiveTag = uint16_t(clamp<int>(Net_GetInvasionSpawnActiveTag(), 0, UINT16_MAX));
+	const uint8_t fallbackSource = uint8_t(clamp<int>(Net_GetInvasionSpawnFallbackSource(), 0, 7));
+	uint8_t spawnFlags = 0u;
+	if (Net_IsInvasionSpawnUsingFallback())
+		spawnFlags |= INVSPAWNQF_FALLBACK;
+	spawnFlags |= uint8_t((fallbackSource << INVSPAWNQF_SOURCE_SHIFT) & INVSPAWNQF_SOURCE_MASK);
+	snapshot.InvasionSpawnFlags = spawnFlags;
+	if (snapshot.GameMode == 4 && snapshot.InvasionStateName.IsNotEmpty())
+		snapshot.SessionState.AppendFormat(" | invasion-%s", snapshot.InvasionStateName.GetChars());
 	snapshot.FragLimit = fraglimit > 0 ? uint16_t(clamp<int>(fraglimit, 0, UINT16_MAX)) : 0u;
 	if (timelimit > 0.f)
 	{
@@ -631,11 +695,13 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	return snapshot;
 }
 
+static const FServerQuerySnapshot& GetCachedServerQuerySnapshot();
+
 } // namespace
 
 void I_GetLocalServerSnapshot(FServerQuerySnapshot& snapshot)
 {
-	snapshot = BuildServerQuerySnapshot();
+	snapshot = GetCachedServerQuerySnapshot();
 }
 
 namespace
@@ -684,10 +750,27 @@ struct FQueryWriter
 	}
 };
 
+static const FServerQuerySnapshot& GetCachedServerQuerySnapshot()
+{
+	static FServerQuerySnapshot cachedSnapshot;
+	static uint64_t lastSnapshotTime = 0;
+	static std::mutex snapshotMutex;
+
+	const uint64_t now = I_msTime();
+
+	std::lock_guard<std::mutex> lock(snapshotMutex);
+	if (now - lastSnapshotTime > 1000 || lastSnapshotTime == 0)
+	{
+		cachedSnapshot = BuildServerQuerySnapshot();
+		lastSnapshotTime = now;
+	}
+	return cachedSnapshot;
+}
+
 static bool SendLauncherInfo(const sockaddr_in& to, const uint8_t* request, int msgSize)
 {
 	FQueryWriter writer = {};
-	const FServerQuerySnapshot snapshot = BuildServerQuerySnapshot();
+	const FServerQuerySnapshot& snapshot = GetCachedServerQuerySnapshot();
 
 	if (!writer.WriteLong(uint32_t(MSG_CHALLENGE)) ||
 	    !writer.WriteLong(uint32_t(I_msTime() & 0xffffffffu)))
@@ -730,7 +813,24 @@ static bool SendLauncherInfo(const sockaddr_in& to, const uint8_t* request, int 
 		}
 	}
 
-	if (!writer.WriteString(snapshot.GameName.GetChars()))
+	// Keep the legacy query packet stable and append new mode metadata at the end.
+	if (!writer.WriteString(snapshot.GameName.GetChars()) ||
+	    !writer.WriteByte(snapshot.GameMode) ||
+	    !writer.WriteString(snapshot.GameModeName.GetChars()) ||
+	    !writer.WriteByte(snapshot.InvasionState) ||
+	    !writer.WriteShort(snapshot.InvasionStateTics) ||
+	    !writer.WriteString(snapshot.InvasionStateName.GetChars()) ||
+	    !writer.WriteShort(snapshot.InvasionWave) ||
+	    !writer.WriteShort(snapshot.InvasionMaxWaves) ||
+	    !writer.WriteShort(snapshot.InvasionWaveBudget) ||
+	    !writer.WriteShort(snapshot.InvasionWaveSpawned) ||
+	    !writer.WriteShort(snapshot.InvasionWaveCleared) ||
+	    !writer.WriteByte(snapshot.InvasionWaveFlags) ||
+	    !writer.WriteShort(snapshot.InvasionSpawnSpotCount) ||
+	    !writer.WriteShort(snapshot.InvasionSpawnActiveSpotCount) ||
+	    !writer.WriteShort(snapshot.InvasionSpawnPlanBudget) ||
+	    !writer.WriteShort(snapshot.InvasionSpawnActiveTag) ||
+	    !writer.WriteByte(snapshot.InvasionSpawnFlags))
 		return false;
 
 	if (sendto(MySocket, reinterpret_cast<const char*>(writer.Buffer.data()), static_cast<int>(writer.Offset), 0,
@@ -829,8 +929,8 @@ static bool TryBuildAddress(sockaddr_in& address, const char* addrName, FString*
 	const char* portName = strchr(addrName, ':');
 	if (portName != nullptr)
 	{
-		target = FString(addrName, portName - addrName);
-		u_short portConversion = atoi(portName + 1);
+		target = FString(addrName, (int)(portName - addrName));
+		u_short portConversion = (u_short)atoi(portName + 1);
 		if (!portConversion)
 		{
 			if (error != nullptr)
@@ -845,41 +945,22 @@ static bool TryBuildAddress(sockaddr_in& address, const char* addrName, FString*
 		target = addrName;
 	}
 
-	bool isNamed = false;
-	for (size_t curChar = 0u; curChar < target.Len(); ++curChar)
+	addrinfo hints = {};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	hints.ai_protocol = IPPROTO_UDP;
+
+	addrinfo* result = nullptr;
+	if (getaddrinfo(target.GetChars(), nullptr, &hints, &result) != 0)
 	{
-		char c = target[curChar];
-		if ((c < '0' || c > '9') && c != '.')
-		{
-			isNamed = true;
-			break;
-		}
+		if (error != nullptr)
+			error->Format("getaddrinfo: Couldn't find %s (%s)", target.GetChars(), neterror());
+		return false;
 	}
 
-	address.sin_family = AF_INET;
+	address = *reinterpret_cast<sockaddr_in*>(result->ai_addr);
 	address.sin_port = htons(port);
-	if (!isNamed)
-	{
-		address.sin_addr.s_addr = inet_addr(target.GetChars());
-		if (address.sin_addr.s_addr == INADDR_NONE && strcmp(target.GetChars(), "255.255.255.255") != 0)
-		{
-			if (error != nullptr)
-				error->Format("Couldn't parse address: %s", target.GetChars());
-			return false;
-		}
-	}
-	else
-	{
-		hostent* hostEntry = gethostbyname(target.GetChars());
-		if (hostEntry == nullptr)
-		{
-			if (error != nullptr)
-				error->Format("gethostbyname: Couldn't find %s (%s)", target.GetChars(), neterror());
-			return false;
-		}
-
-		address.sin_addr.s_addr = *(int*)hostEntry->h_addr_list[0];
-	}
+	freeaddrinfo(result);
 
 	return true;
 }
@@ -968,6 +1049,22 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 	snapshot.Deathmatch = deathmatch != 0u;
 	snapshot.Skill = skill;
 	snapshot.Teamplay = teamplay != 0u;
+	snapshot.GameMode = 0u;
+	snapshot.GameModeName = ServerGameModeName(snapshot.GameMode, snapshot.Deathmatch, snapshot.Teamplay);
+	snapshot.InvasionState = uint8_t(INVS_DISABLED);
+	snapshot.InvasionStateTics = 0u;
+	snapshot.InvasionStateName = ServerInvasionStateName(snapshot.InvasionState);
+	snapshot.InvasionWave = 0u;
+	snapshot.InvasionMaxWaves = 0u;
+	snapshot.InvasionWaveBudget = 0u;
+	snapshot.InvasionWaveSpawned = 0u;
+	snapshot.InvasionWaveCleared = 0u;
+	snapshot.InvasionWaveFlags = 0u;
+	snapshot.InvasionSpawnSpotCount = 0u;
+	snapshot.InvasionSpawnActiveSpotCount = 0u;
+	snapshot.InvasionSpawnPlanBudget = 0u;
+	snapshot.InvasionSpawnActiveTag = 0u;
+	snapshot.InvasionSpawnFlags = 0u;
 
 	uint8_t playerCount = 0u;
 	if (!ReadQueryByte(data, offset, length, playerCount))
@@ -1012,6 +1109,94 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 		return false;
 	}
 
+	if (offset < length)
+	{
+		uint8_t gameMode = 0u;
+		FString gameModeName = {};
+		if (!ReadQueryByte(data, offset, length, gameMode) ||
+		    !ReadQueryString(data, offset, length, gameModeName))
+		{
+			if (error != nullptr)
+				error->Format("Query game mode was truncated");
+			return false;
+		}
+
+		snapshot.GameMode = gameMode;
+		snapshot.GameModeName = gameModeName.IsNotEmpty() ? gameModeName : FString(ServerGameModeName(snapshot.GameMode, snapshot.Deathmatch, snapshot.Teamplay));
+	}
+
+	if (offset < length)
+	{
+		uint8_t invasionState = uint8_t(INVS_DISABLED);
+		uint16_t invasionStateTics = 0u;
+		FString invasionStateName = {};
+		if (!ReadQueryByte(data, offset, length, invasionState) ||
+		    !ReadQueryShort(data, offset, length, invasionStateTics) ||
+		    !ReadQueryString(data, offset, length, invasionStateName))
+		{
+			if (error != nullptr)
+				error->Format("Query invasion state was truncated");
+			return false;
+		}
+
+		snapshot.InvasionState = invasionState;
+		snapshot.InvasionStateTics = invasionStateTics;
+		snapshot.InvasionStateName = invasionStateName.IsNotEmpty() ? invasionStateName : FString(ServerInvasionStateName(invasionState));
+	}
+
+	if (offset < length)
+	{
+		uint16_t invasionWave = 0u;
+		uint16_t invasionMaxWaves = 0u;
+		uint16_t invasionWaveBudget = 0u;
+		uint16_t invasionWaveSpawned = 0u;
+		uint16_t invasionWaveCleared = 0u;
+		uint8_t invasionWaveFlags = 0u;
+		if (!ReadQueryShort(data, offset, length, invasionWave) ||
+		    !ReadQueryShort(data, offset, length, invasionMaxWaves) ||
+		    !ReadQueryShort(data, offset, length, invasionWaveBudget) ||
+		    !ReadQueryShort(data, offset, length, invasionWaveSpawned) ||
+		    !ReadQueryShort(data, offset, length, invasionWaveCleared) ||
+		    !ReadQueryByte(data, offset, length, invasionWaveFlags))
+		{
+			if (error != nullptr)
+				error->Format("Query invasion wave metadata was truncated");
+			return false;
+		}
+
+		snapshot.InvasionWave = invasionWave;
+		snapshot.InvasionMaxWaves = invasionMaxWaves;
+		snapshot.InvasionWaveBudget = invasionWaveBudget;
+		snapshot.InvasionWaveSpawned = invasionWaveSpawned;
+		snapshot.InvasionWaveCleared = invasionWaveCleared;
+		snapshot.InvasionWaveFlags = invasionWaveFlags;
+	}
+
+	if (offset < length)
+	{
+		uint16_t invasionSpawnSpotCount = 0u;
+		uint16_t invasionSpawnActiveSpotCount = 0u;
+		uint16_t invasionSpawnPlanBudget = 0u;
+		uint16_t invasionSpawnActiveTag = 0u;
+		uint8_t invasionSpawnFlags = 0u;
+		if (!ReadQueryShort(data, offset, length, invasionSpawnSpotCount) ||
+		    !ReadQueryShort(data, offset, length, invasionSpawnActiveSpotCount) ||
+		    !ReadQueryShort(data, offset, length, invasionSpawnPlanBudget) ||
+		    !ReadQueryShort(data, offset, length, invasionSpawnActiveTag) ||
+		    !ReadQueryByte(data, offset, length, invasionSpawnFlags))
+		{
+			if (error != nullptr)
+				error->Format("Query invasion spawn metadata was truncated");
+			return false;
+		}
+
+		snapshot.InvasionSpawnSpotCount = invasionSpawnSpotCount;
+		snapshot.InvasionSpawnActiveSpotCount = invasionSpawnActiveSpotCount;
+		snapshot.InvasionSpawnPlanBudget = invasionSpawnPlanBudget;
+		snapshot.InvasionSpawnActiveTag = invasionSpawnActiveTag;
+		snapshot.InvasionSpawnFlags = invasionSpawnFlags;
+	}
+
 	return true;
 }
 
@@ -1026,13 +1211,11 @@ bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FSt
 		return false;
 
 #ifdef _WIN32
-	WSADATA data;
-	if (WSAStartup(0x0101, &data) != 0)
-	{
-		if (error != nullptr)
-			error->Format("Couldn't initialize Windows sockets");
-		return false;
-	}
+	static std::once_flag wsaInit;
+	std::call_once(wsaInit, []() {
+		WSADATA data;
+		WSAStartup(MAKEWORD(2, 2), &data);
+	});
 #endif
 
 	bool success = false;
@@ -1061,7 +1244,8 @@ bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FSt
 		FD_ZERO(&readset);
 		FD_SET(socketHandle, &readset);
 		timeval timeout = {};
-		timeout.tv_sec = 2;
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 500000; // 500ms timeout
 		const int selectResult = select(static_cast<int>(socketHandle + 1), &readset, nullptr, nullptr, &timeout);
 		if (selectResult <= 0)
 		{
@@ -1087,20 +1271,19 @@ bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FSt
 
 	if (socketHandle != INVALID_SOCKET)
 		closesocket(socketHandle);
-#ifdef _WIN32
-	WSACleanup();
-#endif
+
 	return success;
 }
 
 static void StartNetwork(bool autoPort)
 {
 #ifdef _WIN32
-	WSADATA data;
-	if (!DebugServer::RuntimeEvents::IsDebugServerRunning()) {
-		if (WSAStartup(0x0101, &data))
+	static std::once_flag wsaInit;
+	std::call_once(wsaInit, []() {
+		WSADATA data;
+		if (WSAStartup(MAKEWORD(2, 2), &data))
 			I_FatalError("Couldn't initialize Windows sockets");
-	}
+	});
 #endif
 
 	netgame = true;

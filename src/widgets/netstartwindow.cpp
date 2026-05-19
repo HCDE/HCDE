@@ -43,11 +43,68 @@ static FString BuildSessionSummaryText(const FServerQuerySnapshot& snapshot)
 static FString BuildSessionStatusText(const FServerQuerySnapshot& snapshot)
 {
 	FString info;
-	info.Format("Mode: %s | Skill: %u | Time left: %u | Frag limit: %u",
-		snapshot.Deathmatch ? (snapshot.Teamplay ? "Deathmatch + Teamplay" : "Deathmatch") : (snapshot.Teamplay ? "Co-op + Teamplay" : "Co-op"),
-		snapshot.Skill,
-		snapshot.TimeLeft,
-		snapshot.FragLimit);
+	const char* modeName = snapshot.GameModeName.IsNotEmpty()
+		? snapshot.GameModeName.GetChars()
+		: (snapshot.Deathmatch ? (snapshot.Teamplay ? "Deathmatch + Teamplay" : "Deathmatch") : (snapshot.Teamplay ? "Co-op + Teamplay" : "Co-op"));
+	if (snapshot.GameMode == 4 && snapshot.InvasionStateName.IsNotEmpty())
+	{
+		constexpr unsigned QueryTicRate = 35u;
+		const unsigned seconds = static_cast<unsigned>((snapshot.InvasionStateTics + QueryTicRate - 1) / QueryTicRate);
+		FString waveInfo = {};
+		if (snapshot.InvasionMaxWaves > 0)
+		{
+			const bool bossWave = (snapshot.InvasionWaveFlags & 1u) != 0u;
+			waveInfo.Format(" | Wave %u/%u | Budget %u | Spawned %u | Cleared %u%s",
+				snapshot.InvasionWave,
+				snapshot.InvasionMaxWaves,
+				snapshot.InvasionWaveBudget,
+				snapshot.InvasionWaveSpawned,
+				snapshot.InvasionWaveCleared,
+				bossWave ? " | Boss" : "");
+		}
+		FString spotInfo = {};
+		if (snapshot.InvasionSpawnSpotCount > 0)
+		{
+			const bool fallback = (snapshot.InvasionSpawnFlags & 1u) != 0u;
+			const uint8_t source = uint8_t((snapshot.InvasionSpawnFlags >> 1) & 0x07u);
+			const char* sourceName = "none";
+			switch (source)
+			{
+			case 1: sourceName = "classic"; break;
+			case 2: sourceName = "mapspot"; break;
+			case 3: sourceName = "deathmatch"; break;
+			case 4: sourceName = "playerstart"; break;
+			default: break;
+			}
+
+			spotInfo.Format(" | Spots %u/%u | Plan %u",
+				snapshot.InvasionSpawnActiveSpotCount,
+				snapshot.InvasionSpawnSpotCount,
+				snapshot.InvasionSpawnPlanBudget);
+			if (snapshot.InvasionSpawnActiveTag > 0)
+				spotInfo.AppendFormat(" | Tag %u", snapshot.InvasionSpawnActiveTag);
+			if (fallback)
+				spotInfo.AppendFormat(" | Fallback %s", sourceName);
+		}
+
+		info.Format("Mode: %s (%s %us)%s%s | Skill: %u | Time left: %u | Frag limit: %u",
+			modeName,
+			snapshot.InvasionStateName.GetChars(),
+			seconds,
+			waveInfo.GetChars(),
+			spotInfo.GetChars(),
+			snapshot.Skill,
+			snapshot.TimeLeft,
+			snapshot.FragLimit);
+	}
+	else
+	{
+		info.Format("Mode: %s | Skill: %u | Time left: %u | Frag limit: %u",
+			modeName,
+			snapshot.Skill,
+			snapshot.TimeLeft,
+			snapshot.FragLimit);
+	}
 	return info;
 }
 

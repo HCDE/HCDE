@@ -49,6 +49,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "comctl32.lib")
 
+extern DWORD MainThreadID;
 MainWindow mainwindow;
 
 #ifdef HCDE_DEDICATED_SERVER
@@ -123,7 +124,7 @@ static const ServerGuiChoiceDefinition ServerGuiGameTypeChoices[] =
 	{ L"1 Deathmatch", "1" },
 	{ L"2 Team DM", "2" },
 	{ L"3 CTF stub", "3" },
-	{ L"4 Horde stub", "4" },
+	{ L"4 Invasion", "4" },
 };
 
 static const ServerGuiChoiceDefinition ServerGuiSkillChoices[] =
@@ -220,6 +221,20 @@ static const ServerGuiSettingDefinition ServerGuiAdvancedSettings[] =
 	{ L"Raw Compat Flags 2", "compatflags2", ServerGuiSettingKind::Integer, L"0", 0, 2147483647, false, 10 },
 	{ L"Ready Percent", "net_cutscenereadypercent", ServerGuiSettingKind::Decimal, L"0.5", 0, 1, false, 8 },
 	{ L"Chat Slowmode", "net_chatslowmode", ServerGuiSettingKind::Integer, L"0", 0, 3600, false, 4 },
+	{ L"Invasion Spawn Time", "sv_invasionspawntime", ServerGuiSettingKind::Decimal, L"8", 0, 600, false, 8 },
+	{ L"Invasion Cleanup Time", "sv_invasioncleanuptime", ServerGuiSettingKind::Decimal, L"4", 0, 600, false, 8 },
+	{ L"Invasion Intermission", "sv_invasionintermissiontime", ServerGuiSettingKind::Decimal, L"6", 0, 600, false, 8 },
+	{ L"Invasion Result Time", "sv_invasionresulttime", ServerGuiSettingKind::Decimal, L"8", 0, 600, false, 8 },
+	{ L"Invasion Waves", "sv_invasionwaves", ServerGuiSettingKind::Integer, L"8", 1, 255, false, 3 },
+	{ L"Invasion Base Budget", "sv_invasionbasebudget", ServerGuiSettingKind::Integer, L"24", 1, 4096, false, 4 },
+	{ L"Invasion Budget Step", "sv_invasionbudgetstep", ServerGuiSettingKind::Integer, L"8", 0, 4096, false, 4 },
+	{ L"Invasion Per Player", "sv_invasionperplayer", ServerGuiSettingKind::Integer, L"6", 0, 4096, false, 4 },
+	{ L"Invasion Spawn Interval", "sv_invasionspawninterval", ServerGuiSettingKind::Decimal, L"0.35", 0.01, 60, false, 8 },
+	{ L"Invasion Spawn Burst", "sv_invasionspawnburst", ServerGuiSettingKind::Integer, L"3", 1, 128, false, 3 },
+	{ L"Invasion Boss Every", "sv_invasionbosswaveevery", ServerGuiSettingKind::Integer, L"5", 0, 255, false, 3 },
+	{ L"Invasion Boss Bonus", "sv_invasionbossbonus", ServerGuiSettingKind::Integer, L"20", 0, 4096, false, 4 },
+	{ L"Invasion Tagged Spots", "sv_invasionspotusemaptags", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
+	{ L"Invasion Spot Fallback", "sv_invasionspotfallback", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
 	{ L"Tally Policy", "sv_alwaystally", ServerGuiSettingKind::Choice, L"0", 0, 2, false, 1, ServerGuiTallyChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiTallyChoices) },
 	{ L"Apply DM Flags Always", "alwaysapplydmflags", ServerGuiSettingKind::Choice, L"0", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
 };
@@ -312,6 +327,30 @@ static const char* const ServerGuiPresetTeamDeathmatch[] =
 	"sv_forcerespawn 1"
 };
 
+static const char* const ServerGuiPresetInvasionStandard[] =
+{
+	"sv_gametype 4",
+	"skill 2",
+	"fraglimit 0",
+	"timelimit 0",
+	"sv_nomonsters 0",
+	"sv_invasioncountdowntime 30",
+	"sv_invasionspawntime 8",
+	"sv_invasioncleanuptime 4",
+	"sv_invasionintermissiontime 6",
+	"sv_invasionresulttime 8",
+	"sv_invasionwaves 8",
+	"sv_invasionbasebudget 24",
+	"sv_invasionbudgetstep 8",
+	"sv_invasionperplayer 6",
+	"sv_invasionspawninterval 0.35",
+	"sv_invasionspawnburst 3",
+	"sv_invasionbosswaveevery 5",
+	"sv_invasionbossbonus 20",
+	"sv_invasionspotusemaptags 1",
+	"sv_invasionspotfallback 1"
+};
+
 static const char* const ServerGuiPresetPrivateDebug[] =
 {
 	"sv_gametype 0",
@@ -330,6 +369,7 @@ static const ServerGuiPresetDefinition ServerGuiPresets[] =
 	{ L"Classic Deathmatch", "Classic Deathmatch", ServerGuiPresetClassicDeathmatch, sizeof(ServerGuiPresetClassicDeathmatch) / sizeof(ServerGuiPresetClassicDeathmatch[0]) },
 	{ L"Alt Deathmatch", "Alt Deathmatch", ServerGuiPresetAltDeathmatch, sizeof(ServerGuiPresetAltDeathmatch) / sizeof(ServerGuiPresetAltDeathmatch[0]) },
 	{ L"Team Deathmatch", "Team Deathmatch", ServerGuiPresetTeamDeathmatch, sizeof(ServerGuiPresetTeamDeathmatch) / sizeof(ServerGuiPresetTeamDeathmatch[0]) },
+	{ L"Invasion Standard", "Invasion Standard", ServerGuiPresetInvasionStandard, sizeof(ServerGuiPresetInvasionStandard) / sizeof(ServerGuiPresetInvasionStandard[0]) },
 	{ L"Private Debug", "Private Debug", ServerGuiPresetPrivateDebug, sizeof(ServerGuiPresetPrivateDebug) / sizeof(ServerGuiPresetPrivateDebug[0]) },
 };
 
@@ -861,14 +901,17 @@ void MainWindow::ShowErrorPane(const char* text)
 
 	// PrintStr(text);
 
-	size_t totalsize = 0;
-	for (const FString& line : bufferedConsoleStuff)
-		totalsize += line.Len();
-
 	std::string alltext;
-	alltext.reserve(totalsize);
-	for (const FString& line : bufferedConsoleStuff)
-		alltext.append(line.GetChars(), line.Len());
+	{
+		std::lock_guard<std::mutex> lock(logMutex);
+		size_t totalsize = 0;
+		for (const FString& line : bufferedConsoleStuff)
+			totalsize += line.Len();
+
+		alltext.reserve(totalsize);
+		for (const FString& line : bufferedConsoleStuff)
+			alltext.append(line.GetChars(), line.Len());
+	}
 
 	restartrequest = ErrorWindow::ExecModal(text, alltext);
 }
@@ -1085,19 +1128,33 @@ void MainWindow::PrintStr(const char* cp)
 	{
 		cp = "";
 	}
-	bufferedConsoleStuff.Push(cp);
-#ifdef HCDE_DEDICATED_SERVER
-	while (bufferedConsoleStuff.Size() > 4096)
+
 	{
-		bufferedConsoleStuff.Delete(0);
+		std::lock_guard<std::mutex> lock(logMutex);
+		bufferedConsoleStuff.Push(cp);
+#ifdef HCDE_DEDICATED_SERVER
+		while (bufferedConsoleStuff.Size() > 4096)
+		{
+			bufferedConsoleStuff.Delete(0);
+		}
+#endif
 	}
+
+#ifdef HCDE_DEDICATED_SERVER
 	AppendServerConsoleText(cp);
-	PumpServerConsoleMessages();
+
+	// Only pump messages if we are on the main thread. Pumping from background
+	// threads causes race conditions and crashes in Win32 UI components.
+	if (GetCurrentThreadId() == MainThreadID)
+	{
+		PumpServerConsoleMessages();
+	}
 #endif
 }
 
 void MainWindow::GetLog(std::function<bool(const void* data, uint32_t size, uint32_t& written)> writeData)
 {
+	std::lock_guard<std::mutex> lock(logMutex);
 	for (const FString& line : bufferedConsoleStuff)
 	{
 		size_t pos = 0;

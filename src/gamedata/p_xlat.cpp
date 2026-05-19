@@ -63,6 +63,10 @@ void FLevelLocals::TranslateLineDef (line_t *ld, maplinedef_t *mld, int lineinde
 	{
 		if ((flags & (1<<i)) && translator->LineFlagTranslations[i].ismask)
 		{
+			if (i == 11 && MBF21Enabled() && !(i_compatflags2 & COMPATF2_RESERVEDLINEFLAG))
+			{
+				continue;
+			}
 			flags1 &= translator->LineFlagTranslations[i].newvalue;
 		}
 	}

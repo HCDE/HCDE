@@ -27,6 +27,7 @@
 #include "printf.h"
 
 #include <functional>
+#include <mutex>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -91,6 +92,7 @@ private:
 	HWND Window = 0;
 	bool restartrequest = false;
 	TArray<FString> bufferedConsoleStuff;
+	std::mutex logMutex;
 
 #ifdef HCDE_DEDICATED_SERVER
 	HWND ServerStatus = 0;

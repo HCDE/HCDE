@@ -42,6 +42,7 @@ struct dsda_options
 	int comp_stairs = -1;
 	int comp_ledgeblock = -1;
 	int comp_friendlyspawn = -1;
+	int comp_reservedlineflag = -1;
 };
 
 struct dsda_option_t
@@ -73,6 +74,7 @@ static dsda_option_t option_list[] = {
   { "comp_stairs", &dsda_options::comp_stairs, 0, 1 },
   { "comp_ledgeblock", &dsda_options::comp_ledgeblock, 0, 1 },
   { "comp_friendlyspawn", &dsda_options::comp_friendlyspawn, 0, 1 },
+  { "comp_reservedlineflag", &dsda_options::comp_reservedlineflag, 0, 1 },
   { 0 }
 };
 
@@ -153,47 +155,43 @@ void parseOptions()
 
 	auto opt = dsda_LumpOptions(lumpnum);
 
-	auto setflag = [](auto& flag, auto mask, bool set)
+	auto setflag = [](auto& flag, auto mask, int set)
 	{
+		if (set < 0) return;
 		if (set) flag |= mask;
 		else flag &= ~mask;
+	};
+	auto setmaskedflag = [](auto& flag, auto& flagmask, auto mask, int set)
+	{
+		if (set < 0) return;
+		if (set) flag |= mask;
+		else flag &= ~mask;
+		flagmask |= mask;
 	};
 
 	for (auto& lev : wadlevelinfos)
 	{
 		setflag(lev.flags2, LEVEL2_NOINFIGHTING, opt.monster_infighting);
 		setflag(lev.flags3, LEVEL3_AVOIDMELEE, opt.monster_backing);
-		setflag(lev.compatflags2, COMPATF2_AVOID_HAZARDS, opt.monster_avoid_hazards);
-		setflag(lev.compatmask2, COMPATF2_AVOID_HAZARDS, opt.monster_avoid_hazards);
-		setflag(lev.compatflags, COMPATF_MBFMONSTERMOVE, opt.monster_friction);
-		setflag(lev.compatmask, COMPATF_MBFMONSTERMOVE, opt.monster_friction);
-		setflag(lev.compatflags, COMPATF_DROPOFF, opt.comp_dropoff);
-		setflag(lev.compatmask, COMPATF_DROPOFF, opt.comp_dropoff);
-		setflag(lev.compatflags, COMPATF_DROPOFF, opt.comp_dropoff);
-		setflag(lev.compatmask, COMPATF_DROPOFF, opt.comp_dropoff);
-		setflag(lev.compatflags, COMPATF_CORPSEGIBS, opt.comp_vile);
-		setflag(lev.compatmask, COMPATF_CORPSEGIBS, opt.comp_vile);
+		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_AVOID_HAZARDS, opt.monster_avoid_hazards);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_MBFMONSTERMOVE, opt.monster_friction);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_DROPOFF, opt.comp_dropoff);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_CORPSEGIBS, opt.comp_vile);
 		setflag(lev.flags3, LEVEL3_VILEOPTION, opt.comp_vile);
-		setflag(lev.flags3, LEVEL3_NOJUMPDOWN, !opt.dog_jumping);	// this one's rather pointless, but well...
-		setflag(lev.compatflags, COMPATF_LIMITPAIN, opt.comp_pain);
-		setflag(lev.compatmask, COMPATF_LIMITPAIN, opt.comp_pain);
-		setflag(lev.compatflags, COMPATF_NODOORLIGHT, opt.comp_doorlight);
-		setflag(lev.compatmask, COMPATF_NODOORLIGHT, opt.comp_doorlight);
-		setflag(lev.compatflags, COMPATF_LIGHT | COMPATF_SHORTTEX, opt.comp_model); // only the relevant parts of this catch-all option.
-		setflag(lev.compatmask, COMPATF_LIGHT | COMPATF_SHORTTEX, opt.comp_model);
-		setflag(lev.compatflags2, COMPATF2_FLOORMOVE, opt.comp_floors);
-		setflag(lev.compatmask2, COMPATF2_FLOORMOVE, opt.comp_floors);
-		setflag(lev.compatflags2, COMPATF2_STAYONLIFT, opt.comp_staylift);
-		setflag(lev.compatmask2, COMPATF2_STAYONLIFT, opt.comp_staylift);
-		setflag(lev.compatflags, COMPATF_STAIRINDEX, opt.comp_stairs);
-		setflag(lev.compatmask, COMPATF_STAIRINDEX, opt.comp_stairs);
-		setflag(lev.compatflags, COMPATF_CROSSDROPOFF, opt.comp_ledgeblock);
-		setflag(lev.compatmask, COMPATF_CROSSDROPOFF, opt.comp_ledgeblock);
+		setflag(lev.flags3, LEVEL3_NOJUMPDOWN, opt.dog_jumping < 0 ? -1 : !opt.dog_jumping);	// this one's rather pointless, but well...
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_LIMITPAIN, opt.comp_pain);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_NODOORLIGHT, opt.comp_doorlight);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_LIGHT | COMPATF_SHORTTEX, opt.comp_model); // only the relevant parts of this catch-all option.
+		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_FLOORMOVE, opt.comp_floors);
+		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_STAYONLIFT, opt.comp_staylift);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_STAIRINDEX, opt.comp_stairs);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_CROSSDROPOFF, opt.comp_ledgeblock);
+		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_NOFRIENDLYSPAWN, opt.comp_friendlyspawn < 0 ? -1 : !opt.comp_friendlyspawn);
+		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_RESERVEDLINEFLAG, opt.comp_reservedlineflag);
 
 		/* later. these should be supported but are not implemented yet.
 		if (opt.monsters_remember == 0)
 		if (opt.comp_pursuit)
-		if (opt.comp_friendlyspawn == 0)
 		int help_friends = 0;
 		int player_helpers = 0;
 		int friend_distance = 128;

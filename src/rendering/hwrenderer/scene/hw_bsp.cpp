@@ -33,6 +33,7 @@
 #include "flatvertices.h"
 #include "hw_vertexbuilder.h"
 #include "hw_walldispatcher.h"
+#include "printf.h"
 
 #include "p_visualthinker.h"
 
@@ -48,7 +49,6 @@ EXTERN_CVAR(Bool, r_dithertransparency)
 
 thread_local bool isWorkerThread;
 ctpl::thread_pool renderPool(1);
-bool inited = false;
 
 const int MAXDITHERACTORS = 20; // Maximum number of enemies that can set dither-transparency flags
 AActor* RenderedTargets[MAXDITHERACTORS];
@@ -87,10 +87,16 @@ class RenderJobQueue
 public:
 	void AddJob(int type, subsector_t *sub, seg_t *seg = nullptr)
 	{
-		// This does not check for array overflows. The pool should be large enough that it never hits the limit.
+		// Keep a hard guard here so oversized scenes fail loudly instead of corrupting memory.
+		constexpr int MaxRenderJobs = static_cast<int>(sizeof(pool) / sizeof(pool[0]));
+		const int index = writeindex;
+		if (index >= MaxRenderJobs)
+		{
+			I_FatalError("Render job queue overflow (%d jobs).", MaxRenderJobs);
+		}
 
-		pool[writeindex] = { type, sub, seg };
-		writeindex++;	// update index only after the value has been written.
+		pool[index] = { type, sub, seg };
+		writeindex = index + 1;	// update index only after the value has been written.
 	}
 
 	RenderJob *GetJob()

@@ -273,7 +273,7 @@ CUSTOM_CVAR(Int, sv_gametype, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 		break;
 
 	case 4:
-		Printf("sv_gametype 4 (Horde) is using cooperative rules until Horde rules are wired.\n");
+		Printf("sv_gametype 4 (Invasion) is using cooperative rules until Invasion rules are wired.\n");
 		deathmatch = 0;
 		teamplay = false;
 		break;

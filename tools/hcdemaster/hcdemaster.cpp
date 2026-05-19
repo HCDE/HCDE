@@ -107,7 +107,7 @@ void CloseSocket(SOCKET socketHandle)
 const char* SocketErrorText()
 {
 #ifdef _WIN32
-	static char buffer[48];
+	static thread_local char buffer[48];
 	snprintf(buffer, sizeof(buffer), "WSA error %d", WSAGetLastError());
 	return buffer;
 #else
@@ -117,10 +117,12 @@ const char* SocketErrorText()
 
 std::string AddressToString(uint32_t address)
 {
+	char buffer[INET_ADDRSTRLEN];
 	in_addr addr {};
 	addr.s_addr = address;
-	const char* text = inet_ntoa(addr);
-	return text != nullptr ? text : "0.0.0.0";
+	if (inet_ntop(AF_INET, &addr, buffer, sizeof(buffer)))
+		return buffer;
+	return "0.0.0.0";
 }
 
 std::string ServerKey(uint32_t address, uint16_t port)
@@ -281,13 +283,11 @@ bool BindSocket(SOCKET socketHandle, const Options& options)
 		local.sin_addr.s_addr = INADDR_ANY;
 	else
 	{
-		const unsigned long parsed = inet_addr(options.bindAddress.c_str());
-		if (parsed == INADDR_NONE && options.bindAddress != "255.255.255.255")
+		if (inet_pton(AF_INET, options.bindAddress.c_str(), &local.sin_addr) <= 0)
 		{
 			fprintf(stderr, "Invalid bind address: %s\n", options.bindAddress.c_str());
 			return false;
 		}
-		local.sin_addr.s_addr = parsed;
 	}
 
 	if (bind(socketHandle, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == SOCKET_ERROR)
@@ -343,9 +343,34 @@ int main(int argc, char** argv)
 		printf("HCDE master listening on %s:%u (ttl=%ds)\n", options.bindAddress.c_str(), options.port, options.ttlSeconds);
 
 	std::unordered_map<std::string, ServerEntry> servers;
+	auto lastPrune = std::chrono::steady_clock::now();
 	int handledPackets = 0;
 	while (g_running)
 	{
+		fd_set readset;
+		FD_ZERO(&readset);
+		FD_SET(socketHandle, &readset);
+		timeval timeout = { 1, 0 }; // 1 second timeout to check g_running and prune
+		const int selectResult = select(int(socketHandle + 1), &readset, nullptr, nullptr, &timeout);
+
+		if (selectResult == 0) // timeout
+		{
+			const auto now = std::chrono::steady_clock::now();
+			if (std::chrono::duration_cast<std::chrono::seconds>(now - lastPrune).count() >= 60)
+			{
+				PruneExpired(servers, options.ttlSeconds);
+				lastPrune = now;
+			}
+			continue;
+		}
+
+		if (selectResult == SOCKET_ERROR)
+		{
+			if (g_running)
+				fprintf(stderr, "select failed: %s\n", SocketErrorText());
+			break;
+		}
+
 		uint8_t buffer[1500] = {};
 		sockaddr_in from {};
 		socklen_hcde_t fromSize = sizeof(from);
@@ -381,6 +406,7 @@ int main(int argc, char** argv)
 		else if (message == kMasterListChallenge)
 		{
 			PruneExpired(servers, options.ttlSeconds);
+			lastPrune = std::chrono::steady_clock::now();
 			if (!SendServerList(socketHandle, from, servers))
 				fprintf(stderr, "Failed to send server list to %s: %s\n", AddressToString(from.sin_addr.s_addr).c_str(), SocketErrorText());
 			else if (!options.quiet)

@@ -37,6 +37,26 @@ enum EChatType
 	CHAT_GLOBAL,
 };
 
+enum EInvasionState : uint8_t
+{
+	INVS_DISABLED = 0,
+	INVS_WAITING,
+	INVS_COUNTDOWN,
+	INVS_SPAWNING,
+	INVS_CLEANUP,
+	INVS_INTERMISSION,
+	INVS_VICTORY,
+	INVS_FAILURE,
+};
+
+enum EInvasionControlAction : uint8_t
+{
+	INVCTL_NONE = 0,
+	INVCTL_NEXTWAVE = 1,
+	INVCTL_VICTORY = 2,
+	INVCTL_FAILURE = 3,
+};
+
 enum EClientFlags
 {
 	CF_NONE = 0,
@@ -149,6 +169,23 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream);
 
 bool Net_CheckCutsceneReady();
 void Net_AdvanceCutscene();
+EInvasionState Net_GetInvasionState();
+const char* Net_GetInvasionStateName();
+int Net_GetInvasionStateTics();
+int Net_GetInvasionWave();
+int Net_GetInvasionMaxWaves();
+int Net_GetInvasionWaveBudget();
+int Net_GetInvasionWaveSpawned();
+int Net_GetInvasionWaveCleared();
+int Net_GetInvasionActiveMonsterCount();
+bool Net_IsInvasionBossWave();
+int Net_GetInvasionSpawnSpotCount();
+int Net_GetInvasionActiveSpawnSpotCount();
+int Net_GetInvasionSpawnPlanBudget();
+int Net_GetInvasionSpawnActiveTag();
+bool Net_IsInvasionSpawnUsingFallback();
+int Net_GetInvasionSpawnFallbackSource();
+int Net_ControlInvasion(int action, const char* reason = nullptr);
 void Net_ResetCommands(bool midTic);
 void Net_SetWaiting();
 bool Net_LocalCanControlSettings();

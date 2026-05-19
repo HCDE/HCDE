@@ -297,7 +297,8 @@ const char* BaseFileSearch(const char* file, const char* ext, bool lookfirstinpr
 					FString path = RecursiveFileExists(dir, file);
 					if (path.IsNotEmpty())
 					{
-						return path.GetChars();
+						BFSwad = std::move(path);
+						return BFSwad.GetChars();
 					}
 				}
 			}

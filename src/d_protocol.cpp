@@ -215,34 +215,28 @@ void SkipUserCmdMessage(TArrayView<uint8_t>& stream)
 		const uint8_t type = ReadInt8(stream);
 		if (type == DEM_USERCMD)
 		{
-			int skip = 1;
-			if (stream[0] & UCMDF_PITCH)
-				skip += 2;
-			if (stream[0] & UCMDF_YAW)
-				skip += 2;
-			if (stream[0] & UCMDF_FORWARDMOVE)
-				skip += 2;
-			if (stream[0] & UCMDF_SIDEMOVE)
-				skip += 2;
-			if (stream[0] & UCMDF_UPMOVE)
-				skip += 2;
-			if (stream[0] & UCMDF_ROLL)
-				skip += 2;
-			if (stream[0] & UCMDF_BUTTONS)
+			const uint8_t flags = ReadInt8(stream);
+			if (flags & UCMDF_BUTTONS)
 			{
-				AdvanceStream(stream, 1);
-				if (stream[0] & MoreButtons)
+				uint8_t in = ReadInt8(stream);
+				if (in & MoreButtons)
 				{
-					AdvanceStream(stream, 1);
-					if (stream[0] & MoreButtons)
+					in = ReadInt8(stream);
+					if (in & MoreButtons)
 					{
-						AdvanceStream(stream, 1);
-						if (stream[0] & MoreButtons)
-							AdvanceStream(stream, 1);
+						in = ReadInt8(stream);
+						if (in & MoreButtons)
+							ReadInt8(stream);
 					}
 				}
 			}
-			AdvanceStream(stream, skip);
+
+			if (flags & UCMDF_PITCH) AdvanceStream(stream, 2);
+			if (flags & UCMDF_YAW) AdvanceStream(stream, 2);
+			if (flags & UCMDF_FORWARDMOVE) AdvanceStream(stream, 2);
+			if (flags & UCMDF_SIDEMOVE) AdvanceStream(stream, 2);
+			if (flags & UCMDF_UPMOVE) AdvanceStream(stream, 2);
+			if (flags & UCMDF_ROLL) AdvanceStream(stream, 2);
 			break;
 		}
 		else if (type == DEM_EMPTYUSERCMD)

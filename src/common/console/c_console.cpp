@@ -51,6 +51,7 @@
 #include "version.h"
 #include "vm.h"
 #include <array>
+#include <mutex>
 
 namespace Console::Defaults
 {
@@ -414,6 +415,10 @@ int PrintString (PrintFlag iprintlevel, const char *outline)
 		return 0;
 
 	if (!conbuffer) return 0;	// when called too early
+
+	static std::mutex printMutex;
+	std::lock_guard<std::mutex> lock(printMutex);
+
 	PrintFlag printlevel = static_cast<PrintFlag>(iprintlevel & PRINT_TYPES);
 	if (*outline == '\0')
 	{

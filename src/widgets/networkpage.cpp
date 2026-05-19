@@ -38,13 +38,16 @@ namespace
 FString BuildServerInfoText(const FServerQuerySnapshot& snapshot)
 {
 	FString info;
+	const char* modeName = snapshot.GameModeName.IsNotEmpty()
+		? snapshot.GameModeName.GetChars()
+		: (snapshot.Deathmatch ? (snapshot.Teamplay ? "Deathmatch + Teamplay" : "Deathmatch") : (snapshot.Teamplay ? "Co-op + Teamplay" : "Co-op"));
 	info.Format("Host: %s\nSession: %s\nMap: %s\nPlayers: %u/%u\nMode: %s\nSkill: %u\nTime left: %u\nFrag limit: %u\nVersion: %s (%s)",
 		snapshot.HostName.GetChars(),
 		snapshot.SessionState.GetChars(),
 		snapshot.MapName.GetChars(),
 		snapshot.PlayerCount,
 		snapshot.MaxPlayers,
-		snapshot.Deathmatch ? (snapshot.Teamplay ? "Deathmatch + Teamplay" : "Deathmatch") : (snapshot.Teamplay ? "Co-op + Teamplay" : "Co-op"),
+		modeName,
 		snapshot.Skill,
 		snapshot.TimeLeft,
 		snapshot.FragLimit,
@@ -69,6 +72,47 @@ FString BuildServerInfoText(const FServerQuerySnapshot& snapshot)
 	else
 	{
 		info.AppendFormat("\nPlayers: none");
+	}
+
+	if (snapshot.GameMode == 4 && snapshot.InvasionStateName.IsNotEmpty())
+	{
+		constexpr unsigned QueryTicRate = 35u;
+		const unsigned seconds = static_cast<unsigned>((snapshot.InvasionStateTics + QueryTicRate - 1) / QueryTicRate);
+		info.AppendFormat("\nInvasion: %s (%us)", snapshot.InvasionStateName.GetChars(), seconds);
+		if (snapshot.InvasionMaxWaves > 0)
+		{
+			const bool bossWave = (snapshot.InvasionWaveFlags & 1u) != 0u;
+			info.AppendFormat("\nWave: %u/%u | Budget: %u | Spawned: %u | Cleared: %u%s",
+				snapshot.InvasionWave,
+				snapshot.InvasionMaxWaves,
+				snapshot.InvasionWaveBudget,
+				snapshot.InvasionWaveSpawned,
+				snapshot.InvasionWaveCleared,
+				bossWave ? " | Boss wave" : "");
+		}
+		if (snapshot.InvasionSpawnSpotCount > 0)
+		{
+			const bool fallback = (snapshot.InvasionSpawnFlags & 1u) != 0u;
+			const uint8_t source = uint8_t((snapshot.InvasionSpawnFlags >> 1) & 0x07u);
+			const char* sourceName = "none";
+			switch (source)
+			{
+			case 1: sourceName = "classic"; break;
+			case 2: sourceName = "mapspot"; break;
+			case 3: sourceName = "deathmatch"; break;
+			case 4: sourceName = "playerstart"; break;
+			default: break;
+			}
+
+			info.AppendFormat("\nSpots: %u total | %u active | Plan: %u",
+				snapshot.InvasionSpawnSpotCount,
+				snapshot.InvasionSpawnActiveSpotCount,
+				snapshot.InvasionSpawnPlanBudget);
+			if (snapshot.InvasionSpawnActiveTag > 0)
+				info.AppendFormat(" | Tag: %u", snapshot.InvasionSpawnActiveTag);
+			if (fallback)
+				info.AppendFormat(" | Fallback: %s", sourceName);
+		}
 	}
 
 	return info;
@@ -265,7 +309,8 @@ HostSubPage::HostSubPage(NetworkPage* main, const FStartupSelectionInfo& info) :
 	GameModesDropdown->AddItem("Co-op");
 	GameModesDropdown->AddItem("Deathmatch");
 	GameModesDropdown->AddItem("Team Deathmatch");
-	GameModesDropdown->SetSelectedItem(max<int>(info.DefaultNetGameMode, 0));
+	GameModesDropdown->AddItem("Invasion");
+	GameModesDropdown->SetSelectedItem(clamp<int>(info.DefaultNetGameMode, 0, 4));
 
 	TeamLabel = new TextLabel(this);
 	TeamEdit = new LineEdit(this);
@@ -350,6 +395,9 @@ void HostSubPage::SetValues(FStartupSelectionInfo& info) const
 		else
 			info.AdditionalNetArgs.AppendFormat(" -deathmatch");
 		break;
+	case 4:
+		info.AdditionalNetArgs.AppendFormat(" +sv_gametype 4");
+		break;
 	}
 }
 
@@ -363,6 +411,7 @@ void HostSubPage::UpdateLanguage()
 	GameModesDropdown->UpdateItem(GStrings.GetString("PICKER_COOP"), 1);
 	GameModesDropdown->UpdateItem(GStrings.GetString("PICKER_DM"), 2);
 	GameModesDropdown->UpdateItem(GStrings.GetString("PICKER_TDM"), 3);
+	GameModesDropdown->UpdateItem("Invasion", 4);
 	AltDeathmatchCheckbox->SetText(GStrings.GetString("PICKER_ALTDM"));
 	TeamLabel->SetText(GStrings.GetString("PICKER_TEAM"));
 

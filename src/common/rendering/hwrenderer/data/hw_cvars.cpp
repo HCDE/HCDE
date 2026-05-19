@@ -60,15 +60,62 @@ constexpr float GAMMA_LOW = 0.1;
 
 constexpr float GAMMA_LOW_FIX = (GAMMA_LOW-GAMMA_DEFAULT) / (GAMMA_HIGH-GAMMA_DEFAULT);
 
-CUSTOM_CVARD(Float, vid_gamma, GAMMA_DEFAULT, 0, "(internal) target output gamma")
+static bool gamma_syncing;
+
+static float HCDE_ClampGamma(float value)
 {
-	if (self < GAMMA_LOW) self = GAMMA_LOW;
+	return std::clamp(value, GAMMA_LOW, GAMMA_HIGH);
+}
+
+static float HCDE_GammaToFixGamma(float value)
+{
+	return (HCDE_ClampGamma(value) - GAMMA_DEFAULT) / (GAMMA_HIGH - GAMMA_DEFAULT);
+}
+
+static float HCDE_FixGammaToGamma(float value)
+{
+	return HCDE_ClampGamma(value * (GAMMA_HIGH - GAMMA_DEFAULT) + GAMMA_DEFAULT);
+}
+
+EXTERN_CVAR(Float, vid_gamma_compat)
+EXTERN_CVAR(Float, vid_fixgamma)
+
+CUSTOM_CVARD(Float, vid_gamma, GAMMA_DEFAULT, CVAR_NOINITCALL, "(internal) target output gamma")
+{
+	self = HCDE_ClampGamma(self);
+	if (!gamma_syncing)
+	{
+		gamma_syncing = true;
+		vid_gamma_compat = self;
+		vid_fixgamma = HCDE_GammaToFixGamma(self);
+		gamma_syncing = false;
+	}
+}
+
+// Keep the classic gamma cvar live without creating a second archived gamma source.
+CUSTOM_CVAR_NAMED(Float, vid_gamma_compat, gamma, GAMMA_DEFAULT, CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+{
+	self = HCDE_ClampGamma(self);
+	if (!gamma_syncing)
+	{
+		gamma_syncing = true;
+		vid_gamma = self;
+		vid_fixgamma = HCDE_GammaToFixGamma(self);
+		gamma_syncing = false;
+	}
 }
 
 CUSTOM_CVARD(Float, vid_fixgamma, 0.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "adjusts gamma component of gamma ramp")
 {
 	if (self < GAMMA_LOW_FIX) self = GAMMA_LOW_FIX;
-	else vid_gamma = self*(GAMMA_HIGH-GAMMA_DEFAULT) + GAMMA_DEFAULT;
+	else if (self > 1.0f) self = 1.0f;
+	if (!gamma_syncing)
+	{
+		gamma_syncing = true;
+		vid_gamma = HCDE_FixGammaToGamma(self);
+		vid_gamma_compat = float(vid_gamma);
+		gamma_syncing = false;
+	}
 }
 
 CUSTOM_CVARD(Float, vid_contrast, 1.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "adjusts contrast component of gamma ramp")

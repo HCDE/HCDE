@@ -131,6 +131,36 @@ static const char* Net_LagStateName(ELagType state)
 	}
 }
 
+static const char* Net_InvasionStateName(EInvasionState state)
+{
+	switch (state)
+	{
+	case INVS_DISABLED: return "disabled";
+	case INVS_WAITING: return "waiting";
+	case INVS_COUNTDOWN: return "countdown";
+	case INVS_SPAWNING: return "spawning";
+	case INVS_CLEANUP: return "cleanup";
+	case INVS_INTERMISSION: return "intermission";
+	case INVS_VICTORY: return "victory";
+	case INVS_FAILURE: return "failure";
+	default: return "unknown";
+	}
+}
+
+static bool Net_IsInvasionModeEnabled()
+{
+	return sv_gametype == 4;
+}
+
+static int Net_InvasionSecondsToTics(float seconds)
+{
+	if (seconds <= 0.0f)
+		return 0;
+
+	const int tics = static_cast<int>(ceil(seconds * TICRATE));
+	return max(tics, 0);
+}
+
 // NETWORKING
 //
 // gametic is the tic about to (or currently being) run.
@@ -239,6 +269,22 @@ constexpr uint8_t HCDEServerWorldDeltaMagic[4] = { 'H', 'C', 'D', 'W' };
 constexpr uint8_t HCDEServerWorldDeltaPoseHasActor = 1u << 0;
 constexpr uint8_t HCDEServerWorldDeltaPoseLive = 1u << 1;
 constexpr uint8_t HCDEServerWorldDeltaPoseOnGround = 1u << 2;
+constexpr size_t HCDEInvasionSnapshotMagicOffset = 0u;
+constexpr size_t HCDEInvasionSnapshotVersionOffset = 4u;
+constexpr size_t HCDEInvasionSnapshotFlagsOffset = 5u;
+constexpr size_t HCDEInvasionSnapshotStateOffset = 6u;
+constexpr size_t HCDEInvasionSnapshotReservedOffset = 7u;
+constexpr size_t HCDEInvasionSnapshotStateTicsOffset = 8u;
+constexpr size_t HCDEInvasionSnapshotWaveOffset = 12u;
+constexpr size_t HCDEInvasionSnapshotMaxWavesOffset = 16u;
+constexpr size_t HCDEInvasionSnapshotWaveBudgetOffset = 20u;
+constexpr size_t HCDEInvasionSnapshotWaveSpawnedOffset = 24u;
+constexpr size_t HCDEInvasionSnapshotWaveClearedOffset = 28u;
+constexpr size_t HCDEInvasionSnapshotActiveMonstersOffset = 32u;
+constexpr size_t HCDEInvasionSnapshotHeaderSize = 36u;
+constexpr uint8_t HCDEInvasionSnapshotProtocolVersion = 1u;
+constexpr uint8_t HCDEInvasionSnapshotMagic[4] = { 'H', 'C', 'I', 'V' };
+constexpr uint8_t HCDEInvasionSnapshotFlagBossWave = 1u << 0;
 constexpr double HCDEServerBaselineRepairDistance = 128.0;
 constexpr double HCDEServerReconcileDistance = 20.0;
 constexpr double HCDEServerReconcileHardDistance = 384.0;
@@ -290,9 +336,122 @@ static uint64_t	MutedClients = 0u;		// Ignore messages from these clients.
 static uint64_t	LastHCDELiveControlMS = 0u;
 static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
 
+struct FInvasionMonsterProfile
+{
+	const char* ClassName;
+	int Cost;
+	int MinWave;
+};
+
+static const FInvasionMonsterProfile InvasionMonsterProfiles[] =
+{
+	{ "ZombieMan", 1, 1 },
+	{ "ShotgunGuy", 2, 1 },
+	{ "DoomImp", 2, 1 },
+	{ "ChaingunGuy", 3, 2 },
+	{ "Demon", 4, 1 },
+	{ "Spectre", 4, 1 },
+	{ "LostSoul", 2, 1 },
+	{ "Cacodemon", 10, 2 },
+	{ "HellKnight", 15, 3 },
+	{ "Revenant", 15, 3 },
+	{ "Arachnotron", 18, 4 },
+	{ "Fatso", 20, 4 },
+	{ "PainElemental", 25, 4 },
+	{ "BaronOfHell", 40, 5 },
+	{ "Archvile", 60, 6 },
+	{ "WolfensteinSS", 5, 2 },
+	{ "Cyberdemon", 200, 8 },
+	{ "SpiderMastermind", 180, 8 }
+};
+
 static int CutsceneCountdown = 0;	// If enough people are ready, count down the timer. This won't reset between unreadies, only on intermission entrance.
 static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to move to move past it.
 static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
+static EInvasionState InvasionState = INVS_DISABLED;
+static int InvasionStateTics = 0;
+static int InvasionReplicatedActiveMonsterCount = 0;
+static FRandom pr_invasion("Invasion");
+constexpr uint8_t INV_WAVEF_BOSS = 1u << 0;
+
+struct FInvasionWaveDirector
+{
+	int Wave = 0;
+	int MaxWaves = 0;
+	int WaveBudget = 0;
+	int WaveSpawned = 0;
+	int WaveCleared = 0;
+	uint8_t WaveFlags = 0u;
+	int SpawnIntervalTics = 0;
+	int SpawnIntervalCountdown = 0;
+	TArray<TObjPtr<AActor*>> ActiveMonsters;
+
+	void Reset()
+	{
+		Wave = 0;
+		MaxWaves = 0;
+		WaveBudget = 0;
+		WaveSpawned = 0;
+		WaveCleared = 0;
+		WaveFlags = 0u;
+		SpawnIntervalTics = 0;
+		SpawnIntervalCountdown = 0;
+		ActiveMonsters.Clear();
+	}
+};
+
+enum EInvasionSpawnSource : uint8_t
+{
+	INVSPAWN_NONE = 0,
+	INVSPAWN_CLASSIC = 1,
+	INVSPAWN_MAPSPOT = 2,
+	INVSPAWN_DEATHMATCH = 3,
+	INVSPAWN_PLAYERSTART = 4,
+};
+
+struct FInvasionSpawnSpotRecord
+{
+	DVector3 Pos = {};
+	DAngle Yaw = nullAngle;
+	int Tag = 0;
+	int StartSpawnNumber = 1;
+	int SpawnDelayTics = 0;
+	int RoundSpawnDelayTics = 0;
+	int FirstWave = 1;
+	int MaxSpawnNumber = 0;
+	int PlannedSpawnCount = 0;
+	int SpawnedCount = 0;
+	int NextSpawnGameTic = 0;
+	EInvasionSpawnSource Source = INVSPAWN_CLASSIC;
+	PClassActor* SpotClass = nullptr;
+};
+
+struct FInvasionSpawnDirectory
+{
+	TArray<FInvasionSpawnSpotRecord> Spots;
+	int ActiveTag = 0;
+	int TotalSpotCount = 0;
+	int ActiveSpotCount = 0;
+	int TotalSpawnBudget = 0;
+	int SpawnedThisWave = 0;
+	bool UsingFallback = false;
+	EInvasionSpawnSource FallbackSource = INVSPAWN_NONE;
+
+	void Reset()
+	{
+		Spots.Clear();
+		ActiveTag = 0;
+		TotalSpotCount = 0;
+		ActiveSpotCount = 0;
+		TotalSpawnBudget = 0;
+		SpawnedThisWave = 0;
+		UsingFallback = false;
+		FallbackSource = INVSPAWN_NONE;
+	}
+};
+
+static FInvasionWaveDirector InvasionWaveDirector = {};
+static FInvasionSpawnDirectory InvasionSpawnDirectory = {};
 
 static int  LevelStartDebug = 0;
 static int	LevelStartDelay = 0; // While this is > 0, don't start generating packets yet.
@@ -312,6 +471,22 @@ static int	LastTicGateStallTrace = 0;
 static int	CommandsAhead = 0;		// If too far ahead of the host, slow down to remove built-up latency.
 static int	SkipCommandTimer = 0;	// Tracker for when to check for skipping commands. ~0.5 seconds in a row of being ahead will start skipping.
 static int	SkipCommandAmount = 0;	// Amount of commands to skip. Try and batch skip them all at once since we won't be able to get an update until the full RTT.
+
+static void Net_SetInvasionState(EInvasionState state, int tics, const char* reason = nullptr)
+{
+	tics = max(tics, 0);
+	if (InvasionState == state && InvasionStateTics == tics)
+		return;
+
+	const EInvasionState prevState = InvasionState;
+	InvasionState = state;
+	InvasionStateTics = tics;
+
+	DebugTrace::Markf("invasion", "state %s -> %s tics=%d reason=%s gametic=%d room=%u map=%s",
+		Net_InvasionStateName(prevState), Net_InvasionStateName(InvasionState), InvasionStateTics,
+		reason != nullptr ? reason : "none", gametic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+}
 
 void D_ProcessEvents(void);
 void G_BuildTiccmd(usercmd_t *cmd);
@@ -1086,6 +1261,89 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 	bodyCursor = cursor;
 	DebugTrace::Markf("net", "HCDE server world delta recv tic=%u players=%u bytes=%zu",
 		serverTic, unsigned(deltaCount), size_t(deltaCount) * HCDEServerWorldDeltaRecordSize + HCDEServerWorldDeltaHeaderSize);
+	return true;
+}
+
+static bool HCDEAppendInvasionSnapshot(uint8_t* output, size_t outputCapacity, size_t& cursor)
+{
+	uint8_t flags = 0u;
+	if (Net_IsInvasionBossWave())
+		flags |= HCDEInvasionSnapshotFlagBossWave;
+
+	if (!HCDEAppendBytes(output, outputCapacity, cursor, HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic))
+		|| !HCDEAppendByte(output, outputCapacity, cursor, HCDEInvasionSnapshotProtocolVersion)
+		|| !HCDEAppendByte(output, outputCapacity, cursor, flags)
+		|| !HCDEAppendByte(output, outputCapacity, cursor, uint8_t(clamp<int>(Net_GetInvasionState(), INVS_DISABLED, INVS_FAILURE)))
+		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionStateTics(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionWave(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionMaxWaves(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionWaveBudget(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionWaveSpawned(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionWaveCleared(), 0)))
+		|| !HCDEAppendBE32(output, outputCapacity, cursor, uint32_t(max(Net_GetInvasionActiveMonsterCount(), 0))))
+	{
+		return false;
+	}
+	return true;
+}
+
+static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t bodyBytes, size_t& bodyCursor)
+{
+	if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < HCDEInvasionSnapshotHeaderSize)
+		return false;
+	if (memcmp(&body[bodyCursor + HCDEInvasionSnapshotMagicOffset], HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic)) != 0)
+		return false;
+
+	const uint8_t version = body[bodyCursor + HCDEInvasionSnapshotVersionOffset];
+	const uint8_t flags = body[bodyCursor + HCDEInvasionSnapshotFlagsOffset];
+	const uint8_t stateRaw = body[bodyCursor + HCDEInvasionSnapshotStateOffset];
+	const uint8_t reserved = body[bodyCursor + HCDEInvasionSnapshotReservedOffset];
+	if (version != HCDEInvasionSnapshotProtocolVersion
+		|| reserved != 0u
+		|| (flags & ~HCDEInvasionSnapshotFlagBossWave) != 0u
+		|| stateRaw > INVS_FAILURE)
+	{
+		return false;
+	}
+
+	size_t cursor = bodyCursor + HCDEInvasionSnapshotStateTicsOffset;
+	uint32_t stateTics = 0u;
+	uint32_t wave = 0u;
+	uint32_t maxWaves = 0u;
+	uint32_t waveBudget = 0u;
+	uint32_t waveSpawned = 0u;
+	uint32_t waveCleared = 0u;
+	uint32_t activeMonsters = 0u;
+	if (!HCDEReadBE32Field(body, bodyBytes, cursor, stateTics)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, wave)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, maxWaves)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, waveBudget)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, waveSpawned)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, waveCleared)
+		|| !HCDEReadBE32Field(body, bodyBytes, cursor, activeMonsters))
+	{
+		return false;
+	}
+
+	InvasionState = EInvasionState(stateRaw);
+	InvasionStateTics = max<int>(int(stateTics), 0);
+	InvasionWaveDirector.Wave = max<int>(int(wave), 0);
+	InvasionWaveDirector.MaxWaves = max<int>(int(maxWaves), 0);
+	InvasionWaveDirector.WaveBudget = max<int>(int(waveBudget), 0);
+	InvasionWaveDirector.WaveSpawned = max<int>(int(waveSpawned), 0);
+	InvasionWaveDirector.WaveCleared = max<int>(int(waveCleared), 0);
+	InvasionWaveDirector.WaveFlags = (flags & HCDEInvasionSnapshotFlagBossWave) != 0u ? INV_WAVEF_BOSS : 0u;
+	InvasionWaveDirector.ActiveMonsters.Clear();
+	InvasionReplicatedActiveMonsterCount = max<int>(int(activeMonsters), 0);
+
+	bodyCursor = cursor;
+	DebugTrace::Markf("net", "HCDE invasion snapshot recv client=%d state=%s tics=%d wave=%d/%d budget=%d spawned=%d cleared=%d active=%d boss=%d",
+		clientNum, Net_InvasionStateName(InvasionState), InvasionStateTics,
+		InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves,
+		InvasionWaveDirector.WaveBudget, InvasionWaveDirector.WaveSpawned,
+		InvasionWaveDirector.WaveCleared, InvasionReplicatedActiveMonsterCount,
+		(InvasionWaveDirector.WaveFlags & INV_WAVEF_BOSS) != 0u ? 1 : 0);
 	return true;
 }
 
@@ -2041,6 +2299,8 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 
 	if (!HCDEAppendServerWorldDeltas(output, outputCapacity, bodyCursor, snapshotPlayers, snapshotPlayerCount))
 		return RejectHCDEServerSnapshotBuild(client, "world-delta-overflow", legacySize, recordCursor);
+	if (!HCDEAppendInvasionSnapshot(output, outputCapacity, bodyCursor))
+		return RejectHCDEServerSnapshotBuild(client, "invasion-overflow", legacySize, recordCursor);
 
 	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
 	if (bodyBytes > 0xffffu)
@@ -2682,6 +2942,8 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 
 	if (!HCDEValidateServerWorldDeltas(clientNum, body, bodyBytes, bodyCursor, playerCount, playersSeen))
 		return rejectServerSnapshot("invalid-world-deltas");
+	if (bodyCursor < bodyBytes && !HCDEApplyInvasionSnapshot(clientNum, body, bodyBytes, bodyCursor))
+		return rejectServerSnapshot("invalid-invasion-snapshot");
 
 	if (bodyCursor != bodyBytes)
 		return rejectServerSnapshot("trailing-record-bytes");
@@ -2934,6 +3196,74 @@ CUSTOM_CVAR(Float, sv_invasioncountdowntime, 30.0f, CVAR_SERVERINFO | CVAR_NOSAV
 	if (self < 0.0f)
 		self = 0.0f;
 }
+CUSTOM_CVAR(Float, sv_invasionspawntime, 8.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0.0f)
+		self = 0.0f;
+}
+CUSTOM_CVAR(Float, sv_invasioncleanuptime, 4.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0.0f)
+		self = 0.0f;
+}
+CUSTOM_CVAR(Float, sv_invasionintermissiontime, 6.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0.0f)
+		self = 0.0f;
+}
+CUSTOM_CVAR(Float, sv_invasionresulttime, 8.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0.0f)
+		self = 0.0f;
+}
+CUSTOM_CVAR(Int, sv_invasionwaves, 8, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 255)
+		self = 255;
+}
+CUSTOM_CVAR(Int, sv_invasionbasebudget, 24, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 1)
+		self = 1;
+}
+CUSTOM_CVAR(Int, sv_invasionbudgetstep, 8, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+}
+CUSTOM_CVAR(Int, sv_invasionperplayer, 6, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+}
+CUSTOM_CVAR(Float, sv_invasionspawninterval, 0.35f, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0.05f)
+		self = 0.05f;
+}
+CUSTOM_CVAR(Int, sv_invasionspawnburst, 3, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 1)
+		self = 1;
+}
+CUSTOM_CVAR(Int, sv_invasionbosswaveevery, 5, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+}
+CUSTOM_CVAR(Int, sv_invasionbossbonus, 20, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+}
+CUSTOM_CVAR(Bool, sv_invasionspotusemaptags, true, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+}
+CUSTOM_CVAR(Bool, sv_invasionspotfallback, true, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+}
 
 CVAR(Bool, cl_noboldchat, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, cl_nochatsound, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -3106,6 +3436,755 @@ public:
 	}
 } NetEvents;
 
+static const char* Net_InvasionSpawnSourceName(EInvasionSpawnSource source)
+{
+	switch (source)
+	{
+	case INVSPAWN_CLASSIC: return "classic";
+	case INVSPAWN_MAPSPOT: return "mapspot";
+	case INVSPAWN_DEATHMATCH: return "deathmatch";
+	case INVSPAWN_PLAYERSTART: return "playerstart";
+	default: return "none";
+	}
+}
+
+static PClassActor* Net_GetInvasionSpotBaseClass()
+{
+	static bool resolved = false;
+	static PClassActor* cls = nullptr;
+	if (!resolved)
+	{
+		cls = PClass::FindActor("BaseMonsterInvasionSpot");
+		if (cls == nullptr)
+			cls = PClass::FindActor("CustomMonsterInvasionSpot");
+		resolved = true;
+	}
+	return cls;
+}
+
+static PClassActor* Net_GetMapSpotClass()
+{
+	static bool resolved = false;
+	static PClassActor* cls = nullptr;
+	if (!resolved)
+	{
+		cls = PClass::FindActor("MapSpot");
+		resolved = true;
+	}
+	return cls;
+}
+
+static bool Net_IsNoMonstersActive()
+{
+	if ((dmflags & DF_NO_MONSTERS) != 0)
+		return true;
+	return primaryLevel != nullptr && (primaryLevel->flags2 & LEVEL2_NOMONSTERS) != 0;
+}
+
+static bool Net_IsValidInvasionMonsterClass(const PClassActor* cls)
+{
+	if (cls == nullptr)
+		return false;
+
+	const AActor* defaults = GetDefaultByType(cls);
+	if (defaults == nullptr)
+		return false;
+
+	return (defaults->flags3 & MF3_ISMONSTER) != 0;
+}
+
+static PClassActor* Net_ResolveInvasionMonsterClass(const char* className)
+{
+	if (className == nullptr || *className == '\0')
+		return nullptr;
+
+	PClassActor* cls = PClass::FindActor(className);
+	if (cls == nullptr)
+		return nullptr;
+
+	cls = cls->GetReplacement(primaryLevel);
+	return Net_IsValidInvasionMonsterClass(cls) ? cls : nullptr;
+}
+
+static PClassActor* Net_SelectInvasionMonsterFromPool(const char* const* pool, size_t count, int wave)
+{
+	if (pool == nullptr || count == 0)
+		return nullptr;
+
+	TArray<PClassActor*> resolved;
+	for (size_t i = 0; i < count; ++i)
+	{
+		PClassActor* cls = Net_ResolveInvasionMonsterClass(pool[i]);
+		if (cls == nullptr)
+			continue;
+
+		bool waveMet = true;
+		for (const auto& profile : InvasionMonsterProfiles)
+		{
+			if (stricmp(profile.ClassName, pool[i]) == 0)
+			{
+				if (wave < profile.MinWave)
+					waveMet = false;
+				break;
+			}
+		}
+
+		if (waveMet)
+			resolved.Push(cls);
+	}
+
+	if (resolved.Size() == 0)
+		return nullptr;
+
+	return resolved[pr_invasion() % resolved.Size()];
+}
+
+static PClassActor* Net_SelectInvasionMonsterFromDropList(const PClassActor* spotClass)
+{
+	if (spotClass == nullptr)
+		return nullptr;
+
+	const AActor* defaults = GetDefaultByType(spotClass);
+	if (defaults == nullptr)
+		return nullptr;
+
+	const FDropItem* drop = defaults->GetDropItems();
+	if (drop == nullptr)
+		return nullptr;
+
+	int weightTotal = 0;
+	for (auto di = drop; di != nullptr; di = di->Next)
+	{
+		if (di->Name == NAME_None)
+			continue;
+
+		PClassActor* candidate = PClass::FindActor(di->Name);
+		if (!Net_IsValidInvasionMonsterClass(candidate))
+			continue;
+
+		const int amount = max(di->Amount, 1);
+		weightTotal += amount;
+	}
+
+	if (weightTotal <= 0)
+		return nullptr;
+
+	int pick = pr_invasion() % weightTotal;
+	for (auto di = drop; di != nullptr; di = di->Next)
+	{
+		if (di->Name == NAME_None)
+			continue;
+
+		PClassActor* candidate = PClass::FindActor(di->Name);
+		if (!Net_IsValidInvasionMonsterClass(candidate))
+			continue;
+
+		const int amount = max(di->Amount, 1);
+		pick -= amount;
+		if (pick >= 0)
+			continue;
+
+		const int probability = clamp<int>(di->Probability, 0, 255);
+		if (pr_invasion() > probability)
+			return nullptr;
+
+		candidate = candidate->GetReplacement(primaryLevel);
+		return Net_IsValidInvasionMonsterClass(candidate) ? candidate : nullptr;
+	}
+
+	return nullptr;
+}
+
+static PClassActor* Net_SelectInvasionMonsterForSpot(const FInvasionSpawnSpotRecord& spot)
+{
+	static const char* const weakPool[] = {
+		"ZombieMan", "ShotgunGuy", "ChaingunGuy", "DoomImp", "Demon", "Spectre", "LostSoul"
+	};
+	static const char* const strongPool[] = {
+		"Cacodemon", "HellKnight", "BaronOfHell", "Revenant", "Fatso", "Arachnotron", "PainElemental"
+	};
+	static const char* const bossPool[] = {
+		"Archvile", "Cyberdemon", "SpiderMastermind", "BaronOfHell", "Revenant"
+	};
+	static const char* const anyPool[] = {
+		"ZombieMan", "ShotgunGuy", "ChaingunGuy", "DoomImp", "Demon", "Spectre", "LostSoul",
+		"Cacodemon", "HellKnight", "BaronOfHell", "Revenant", "Fatso", "Arachnotron",
+		"PainElemental", "Archvile", "WolfensteinSS", "Cyberdemon", "SpiderMastermind"
+	};
+
+	if (Net_IsNoMonstersActive())
+		return nullptr;
+
+	if (spot.SpotClass != nullptr)
+	{
+		// First preference: let modded/map-authored invasion spots provide a drop list.
+		if (PClassActor* fromDropList = Net_SelectInvasionMonsterFromDropList(spot.SpotClass); fromDropList != nullptr)
+			return fromDropList;
+
+		auto checkSpot = [&](const char* className) {
+			auto cls = PClass::FindActor(className);
+			return cls != nullptr && spot.SpotClass->IsA(cls);
+		};
+
+		if (checkSpot("ImpSpot")) return Net_ResolveInvasionMonsterClass("DoomImp");
+		if (checkSpot("DemonSpot")) return Net_ResolveInvasionMonsterClass("Demon");
+		if (checkSpot("SpectreSpot")) return Net_ResolveInvasionMonsterClass("Spectre");
+		if (checkSpot("ZombieManSpot")) return Net_ResolveInvasionMonsterClass("ZombieMan");
+		if (checkSpot("ShotgunGuySpot")) return Net_ResolveInvasionMonsterClass("ShotgunGuy");
+		if (checkSpot("ChaingunGuySpot")) return Net_ResolveInvasionMonsterClass("ChaingunGuy");
+		if (checkSpot("CacodemonSpot")) return Net_ResolveInvasionMonsterClass("Cacodemon");
+		if (checkSpot("RevenantSpot")) return Net_ResolveInvasionMonsterClass("Revenant");
+		if (checkSpot("FatsoSpot")) return Net_ResolveInvasionMonsterClass("Fatso");
+		if (checkSpot("ArachnotronSpot")) return Net_ResolveInvasionMonsterClass("Arachnotron");
+		if (checkSpot("HellKnightSpot")) return Net_ResolveInvasionMonsterClass("HellKnight");
+		if (checkSpot("BaronOfHellSpot")) return Net_ResolveInvasionMonsterClass("BaronOfHell");
+		if (checkSpot("LostSoulSpot")) return Net_ResolveInvasionMonsterClass("LostSoul");
+		if (checkSpot("PainElementalSpot")) return Net_ResolveInvasionMonsterClass("PainElemental");
+		if (checkSpot("CyberdemonSpot")) return Net_ResolveInvasionMonsterClass("Cyberdemon");
+		if (checkSpot("SpiderMastermindSpot")) return Net_ResolveInvasionMonsterClass("SpiderMastermind");
+		if (checkSpot("ArchvileSpot")) return Net_ResolveInvasionMonsterClass("Archvile");
+		if (checkSpot("WolfensteinSSSpot")) return Net_ResolveInvasionMonsterClass("WolfensteinSS");
+
+		if (checkSpot("WeakDoomMonsterSpot"))
+			return Net_SelectInvasionMonsterFromPool(weakPool, countof(weakPool), InvasionWaveDirector.Wave);
+		if (checkSpot("PowerfulDoomMonsterSpot"))
+			return Net_SelectInvasionMonsterFromPool(strongPool, countof(strongPool), InvasionWaveDirector.Wave);
+		if (checkSpot("VeryPowerfulDoomMonsterSpot"))
+			return Net_SelectInvasionMonsterFromPool(bossPool, countof(bossPool), InvasionWaveDirector.Wave);
+		if (checkSpot("AnyDoomMonsterSpot"))
+			return Net_SelectInvasionMonsterFromPool(anyPool, countof(anyPool), InvasionWaveDirector.Wave);
+	}
+
+	if (InvasionWaveDirector.Wave >= 8)
+		return Net_SelectInvasionMonsterFromPool(bossPool, countof(bossPool), InvasionWaveDirector.Wave);
+	if (InvasionWaveDirector.Wave >= 4)
+		return Net_SelectInvasionMonsterFromPool(strongPool, countof(strongPool), InvasionWaveDirector.Wave);
+	return Net_SelectInvasionMonsterFromPool(weakPool, countof(weakPool), InvasionWaveDirector.Wave);
+}
+
+static bool Net_SpawnInvasionMonster(FInvasionSpawnSpotRecord& spot)
+{
+	if (primaryLevel == nullptr || gamestate != GS_LEVEL)
+		return false;
+
+	PClassActor* monsterClass = Net_SelectInvasionMonsterForSpot(spot);
+	if (monsterClass == nullptr)
+		return false;
+
+	// Telefrag protection: check if any player is at the spawn spot.
+	for (int i = 0; i < MAXPLAYERS; ++i)
+	{
+		if (!playeringame[i] || players[i].mo == nullptr || players[i].mo->health <= 0)
+			continue;
+
+		const AActor* playerMo = players[i].mo;
+		const double dist = (playerMo->Pos() - spot.Pos).Length();
+		if (dist < playerMo->radius + GetDefaultByType(monsterClass)->radius)
+		{
+			// Player is too close, defer spawn.
+			return false;
+		}
+	}
+
+	AActor* spawned = Spawn(primaryLevel, monsterClass, spot.Pos, ALLOW_REPLACE);
+	if (spawned == nullptr)
+		return false;
+
+	// Mirror ACS SpawnSpot behavior: briefly allow actor overlap for the spawn test.
+	const ActorFlags2 oldFlags2 = spawned->flags2;
+	spawned->flags2 |= MF2_PASSMOBJ;
+	if (!P_TestMobjLocation(spawned))
+	{
+		spawned->flags2 = oldFlags2;
+		spawned->ClearCounters();
+		spawned->Destroy();
+		return false;
+	}
+
+	spawned->flags2 = oldFlags2;
+	spawned->Angles.Yaw = spot.Yaw;
+	InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(spawned));
+	return true;
+}
+
+static void Net_UpdateInvasionWaveClearProgress()
+{
+	int aliveMonsters = 0;
+	size_t writeIdx = 0;
+	for (size_t i = 0; i < InvasionWaveDirector.ActiveMonsters.Size(); ++i)
+	{
+		AActor* actor = InvasionWaveDirector.ActiveMonsters[i];
+		if (actor == nullptr || actor->health <= 0 || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+		{
+			continue;
+		}
+
+		if (writeIdx != i)
+		{
+			InvasionWaveDirector.ActiveMonsters[writeIdx] = InvasionWaveDirector.ActiveMonsters[i];
+		}
+		++writeIdx;
+		++aliveMonsters;
+	}
+
+	if (writeIdx < InvasionWaveDirector.ActiveMonsters.Size())
+	{
+		InvasionWaveDirector.ActiveMonsters.Resize(unsigned(writeIdx));
+	}
+
+	InvasionWaveDirector.WaveCleared = max(InvasionWaveDirector.WaveSpawned - aliveMonsters, 0);
+}
+
+static double Net_GetInvasionMonsterDifficultyModifier()
+{
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 1)
+		return 1.25;
+	if (skillIndex == 2)
+		return 1.5;
+	return 1.6225;
+}
+
+static int Net_ComputeInvasionSpotWaveCount(const FInvasionSpawnSpotRecord& spot, int wave)
+{
+	const int firstWave = max(spot.FirstWave, 1);
+	if (wave < firstWave)
+		return 0;
+
+	const int startAmount = max(spot.StartSpawnNumber, 1);
+	const int waveAge = max(wave - firstWave, 0);
+	const double modifier = Net_GetInvasionMonsterDifficultyModifier();
+	const double scaled = pow(modifier, double(waveAge)) * double(startAmount);
+	int count = max<int>(int(floor(scaled + 0.5)), 0);
+	if (spot.MaxSpawnNumber > 0)
+		count = min(count, spot.MaxSpawnNumber);
+	return count;
+}
+
+static int Net_SelectInvasionSpotTag(const TArray<FInvasionSpawnSpotRecord>& spots, int wave)
+{
+	if (!sv_invasionspotusemaptags)
+		return 0;
+
+	TArray<int> tags;
+	for (const auto& spot : spots)
+	{
+		if (spot.Tag <= 0 || spot.Source != INVSPAWN_CLASSIC)
+			continue;
+
+		bool exists = false;
+		for (const int tag : tags)
+		{
+			if (tag == spot.Tag)
+			{
+				exists = true;
+				break;
+			}
+		}
+		if (!exists)
+			tags.Push(spot.Tag);
+	}
+
+	if (tags.Size() == 0)
+		return 0;
+
+	for (const int tag : tags)
+	{
+		if (tag == wave)
+			return tag;
+	}
+
+	for (unsigned i = 0; i + 1 < tags.Size(); ++i)
+	{
+		for (unsigned j = i + 1; j < tags.Size(); ++j)
+		{
+			if (tags[j] < tags[i])
+			{
+				const int swapValue = tags[i];
+				tags[i] = tags[j];
+				tags[j] = swapValue;
+			}
+		}
+	}
+	const int index = clamp<int>(wave - 1, 0, int(tags.Size()) - 1);
+	return tags[index];
+}
+
+static void Net_BuildFallbackInvasionSpots(FLevelLocals* level)
+{
+	InvasionSpawnDirectory.UsingFallback = true;
+	InvasionSpawnDirectory.FallbackSource = INVSPAWN_NONE;
+
+	if (sv_invasionspotfallback && level != nullptr)
+	{
+		if (auto mapSpotClass = Net_GetMapSpotClass(); mapSpotClass != nullptr)
+		{
+			auto it = level->GetThinkerIterator<AActor>();
+			AActor* actor = nullptr;
+			while ((actor = it.Next()) != nullptr)
+			{
+				if (!actor->IsA(mapSpotClass))
+					continue;
+
+				FInvasionSpawnSpotRecord record;
+				record.Pos = actor->Pos();
+				record.Yaw = actor->Angles.Yaw;
+				record.Tag = actor->tid;
+				record.Source = INVSPAWN_MAPSPOT;
+				record.PlannedSpawnCount = 0;
+				record.NextSpawnGameTic = gametic;
+				InvasionSpawnDirectory.Spots.Push(record);
+			}
+		}
+	}
+
+	if (InvasionSpawnDirectory.Spots.Size() > 0)
+	{
+		InvasionSpawnDirectory.FallbackSource = INVSPAWN_MAPSPOT;
+		return;
+	}
+
+	if (level != nullptr)
+	{
+		for (const auto& start : level->deathmatchstarts)
+		{
+			FInvasionSpawnSpotRecord record;
+			record.Pos = start.pos;
+			record.Yaw = DAngle::fromDeg(start.angle);
+			record.Source = INVSPAWN_DEATHMATCH;
+			record.PlannedSpawnCount = 0;
+			record.NextSpawnGameTic = gametic;
+			InvasionSpawnDirectory.Spots.Push(record);
+		}
+	}
+
+	if (InvasionSpawnDirectory.Spots.Size() > 0)
+	{
+		InvasionSpawnDirectory.FallbackSource = INVSPAWN_DEATHMATCH;
+		return;
+	}
+
+	if (level != nullptr)
+	{
+		for (const auto& start : level->AllPlayerStarts)
+		{
+			FInvasionSpawnSpotRecord record;
+			record.Pos = start.pos;
+			record.Yaw = DAngle::fromDeg(start.angle);
+			record.Source = INVSPAWN_PLAYERSTART;
+			record.PlannedSpawnCount = 0;
+			record.NextSpawnGameTic = gametic;
+			InvasionSpawnDirectory.Spots.Push(record);
+		}
+	}
+
+	if (InvasionSpawnDirectory.Spots.Size() > 0)
+		InvasionSpawnDirectory.FallbackSource = INVSPAWN_PLAYERSTART;
+}
+
+static void Net_RebuildInvasionSpawnSpots(int wave)
+{
+	if (primaryLevel == nullptr || gamestate != GS_LEVEL)
+	{
+		InvasionSpawnDirectory.Reset();
+		return;
+	}
+
+	if (InvasionSpawnDirectory.Spots.Size() == 0)
+	{
+		const PClassActor* invasionSpotBase = Net_GetInvasionSpotBaseClass();
+		if (invasionSpotBase != nullptr)
+		{
+			auto it = primaryLevel->GetThinkerIterator<AActor>();
+			AActor* actor = nullptr;
+			while ((actor = it.Next()) != nullptr)
+			{
+				if (!actor->IsA(invasionSpotBase))
+					continue;
+
+				FInvasionSpawnSpotRecord record;
+				record.Pos = actor->Pos();
+				record.Yaw = actor->Angles.Yaw;
+				record.Tag = actor->tid;
+				record.StartSpawnNumber = max<int>(actor->args[0], 1);
+				record.SpawnDelayTics = max(Net_InvasionSecondsToTics(float(actor->args[1])), 0);
+				record.RoundSpawnDelayTics = max(Net_InvasionSecondsToTics(float(actor->args[2])), 0);
+				record.FirstWave = max<int>(actor->args[3], 1);
+				record.MaxSpawnNumber = max<int>(actor->args[4], 0);
+				record.Source = INVSPAWN_CLASSIC;
+				record.SpotClass = actor->GetClass();
+				record.PlannedSpawnCount = 0;
+				record.SpawnedCount = 0;
+				record.NextSpawnGameTic = 0;
+				InvasionSpawnDirectory.Spots.Push(record);
+			}
+		}
+
+		if (InvasionSpawnDirectory.Spots.Size() == 0)
+		{
+			Net_BuildFallbackInvasionSpots(primaryLevel);
+		}
+		InvasionSpawnDirectory.TotalSpotCount = int(InvasionSpawnDirectory.Spots.Size());
+	}
+
+	InvasionSpawnDirectory.ActiveTag = Net_SelectInvasionSpotTag(InvasionSpawnDirectory.Spots, wave);
+	InvasionSpawnDirectory.TotalSpawnBudget = 0;
+	InvasionSpawnDirectory.ActiveSpotCount = 0;
+	InvasionSpawnDirectory.SpawnedThisWave = 0;
+
+	for (auto& spot : InvasionSpawnDirectory.Spots)
+	{
+		spot.SpawnedCount = 0;
+		spot.NextSpawnGameTic = gametic + spot.RoundSpawnDelayTics;
+
+		if (InvasionSpawnDirectory.ActiveTag > 0 && spot.Tag > 0 && spot.Tag != InvasionSpawnDirectory.ActiveTag)
+		{
+			spot.PlannedSpawnCount = 0;
+			continue;
+		}
+
+		spot.PlannedSpawnCount = Net_ComputeInvasionSpotWaveCount(spot, wave);
+		if (spot.PlannedSpawnCount > 0)
+		{
+			InvasionSpawnDirectory.TotalSpawnBudget += spot.PlannedSpawnCount;
+			++InvasionSpawnDirectory.ActiveSpotCount;
+		}
+	}
+}
+
+static bool Net_TryConsumeInvasionSpawnSlot()
+{
+	if (InvasionSpawnDirectory.Spots.Size() == 0)
+		return false;
+
+	TArray<int> available;
+	for (int i = 0; i < int(InvasionSpawnDirectory.Spots.Size()); ++i)
+	{
+		auto& spot = InvasionSpawnDirectory.Spots[i];
+		if (spot.Source == INVSPAWN_CLASSIC)
+		{
+			if (spot.PlannedSpawnCount <= 0 || spot.SpawnedCount >= spot.PlannedSpawnCount)
+				continue;
+			if (gametic < spot.NextSpawnGameTic)
+				continue;
+		}
+		available.Push(i);
+	}
+
+	if (available.Size() == 0)
+		return false;
+
+	const int pick = available[pr_invasion() % available.Size()];
+	auto& selected = InvasionSpawnDirectory.Spots[pick];
+	const bool spawned = Net_SpawnInvasionMonster(selected);
+	if (selected.Source == INVSPAWN_CLASSIC)
+	{
+		if (spawned)
+			++selected.SpawnedCount;
+
+		// Failed attempts still back off briefly so blocked spots do not spin every tic.
+		const int spawnDelay = max(selected.SpawnDelayTics, TICRATE / 2);
+		if (spawnDelay > 0)
+			selected.NextSpawnGameTic = gametic + spawnDelay;
+	}
+
+	if (!spawned)
+		return false;
+
+	++InvasionSpawnDirectory.SpawnedThisWave;
+	++InvasionWaveDirector.WaveSpawned;
+	return true;
+}
+
+static void Net_ResetInvasionState(const char* reason)
+{
+	InvasionWaveDirector.Reset();
+	InvasionSpawnDirectory.Reset();
+	InvasionReplicatedActiveMonsterCount = 0;
+	if (Net_IsInvasionModeEnabled())
+		Net_SetInvasionState(INVS_WAITING, 0, reason != nullptr ? reason : "reset");
+	else
+		Net_SetInvasionState(INVS_DISABLED, 0, reason != nullptr ? reason : "reset");
+}
+
+static int Net_CountInvasionParticipants()
+{
+	int count = 0;
+	for (int player = 0; player < MAXPLAYERS; ++player)
+	{
+		if (playeringame[player] && !I_IsServerReservedSlot(player))
+			++count;
+	}
+
+	return max(count, 1);
+}
+
+static int Net_ComputeInvasionWaveBudget(int wave, bool bossWave)
+{
+	const int players = Net_CountInvasionParticipants();
+	int budget = sv_invasionbasebudget;
+	budget += max(wave - 1, 0) * sv_invasionbudgetstep;
+	budget += max(players - 1, 0) * sv_invasionperplayer;
+	if (bossWave)
+		budget += sv_invasionbossbonus;
+	return clamp<int>(budget, 1, 65535);
+}
+
+static bool Net_IsInvasionBossWave(int wave)
+{
+	return sv_invasionbosswaveevery > 0 && wave > 0 && (wave % sv_invasionbosswaveevery) == 0;
+}
+
+static void Net_StartInvasionWave(const char* reason)
+{
+	InvasionWaveDirector.MaxWaves = clamp<int>(sv_invasionwaves, 1, 255);
+	if (InvasionWaveDirector.Wave >= InvasionWaveDirector.MaxWaves)
+	{
+		Net_SetInvasionState(INVS_VICTORY, Net_InvasionSecondsToTics(sv_invasionresulttime),
+			reason != nullptr ? reason : "waves-complete");
+		return;
+	}
+
+	++InvasionWaveDirector.Wave;
+	const bool bossWave = Net_IsInvasionBossWave(InvasionWaveDirector.Wave);
+	InvasionWaveDirector.WaveFlags = bossWave ? INV_WAVEF_BOSS : 0u;
+	InvasionWaveDirector.WaveBudget = Net_ComputeInvasionWaveBudget(InvasionWaveDirector.Wave, bossWave);
+	InvasionWaveDirector.WaveSpawned = 0;
+	InvasionWaveDirector.WaveCleared = 0;
+	InvasionWaveDirector.ActiveMonsters.Clear();
+	InvasionWaveDirector.SpawnIntervalTics = max(Net_InvasionSecondsToTics(sv_invasionspawninterval), 1);
+	InvasionWaveDirector.SpawnIntervalCountdown = InvasionWaveDirector.SpawnIntervalTics;
+
+	Net_RebuildInvasionSpawnSpots(InvasionWaveDirector.Wave);
+	if (InvasionSpawnDirectory.TotalSpawnBudget > 0)
+	{
+		// Invasion spot records own wave budgets when a map provides native invasion
+		// markers. The Stage 3 budget cvars remain as fallback for non-invasion maps.
+		InvasionWaveDirector.WaveBudget = InvasionSpawnDirectory.TotalSpawnBudget;
+	}
+
+	int spawnWindow = Net_InvasionSecondsToTics(sv_invasionspawntime);
+	if (spawnWindow <= 0)
+	{
+		const int burst = max<int>(sv_invasionspawnburst, 1);
+		const int chunks = (InvasionWaveDirector.WaveBudget + burst - 1) / burst;
+		spawnWindow = max(chunks * InvasionWaveDirector.SpawnIntervalTics, 1);
+	}
+
+	DebugTrace::Markf("invasion", "wave=%d/%d budget=%d spots=%d active=%d tag=%d fallback=%d source=%s map=%s",
+		InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves, InvasionWaveDirector.WaveBudget,
+		InvasionSpawnDirectory.TotalSpotCount, InvasionSpawnDirectory.ActiveSpotCount, InvasionSpawnDirectory.ActiveTag,
+		InvasionSpawnDirectory.UsingFallback ? 1 : 0, Net_InvasionSpawnSourceName(InvasionSpawnDirectory.FallbackSource),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+
+	Net_SetInvasionState(INVS_SPAWNING, spawnWindow, reason != nullptr ? reason : "wave-start");
+}
+
+static void Net_MarkInvasionVictory(const char* reason)
+{
+	Net_SetInvasionState(INVS_VICTORY, Net_InvasionSecondsToTics(sv_invasionresulttime), reason);
+}
+
+static void Net_MarkInvasionFailure(const char* reason)
+{
+	Net_SetInvasionState(INVS_FAILURE, Net_InvasionSecondsToTics(sv_invasionresulttime), reason);
+}
+
+static void Net_TickInvasionState()
+{
+	if (!Net_IsInvasionModeEnabled())
+	{
+		if (InvasionState != INVS_DISABLED)
+		{
+			InvasionWaveDirector.Reset();
+			InvasionSpawnDirectory.Reset();
+			Net_SetInvasionState(INVS_DISABLED, 0, "mode-disabled");
+		}
+		return;
+	}
+
+	if (InvasionState == INVS_DISABLED)
+	{
+		InvasionWaveDirector.Reset();
+		InvasionSpawnDirectory.Reset();
+		Net_SetInvasionState(INVS_WAITING, 0, "mode-enabled");
+	}
+
+	if (InvasionState == INVS_COUNTDOWN)
+	{
+		// Countdown ownership stays with the existing cutscene-ready flow.
+		InvasionStateTics = max(CutsceneCountdown, 0);
+		return;
+	}
+
+	if (InvasionStateTics > 0)
+		--InvasionStateTics;
+
+	Net_UpdateInvasionWaveClearProgress();
+
+	switch (InvasionState)
+	{
+	case INVS_SPAWNING:
+		if (InvasionWaveDirector.Wave <= 0)
+			Net_StartInvasionWave("spawn-wave-bootstrap");
+
+		if (InvasionWaveDirector.WaveSpawned < InvasionWaveDirector.WaveBudget)
+		{
+			if (--InvasionWaveDirector.SpawnIntervalCountdown <= 0)
+			{
+				InvasionWaveDirector.SpawnIntervalCountdown = InvasionWaveDirector.SpawnIntervalTics;
+				const int burst = max<int>(sv_invasionspawnburst, 1);
+				int consumed = 0;
+				while (consumed < burst && InvasionWaveDirector.WaveSpawned < InvasionWaveDirector.WaveBudget)
+				{
+					if (!Net_TryConsumeInvasionSpawnSlot())
+						break;
+					++consumed;
+				}
+			}
+		}
+		Net_UpdateInvasionWaveClearProgress();
+
+		if (InvasionWaveDirector.WaveSpawned >= InvasionWaveDirector.WaveBudget || InvasionStateTics <= 0)
+		{
+			Net_SetInvasionState(INVS_CLEANUP, Net_InvasionSecondsToTics(sv_invasioncleanuptime),
+				InvasionWaveDirector.WaveSpawned >= InvasionWaveDirector.WaveBudget ? "wave-spawned" : "spawn-timeout");
+		}
+		break;
+
+	case INVS_CLEANUP:
+		if (InvasionStateTics <= 0)
+		{
+			if (InvasionWaveDirector.WaveCleared >= InvasionWaveDirector.WaveBudget)
+			{
+				if (InvasionWaveDirector.Wave >= InvasionWaveDirector.MaxWaves)
+					Net_MarkInvasionVictory("all-waves-cleared");
+				else
+					Net_SetInvasionState(INVS_INTERMISSION, Net_InvasionSecondsToTics(sv_invasionintermissiontime), "cleanup-complete");
+			}
+			else
+			{
+				Net_MarkInvasionFailure("cleanup-timeout");
+			}
+		}
+		break;
+
+	case INVS_INTERMISSION:
+		if (InvasionStateTics <= 0)
+			Net_StartInvasionWave("intermission-complete");
+		break;
+
+	case INVS_VICTORY:
+	case INVS_FAILURE:
+		if (InvasionStateTics <= 0)
+			Net_ResetInvasionState("result-finished");
+		break;
+
+	default:
+		break;
+	}
+}
+
 void Net_ClearBuffers()
 {
 	CloseNetwork();
@@ -3157,6 +4236,7 @@ void Net_ClearBuffers()
 
 	CutsceneReady = 0u;
 	CutsceneCountdown = 0;
+	Net_ResetInvasionState("clear-buffers");
 	bCommandsReset = false;
 	AuthorityWaitGraceUntil = 0;
 
@@ -3262,12 +4342,14 @@ void Net_StartCutscene()
 		CutsceneReadyLastToggle[i] = gametic - TICRATE;
 
 	float countdownSeconds = net_cutscenecountdown;
-	// sv_gametype 4 currently maps to the Horde stub path. Use the invasion
-	// countdown override here so server operators can tune mode-specific pacing.
+	// sv_gametype 4 is the native Invasion identity. It still uses cooperative
+	// rules until the wave director is wired, but servers can tune its pacing now.
 	if (sv_gametype == 4)
 		countdownSeconds = sv_invasioncountdowntime;
 
 	CutsceneCountdown = netgame && !demoplayback && countdownSeconds > 0.0f ? static_cast<int>(ceil(countdownSeconds * TICRATE)) : 0;
+	if (Net_IsInvasionModeEnabled())
+		Net_SetInvasionState(INVS_COUNTDOWN, CutsceneCountdown, "cutscene-start");
 }
 
 // Allow the game to automatically start after a set amount of time.
@@ -3337,6 +4419,8 @@ void Net_AdvanceCutscene()
 {
 	CutsceneReady = 0u;
 	CutsceneCountdown = 0;
+	if (Net_IsInvasionModeEnabled())
+		Net_StartInvasionWave("cutscene-advance");
 	if (I_IsLocalHCDEServiceAuthority())
 		Net_WriteInt8(DEM_ENDSCREENJOB);
 }
@@ -3429,6 +4513,7 @@ void Net_ResetCommands(bool midTic)
 	}
 
 	NetEvents.ResetStream();
+	Net_ResetInvasionState("reset-commands");
 }
 
 void Net_SetWaiting()
@@ -5616,8 +6701,10 @@ void TryRunTics()
 			D_DoAdvanceDemo();
 
 		G_Ticker();
-		MakeConsistencies();
 		++gametic;
+		if (I_IsLocalHCDEServiceAuthority())
+			Net_TickInvasionState();
+		MakeConsistencies();
 
 		if (stabilize)
 			TicStabilityEnd();
@@ -6670,6 +7757,370 @@ int Net_GetLatency(int* localDelay, int* arbitratorDelay)
 //
 //==========================================================================
 
+EInvasionState Net_GetInvasionState()
+{
+	return InvasionState;
+}
+
+const char* Net_GetInvasionStateName()
+{
+	return Net_InvasionStateName(InvasionState);
+}
+
+int Net_GetInvasionStateTics()
+{
+	if (InvasionState == INVS_COUNTDOWN)
+		return max(CutsceneCountdown, 0);
+	return max(InvasionStateTics, 0);
+}
+
+int Net_GetInvasionWave()
+{
+	return max(InvasionWaveDirector.Wave, 0);
+}
+
+int Net_GetInvasionMaxWaves()
+{
+	return max(InvasionWaveDirector.MaxWaves, 0);
+}
+
+int Net_GetInvasionWaveBudget()
+{
+	return max(InvasionWaveDirector.WaveBudget, 0);
+}
+
+int Net_GetInvasionWaveSpawned()
+{
+	return max(InvasionWaveDirector.WaveSpawned, 0);
+}
+
+int Net_GetInvasionWaveCleared()
+{
+	return max(InvasionWaveDirector.WaveCleared, 0);
+}
+
+int Net_GetInvasionActiveMonsterCount()
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+		return max(InvasionReplicatedActiveMonsterCount, 0);
+	return max(int(InvasionWaveDirector.ActiveMonsters.Size()), 0);
+}
+
+bool Net_IsInvasionBossWave()
+{
+	return (InvasionWaveDirector.WaveFlags & INV_WAVEF_BOSS) != 0u;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionWave, Net_GetInvasionWave)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionWave());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionMaxWaves, Net_GetInvasionMaxWaves)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionMaxWaves());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionState, Net_GetInvasionState)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(int(Net_GetInvasionState()));
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionActiveMonsterCount, Net_GetInvasionActiveMonsterCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionActiveMonsterCount());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_IsInvasionBossWave, Net_IsInvasionBossWave)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_BOOL(Net_IsInvasionBossWave());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionWaveBudget, Net_GetInvasionWaveBudget)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionWaveBudget());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionWaveSpawned, Net_GetInvasionWaveSpawned)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionWaveSpawned());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionWaveCleared, Net_GetInvasionWaveCleared)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionWaveCleared());
+}
+
+int Net_GetInvasionSpawnSpotCount()
+{
+	return max(InvasionSpawnDirectory.TotalSpotCount, 0);
+}
+
+int Net_GetInvasionActiveSpawnSpotCount()
+{
+	return max(InvasionSpawnDirectory.ActiveSpotCount, 0);
+}
+
+int Net_GetInvasionSpawnPlanBudget()
+{
+	return max(InvasionSpawnDirectory.TotalSpawnBudget, 0);
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionSpawnSpotCount, Net_GetInvasionSpawnSpotCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionSpawnSpotCount());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionActiveSpawnSpotCount, Net_GetInvasionActiveSpawnSpotCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionActiveSpawnSpotCount());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, Net_GetInvasionSpawnPlanBudget, Net_GetInvasionSpawnPlanBudget)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(Net_GetInvasionSpawnPlanBudget());
+}
+
+int Net_GetInvasionActiveSpawnSpotCount()
+{
+	return max(InvasionSpawnDirectory.ActiveSpotCount, 0);
+}
+
+int Net_GetInvasionSpawnPlanBudget()
+{
+	return max(InvasionSpawnDirectory.TotalSpawnBudget, 0);
+}
+
+int Net_GetInvasionSpawnActiveTag()
+{
+	return InvasionSpawnDirectory.ActiveTag;
+}
+
+bool Net_IsInvasionSpawnUsingFallback()
+{
+	return InvasionSpawnDirectory.UsingFallback;
+}
+
+int Net_GetInvasionSpawnFallbackSource()
+{
+	return int(InvasionSpawnDirectory.FallbackSource);
+}
+
+int Net_ControlInvasion(int action, const char* reason)
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+		return 0;
+	if (!Net_IsInvasionModeEnabled())
+		return 0;
+
+	switch (action)
+	{
+	case INVCTL_NEXTWAVE:
+		Net_StartInvasionWave(reason != nullptr ? reason : "api-nextwave");
+		return 1;
+
+	case INVCTL_VICTORY:
+		Net_MarkInvasionVictory(reason != nullptr ? reason : "api-victory");
+		return 1;
+
+	case INVCTL_FAILURE:
+		Net_MarkInvasionFailure(reason != nullptr ? reason : "api-failure");
+		return 1;
+
+	default:
+		return 0;
+	}
+}
+
+// Invasion scripting API exports.
+static int InvasionGetState()
+{
+	return int(Net_GetInvasionState());
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetState, InvasionGetState)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetState());
+}
+
+static int InvasionGetStateTics()
+{
+	return Net_GetInvasionStateTics();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetStateTics, InvasionGetStateTics)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetStateTics());
+}
+
+static int InvasionGetWave()
+{
+	return Net_GetInvasionWave();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetWave, InvasionGetWave)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetWave());
+}
+
+static int InvasionGetMaxWaves()
+{
+	return Net_GetInvasionMaxWaves();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetMaxWaves, InvasionGetMaxWaves)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetMaxWaves());
+}
+
+static int InvasionGetWaveBudget()
+{
+	return Net_GetInvasionWaveBudget();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetWaveBudget, InvasionGetWaveBudget)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetWaveBudget());
+}
+
+static int InvasionGetWaveSpawned()
+{
+	return Net_GetInvasionWaveSpawned();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetWaveSpawned, InvasionGetWaveSpawned)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetWaveSpawned());
+}
+
+static int InvasionGetWaveCleared()
+{
+	return Net_GetInvasionWaveCleared();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetWaveCleared, InvasionGetWaveCleared)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetWaveCleared());
+}
+
+static int InvasionGetActiveMonsterCount()
+{
+	return Net_GetInvasionActiveMonsterCount();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetActiveMonsterCount, InvasionGetActiveMonsterCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetActiveMonsterCount());
+}
+
+static int InvasionIsBossWave()
+{
+	return Net_IsInvasionBossWave() ? 1 : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionIsBossWave, InvasionIsBossWave)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_BOOL(InvasionIsBossWave());
+}
+
+static int InvasionGetSpawnSpotCount()
+{
+	return Net_GetInvasionSpawnSpotCount();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetSpawnSpotCount, InvasionGetSpawnSpotCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetSpawnSpotCount());
+}
+
+static int InvasionGetActiveSpawnSpotCount()
+{
+	return Net_GetInvasionActiveSpawnSpotCount();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetActiveSpawnSpotCount, InvasionGetActiveSpawnSpotCount)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetActiveSpawnSpotCount());
+}
+
+static int InvasionGetSpawnPlanBudget()
+{
+	return Net_GetInvasionSpawnPlanBudget();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetSpawnPlanBudget, InvasionGetSpawnPlanBudget)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetSpawnPlanBudget());
+}
+
+static int InvasionGetSpawnActiveTag()
+{
+	return Net_GetInvasionSpawnActiveTag();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetSpawnActiveTag, InvasionGetSpawnActiveTag)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetSpawnActiveTag());
+}
+
+static int InvasionIsSpawnUsingFallback()
+{
+	return Net_IsInvasionSpawnUsingFallback() ? 1 : 0;
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionIsSpawnUsingFallback, InvasionIsSpawnUsingFallback)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_BOOL(InvasionIsSpawnUsingFallback());
+}
+
+static int InvasionGetSpawnFallbackSource()
+{
+	return Net_GetInvasionSpawnFallbackSource();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionGetSpawnFallbackSource, InvasionGetSpawnFallbackSource)
+{
+	PARAM_PROLOGUE;
+	ACTION_RETURN_INT(InvasionGetSpawnFallbackSource());
+}
+
+static int InvasionControl(int action)
+{
+	return Net_ControlInvasion(action, "zscript-api");
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(DObject, InvasionControl, InvasionControl)
+{
+	PARAM_PROLOGUE;
+	PARAM_INT(action);
+	ACTION_RETURN_BOOL(InvasionControl(action) != 0);
+}
+
 // Intermission lobby info
 static int IsPlayerReady(int player)
 {
@@ -6729,6 +8180,57 @@ DEFINE_ACTION_FUNCTION_NATIVE(_ScreenJobRunner, GetReadyTimer, GetReadyTimer)
 {
 	PARAM_PROLOGUE;
 	ACTION_RETURN_INT(GetReadyTimer());
+}
+
+CCMD(invasion_victory)
+{
+	if (!Net_ControlInvasion(INVCTL_VICTORY, "console-command"))
+		Printf("Invasion control rejected (authority + sv_gametype 4 required)\n");
+}
+
+CCMD(invasion_failure)
+{
+	if (!Net_ControlInvasion(INVCTL_FAILURE, "console-command"))
+		Printf("Invasion control rejected (authority + sv_gametype 4 required)\n");
+}
+
+CCMD(invasion_nextwave)
+{
+	if (!Net_ControlInvasion(INVCTL_NEXTWAVE, "console-command"))
+		Printf("Invasion control rejected (authority + sv_gametype 4 required)\n");
+}
+
+CCMD(invasion_spots)
+{
+	Printf("Invasion spots: total=%d active=%d budget=%d tag=%d fallback=%d source=%s wave=%d spawned=%d\n",
+		InvasionSpawnDirectory.TotalSpotCount,
+		InvasionSpawnDirectory.ActiveSpotCount,
+		InvasionSpawnDirectory.TotalSpawnBudget,
+		InvasionSpawnDirectory.ActiveTag,
+		InvasionSpawnDirectory.UsingFallback ? 1 : 0,
+		Net_InvasionSpawnSourceName(InvasionSpawnDirectory.FallbackSource),
+		InvasionWaveDirector.Wave,
+		InvasionSpawnDirectory.SpawnedThisWave);
+
+	for (int i = 0; i < int(InvasionSpawnDirectory.Spots.Size()); ++i)
+	{
+		const auto& spot = InvasionSpawnDirectory.Spots[i];
+		Printf("#%d src=%s tid=%d pos=(%.1f, %.1f, %.1f) first=%d start=%d max=%d delay=%d round=%d planned=%d spawned=%d ready=%d\n",
+			i,
+			Net_InvasionSpawnSourceName(spot.Source),
+			spot.Tag,
+			spot.Pos.X,
+			spot.Pos.Y,
+			spot.Pos.Z,
+			spot.FirstWave,
+			spot.StartSpawnNumber,
+			spot.MaxSpawnNumber,
+			spot.SpawnDelayTics,
+			spot.RoundSpawnDelayTics,
+			spot.PlannedSpawnCount,
+			spot.SpawnedCount,
+			gametic >= spot.NextSpawnGameTic ? 1 : 0);
+	}
 }
 
 // [RH] List "ping" times

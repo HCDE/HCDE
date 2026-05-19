@@ -81,11 +81,23 @@ static constexpr double UpdaterLockStaleMinutes = 120.0;
 
 static std::wstring SanitizeWindowsArg(std::wstring value)
 {
-	for (auto& ch : value)
+	std::wstring sanitized;
+	sanitized.reserve(value.length());
+	for (auto ch : value)
 	{
-		if (ch == L'"') ch = L'\'';
+		// Whitelist: alphanumeric, period, dash, underscore, space, slash, colon.
+		// Everything else is discarded or replaced to prevent command injection.
+		if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9') ||
+			ch == L'.' || ch == L'-' || ch == L'_' || ch == L' ' || ch == L'/' || ch == L'\\' || ch == L':')
+		{
+			sanitized.push_back(ch);
+		}
+		else
+		{
+			sanitized.push_back(L'_');
+		}
 	}
-	return value;
+	return sanitized;
 }
 
 static std::wstring GetInstallDirPath()
@@ -628,6 +640,18 @@ while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)
 	Start-Sleep -Milliseconds 350
 }
 
+# Also wait for any running game or server processes in the same directory to exit
+$runningApps = Get-Process | Where-Object {
+	$path = $_.Path -ErrorAction SilentlyContinue
+	if ($path) {
+		$name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
+		($name -eq 'hcde.exe' -or $name -eq 'hcdeserv.exe') -and $path.StartsWith($resolvedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)
+	} else { $false }
+}
+foreach ($app in $runningApps) {
+	try { $app.WaitForExit(5000) } catch {}
+}
+
 if (-not (Test-Path -LiteralPath $InstallDir))
 {
 	throw "Install directory was not found: $InstallDir"
@@ -949,7 +973,7 @@ AboutPage::AboutPage(LauncherWindow* launcher, const FStartupSelectionInfo& info
 		if (!Launcher->Release)
 		{
 			Launcher->Release = new ReleasePage(launcher, info);
-			Launcher->Pages->AddTab(Launcher->Release, "Release Notes");
+			Launcher->Pages->AddTab(Launcher->Release, "Changelog");
 			Launcher->UpdateLanguage();
 		}
 

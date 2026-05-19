@@ -39,6 +39,7 @@
 #include "texturemanager.h"
 #include "actorinlines.h"
 #include "g_levellocals.h"
+#include <mutex>
 
 EXTERN_CVAR(Float, r_visibility)
 CVAR(Bool, gl_bandedswlight, false, CVAR_ARCHIVE)
@@ -64,6 +65,7 @@ class FDrawInfoList
 {
 public:
 	TDeletingArray<HWDrawInfo *> mList;
+	std::mutex mMutex;
 
 	HWDrawInfo * GetNew();
 	void Release(HWDrawInfo *);
@@ -77,12 +79,11 @@ FDrawInfoList di_list;
 // Try to reuse the lists as often as possible as they contain resources that
 // are expensive to create and delete.
 //
-// Note: If multithreading gets used, this class needs synchronization.
-//
 //==========================================================================
 
 HWDrawInfo *FDrawInfoList::GetNew()
 {
+	std::lock_guard<std::mutex> lock(mMutex);
 	if (mList.Size() > 0)
 	{
 		HWDrawInfo *di;
@@ -94,6 +95,7 @@ HWDrawInfo *FDrawInfoList::GetNew()
 
 void FDrawInfoList::Release(HWDrawInfo * di)
 {
+	std::lock_guard<std::mutex> lock(mMutex);
 	di->ClearBuffers();
 	di->Level = nullptr;
 	mList.Push(di);
@@ -237,11 +239,15 @@ void HWDrawInfo::ClearBuffers()
 
 		section_renderflags.Resize(Level->sections.allSections.Size());
 		ss_renderflags.Resize(Level->subsectors.Size());
-		no_renderflags.Resize(Level->subsectors.Size());
+		// no_renderflags is indexed by BSP node index, not subsector index.
+		no_renderflags.Resize(Level->nodes.Size());
 
-		memset(&section_renderflags[0], 0, Level->sections.allSections.Size() * sizeof(section_renderflags[0]));
-		memset(&ss_renderflags[0], 0, Level->subsectors.Size() * sizeof(ss_renderflags[0]));
-		memset(&no_renderflags[0], 0, Level->nodes.Size() * sizeof(no_renderflags[0]));
+		if (section_renderflags.Size() > 0)
+			memset(&section_renderflags[0], 0, Level->sections.allSections.Size() * sizeof(section_renderflags[0]));
+		if (ss_renderflags.Size() > 0)
+			memset(&ss_renderflags[0], 0, Level->subsectors.Size() * sizeof(ss_renderflags[0]));
+		if (no_renderflags.Size() > 0)
+			memset(&no_renderflags[0], 0, Level->nodes.Size() * sizeof(no_renderflags[0]));
 	}
 
 	Decals[0].Clear();

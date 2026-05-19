@@ -135,7 +135,7 @@ void hw_PrecacheTexture(uint8_t *texhitlist, TMap<PClassActor*, bool> &actorhitl
 	TMap<PClassActor*, bool>::Pair *pair;
 	uint8_t *modellist = new uint8_t[Models.Size()];
 	memset(modellist, 0, Models.Size());
-	memset(spritehitlist, 0, sizeof(SpriteHits**) * TexMan.NumTextures());
+	memset(spritehitlist, 0, sizeof(SpriteHits*) * TexMan.NumTextures());
 
 	// Check all used actors.
 	// 1. mark all sprites associated with its states
@@ -269,6 +269,11 @@ void hw_PrecacheTexture(uint8_t *texhitlist, TMap<PClassActor*, bool> &actorhitl
 		for (int i = cnt - 1; i >= 0; i--)
 		{
 			auto gtex = TexMan.GameByIndex(i);
+			if (gtex == nullptr)
+			{
+				continue;
+			}
+
 			auto tex = gtex->GetTexture();
 			if (tex != nullptr && tex->GetImage() != nullptr)
 			{

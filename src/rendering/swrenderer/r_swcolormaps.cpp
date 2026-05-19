@@ -42,7 +42,6 @@
 
 #include "r_utility.h"
 #include "swrenderer/r_renderer.h"
-#include <atomic>
 
 FDynamicColormap NormalLight;
 FDynamicColormap FullNormalLight; //[SP] Emulate GZDoom brightness
@@ -86,8 +85,7 @@ static FDynamicColormap *CreateSpecialLights (PalEntry color, PalEntry fade, int
 	colormap->Maps = new uint8_t[NUMCOLORMAPS*256];
 	colormap->BuildLights ();
 
-	// Make sure colormap is fully built before making it publicly visible
-	std::atomic_thread_fence(std::memory_order_release);
+	// Publication happens while holding buildmapmutex, so readers observe a fully-built entry.
 	NormalLight.Next = colormap;
 
 	return colormap;
@@ -95,17 +93,7 @@ static FDynamicColormap *CreateSpecialLights (PalEntry color, PalEntry fade, int
 
 FDynamicColormap *GetSpecialLights (PalEntry color, PalEntry fade, int desaturate)
 {
-	// If this colormap has already been created, just return it
-	for (FDynamicColormap *colormap = &NormalLight; colormap != NULL; colormap = colormap->Next)
-	{
-		if (color == colormap->Color &&
-			fade == colormap->Fade &&
-			desaturate == colormap->Desaturate)
-		{
-			return colormap;
-		}
-	}
-
+	// Serialize lookup+creation to avoid lock-free traversal races on NormalLight.Next.
 	return CreateSpecialLights(color, fade, desaturate);
 }
 

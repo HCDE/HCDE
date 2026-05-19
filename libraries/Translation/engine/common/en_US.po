@@ -1945,7 +1945,7 @@ msgstr "Analog strafe run"
 
 #, fuzzy
 msgid "NOTES_FAIL"
-msgstr "Unable to parse release notes"
+msgstr "Unable to parse changelog"
 
 #, fuzzy
 msgid "NOTES_UNKNOWN"
@@ -1963,11 +1963,11 @@ msgstr "For more details see: %s"
 
 #, fuzzy
 msgid "PICKER_SHOWTHIS"
-msgstr "Show this page after updates"
+msgstr "Show this changelog page after updates"
 
 #, fuzzy
 msgid "PICKER_SHOWNOTES"
-msgstr "Show release notes"
+msgstr "Show changelog"
 
 #, fuzzy
 msgid "PICKER_TAB_ABOUT"
@@ -1975,4 +1975,4 @@ msgstr "About"
 
 #, fuzzy
 msgid "PICKER_TAB_RELEASE"
-msgstr "Release Notes"
+msgstr "Changelog"

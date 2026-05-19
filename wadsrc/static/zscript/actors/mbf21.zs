@@ -21,6 +21,21 @@
 extend class Actor
 {
 	//
+	// A_Spawn
+	// MBF spawn wrapper that can inherit friendliness unless OPTIONS disables it.
+	//
+	deprecated("2.3", "for Dehacked use only")
+	action bool, Actor HCDE_MBFSpawnItem(class<Actor> type, double distance = 0, double zheight = 0, bool useammo = false, bool transfer_translation = false)
+	{
+		let [result, mo] = A_SpawnItem(type, distance, zheight, useammo, transfer_translation);
+		if (mo != null && !(Level.compatflags2 & COMPATF2_NOFRIENDLYSPAWN))
+		{
+			mo.A_SetFriendly(bFriendly);
+		}
+		return result, mo;
+	}
+
+	//
 	// [XA] New mbf21 codepointers
 	//
 

@@ -48,7 +48,7 @@ namespace
 		std::vector<EMapInfoUnsupportedSample> UnsupportedSamples;
 	};
 
-	TArray<FName> EMapInfoMaps;
+	TSet<FName> EMapInfoMaps;
 	TMap<FName, int> EMapInfoExtraDataLumps;
 
 	static std::string TrimCopy(const std::string& value)
@@ -117,15 +117,7 @@ namespace
 
 	static void RememberEMapInfoMap(const char* mapname)
 	{
-		FName name(mapname);
-		for (unsigned int i = 0; i < EMapInfoMaps.Size(); ++i)
-		{
-			if (EMapInfoMaps[i] == name)
-			{
-				return;
-			}
-		}
-		EMapInfoMaps.Push(name);
+		EMapInfoMaps.Insert(FName(mapname));
 	}
 
 	static std::string StripLineComment(const std::string& line)
@@ -871,15 +863,7 @@ bool HCDE_EMapInfo_IsEternityMap(const char* mapname)
 		return false;
 	}
 
-	const FName name(mapname);
-	for (unsigned int i = 0; i < EMapInfoMaps.Size(); ++i)
-	{
-		if (EMapInfoMaps[i] == name)
-		{
-			return true;
-		}
-	}
-	return false;
+	return EMapInfoMaps.CheckElement(FName(mapname));
 }
 
 int HCDE_EMapInfo_FindExtraDataLump(const char* mapname, const char* edname)

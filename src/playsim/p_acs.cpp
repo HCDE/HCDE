@@ -655,6 +655,14 @@ static bool ShouldIgnoreClientSideScript(AActor* activator)
 		return false;
 
 	AActor* owner = GetScriptOwner(*activator);
+	if (owner == nullptr || owner->Level == nullptr)
+		return false;
+
+	// Non-player activators (world/monsters/etc.) are valid for clientside
+	// cosmetic scripts. Only suppress scripts tied to a different player.
+	if (owner->player == nullptr)
+		return false;
+
 	return !owner->Level->isConsolePlayer(owner);
 }
 
@@ -4886,6 +4894,24 @@ enum EACSFunctions
 	// ZDaemon
 	ACSF_GetTeamScore = 19620,	// (int team)
 	ACSF_SetTeamScore,			// (int team, int value
+
+	// HCDE invasion mode ACS API.
+	ACSF_InvasionGetState = 19700,			// () -> EInvasionState
+	ACSF_InvasionGetStateTics,				// ()
+	ACSF_InvasionGetWave,					// ()
+	ACSF_InvasionGetMaxWaves,				// ()
+	ACSF_InvasionGetWaveBudget,			// ()
+	ACSF_InvasionGetWaveSpawned,			// ()
+	ACSF_InvasionGetWaveCleared,			// ()
+	ACSF_InvasionGetActiveMonsterCount,	// ()
+	ACSF_InvasionIsBossWave,				// ()
+	ACSF_InvasionGetSpawnSpotCount,		// ()
+	ACSF_InvasionGetActiveSpawnSpotCount,	// ()
+	ACSF_InvasionGetSpawnPlanBudget,		// ()
+	ACSF_InvasionGetSpawnActiveTag,		// ()
+	ACSF_InvasionIsSpawnUsingFallback,		// ()
+	ACSF_InvasionGetSpawnFallbackSource,	// ()
+	ACSF_InvasionControlAction,			// (int action) -> bool
 };
 
 int DLevelScript::SideFromID(int id, int side)
@@ -6895,6 +6921,55 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 				activator->player->SetSubtitle(logNum, sid);
 			}
 			break;
+
+		case ACSF_InvasionGetState:
+			return int(Net_GetInvasionState());
+
+		case ACSF_InvasionGetStateTics:
+			return Net_GetInvasionStateTics();
+
+		case ACSF_InvasionGetWave:
+			return Net_GetInvasionWave();
+
+		case ACSF_InvasionGetMaxWaves:
+			return Net_GetInvasionMaxWaves();
+
+		case ACSF_InvasionGetWaveBudget:
+			return Net_GetInvasionWaveBudget();
+
+		case ACSF_InvasionGetWaveSpawned:
+			return Net_GetInvasionWaveSpawned();
+
+		case ACSF_InvasionGetWaveCleared:
+			return Net_GetInvasionWaveCleared();
+
+		case ACSF_InvasionGetActiveMonsterCount:
+			return Net_GetInvasionActiveMonsterCount();
+
+		case ACSF_InvasionIsBossWave:
+			return Net_IsInvasionBossWave() ? 1 : 0;
+
+		case ACSF_InvasionGetSpawnSpotCount:
+			return Net_GetInvasionSpawnSpotCount();
+
+		case ACSF_InvasionGetActiveSpawnSpotCount:
+			return Net_GetInvasionActiveSpawnSpotCount();
+
+		case ACSF_InvasionGetSpawnPlanBudget:
+			return Net_GetInvasionSpawnPlanBudget();
+
+		case ACSF_InvasionGetSpawnActiveTag:
+			return Net_GetInvasionSpawnActiveTag();
+
+		case ACSF_InvasionIsSpawnUsingFallback:
+			return Net_IsInvasionSpawnUsingFallback() ? 1 : 0;
+
+		case ACSF_InvasionGetSpawnFallbackSource:
+			return Net_GetInvasionSpawnFallbackSource();
+
+		case ACSF_InvasionControlAction:
+			MIN_ARG_COUNT(1);
+			return Net_ControlInvasion(args[0], "acs-call");
 
 		default:
 			break;
@@ -10665,24 +10740,26 @@ int P_StartScript (FLevelLocals *Level, AActor *who, line_t *where, int script, 
 			const bool allowCompatSettingsScript =
 				HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS)
 				&& Net_LocalCanControlSettings();
+			// Preserve local console parity with single-player style scripting while
+			// keeping non-NET remote script requests blocked by default.
+			const bool localConsoleRequester =
+				(who != nullptr && who->Level != nullptr && who->Level->isConsolePlayer(who));
 
 			// Make sure only scripts flagged as Net can be ran if requesting one.
 			if ((flags & ACS_NET) && !(scriptdata->Flags & SCRIPTF_Net)
 				&& !sv_allowallscripts && !allowCompatSettingsScript
-				&& (netgame || !allowsingleplayerscripts))
+				&& (netgame || !allowsingleplayerscripts)
+				&& !localConsoleRequester)
 			{
-				if (who->Level->isConsolePlayer(who))
+				if (HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS))
 				{
-					if (HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS))
-					{
-						Printf(PRINT_BOLD, "Non-net settings scripts require settings controller or server/RCON console rights\n");
-					}
-					else
-					{
-						Printf(PRINT_BOLD, "Non-net scripts are currently not requestable\n");
-					}
+					Printf(PRINT_BOLD, "Non-net settings scripts require settings controller or server/RCON console rights\n");
 				}
-				else if (I_IsLocalHCDEServiceAuthority() && !IsClientSideScript(*scriptdata))
+				else
+				{
+					Printf(PRINT_BOLD, "Non-net scripts are currently not requestable\n");
+				}
+				if (I_IsLocalHCDEServiceAuthority() && who != nullptr && who->player != nullptr && !IsClientSideScript(*scriptdata))
 				{
 					Printf(PRINT_BOLD, "%s tried to puke %s (\n",
 						who->player->userinfo.GetName(), ScriptPresentation(script).GetChars());
@@ -10711,7 +10788,7 @@ int P_StartScript (FLevelLocals *Level, AActor *who, line_t *where, int script, 
 		}
 		else
 		{
-			if (!(flags & ACS_NET) || (who && Level->isConsolePlayer(who->player->mo))) // The indirection is necessary here.
+			if (!(flags & ACS_NET) || (who && Level->isConsolePlayer(who)))
 			{
 				Printf("P_StartScript: Unknown %s\n", ScriptPresentation(script).GetChars());
 			}

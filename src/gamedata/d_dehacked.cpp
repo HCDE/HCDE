@@ -956,7 +956,7 @@ static void CreateJumpIfFunc(FunctionCallEmitter &emitters, int value1, int valu
 
 static void CreateJumpIfFlagSetFunc(FunctionCallEmitter& emitters, int value1, int value2, MBFParamState* state)
 {
-	state->ValidateArgCount(2, "A_JumpIfFlagsSet");
+	state->ValidateArgCount(3, "A_JumpIfFlagsSet");
 	emitters.AddParameterPointerConst(state->GetStateArg(0));
 	emitters.AddParameterIntConst(state->GetIntArg(1));
 	emitters.AddParameterIntConst(state->GetIntArg(2));
@@ -1020,6 +1020,11 @@ static void CreateConsumeAmmoFunc(FunctionCallEmitter &emitters, int value1, int
 
 }
 
+static void CreateNoArgFunc(FunctionCallEmitter &emitters, int value1, int value2, MBFParamState* state)
+{
+	state->ValidateArgCount(0, "MBF21 no-argument codepointer");
+}
+
 // This array must be in sync with the Aliases array in DEHSUPP.
 static void (*MBFCodePointerFactories[])(FunctionCallEmitter&, int, int, MBFParamState*) =
 {
@@ -1055,6 +1060,7 @@ static void (*MBFCodePointerFactories[])(FunctionCallEmitter&, int, int, MBFPara
 	CreateWeaponJumpFunc,
 	CreateWeaponJumpFunc,
 	CreateWeaponJumpFunc,
+	CreateNoArgFunc,
 	CreateJumpIfFlagSetFunc,
 	CreateFlagSetFunc,
 	CreateFlagSetFunc

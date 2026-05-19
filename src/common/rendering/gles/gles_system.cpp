@@ -40,25 +40,15 @@ PFNGLDELETESYNCPROC glDeleteSync = NULL;
 
 #include <windows.h>
 
-static HMODULE opengl32dll;
-static PROC(WINAPI* getprocaddress)(LPCSTR name);
-
 static void* LoadGLES2Proc(const char* name)
 {
-	HINSTANCE hGetProcIDDLL = LoadLibraryA("libGLESv2.dll");
-
-	int error =	GetLastError();
-
-	void* addr = GetProcAddress(hGetProcIDDLL, name);
-	if (!addr)
+	// Cache the module handle once to avoid leaking a new handle on every symbol lookup.
+	static HMODULE gles2dll = LoadLibraryA("libGLESv2.dll");
+	if (gles2dll == nullptr)
 	{
-		//exit(1);
 		return nullptr;
 	}
-	else
-	{
-		return addr;
-	}
+	return reinterpret_cast<void*>(GetProcAddress(gles2dll, name));
 }
 
 #else
@@ -99,6 +89,9 @@ static TArray<FString>  m_Extensions;
 
 static void CollectExtensions()
 {
+	// InitGLES may run multiple times (e.g. renderer/context re-init); avoid stale/duplicated entries.
+	m_Extensions.Clear();
+
 	const char* supported = (char*)glGetString(GL_EXTENSIONS);
 
 	if (nullptr != supported)
@@ -155,6 +148,7 @@ namespace OpenGLESRenderer
 
 		if (first)
 		{
+			first = false;
 			if (ogl_LoadFunctions() == ogl_LOAD_FAILED)
 			{
 				//I_FatalError("Failed to load OpenGL functions.");

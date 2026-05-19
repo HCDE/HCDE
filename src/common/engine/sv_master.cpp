@@ -27,7 +27,8 @@
 #	define WIN32_LEAN_AND_MEAN
 #	define NOMINMAX
 #	include <windows.h>
-#	include <winsock.h>
+#	include <winsock2.h>
+#	include <ws2tcpip.h>
 #else
 #	include <arpa/inet.h>
 #	include <errno.h>
@@ -68,7 +69,7 @@ typedef int SOCKET;
 #else
 static const char* neterror()
 {
-	static char neterr[32];
+	static thread_local char neterr[32];
 	snprintf(neterr, sizeof(neterr), "WSA error %d", WSAGetLastError());
 	return neterr;
 }
@@ -148,32 +149,22 @@ static bool ResolveMasterAddress(masterserver& master)
 		}
 	}
 
-	sockaddr_in resolved = {};
-	resolved.sin_family = AF_INET;
-	resolved.sin_port = htons(port);
+	addrinfo hints = {};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	hints.ai_protocol = IPPROTO_UDP;
 
-	if (!IsMasterName(host))
+	addrinfo* result = nullptr;
+	if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0)
 	{
-		resolved.sin_addr.s_addr = inet_addr(host.c_str());
-		if (resolved.sin_addr.s_addr == INADDR_NONE && host != "255.255.255.255")
-		{
-			DebugTrace::Markf("master", "resolve ip failed %s", master.masterip.c_str());
-			return false;
-		}
-	}
-	else
-	{
-		hostent* hostEntry = gethostbyname(host.c_str());
-		if (hostEntry == nullptr || hostEntry->h_addr_list == nullptr || hostEntry->h_addr_list[0] == nullptr)
-		{
-			DebugTrace::Markf("master", "resolve dns failed %s", master.masterip.c_str());
-			return false;
-		}
-
-		memcpy(&resolved.sin_addr.s_addr, hostEntry->h_addr_list[0], sizeof(resolved.sin_addr.s_addr));
+		DebugTrace::Markf("master", "resolve failed %s", host.c_str());
+		return false;
 	}
 
-	master.masteraddr = resolved;
+	master.masteraddr = *reinterpret_cast<sockaddr_in*>(result->ai_addr);
+	master.masteraddr.sin_port = htons(port);
+	freeaddrinfo(result);
+
 	return true;
 }
 

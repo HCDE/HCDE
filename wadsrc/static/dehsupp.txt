@@ -1186,7 +1186,7 @@ WeaponNames
 Aliases
 {
 	A_Mushroom,		A_Mushroom,
-	A_Spawn,		A_SpawnItem,
+	A_Spawn,		HCDE_MBFSpawnItem,
 	A_Turn,			A_Turn,
 	A_Face,			A_SetAngle,
 	A_Scratch,		A_CustomMeleeAttack,
@@ -1215,6 +1215,7 @@ Aliases
 	A_CheckAmmo, MBF21_CheckAmmo,
 	A_RefireTo, MBF21_RefireTo,
 	A_GunFlashTo, MBF21_GunFlashTo,
+	A_WeaponAlert, A_WeaponAlert,
 	A_JumpIfFlagsSet, MBF21_JumpIfFlagsSet,
 	A_AddFlags, MBF21_AddFlags,
 	A_RemoveFlags, MBF21_RemoveFlags,

@@ -704,8 +704,17 @@ int WINAPI wWinMain (HINSTANCE hInstance, HINSTANCE nothing, LPWSTR cmdline, int
 
 	int ret = DoMain (hInstance);
 
-	CloseHandle (MainThread);
-	MainThread = INVALID_HANDLE_VALUE;
+	if (Args != nullptr)
+	{
+		delete Args;
+		Args = nullptr;
+	}
+
+	if (MainThread != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle (MainThread);
+		MainThread = INVALID_HANDLE_VALUE;
+	}
 	return ret;
 }
 

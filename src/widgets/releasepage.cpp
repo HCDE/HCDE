@@ -1,7 +1,7 @@
 /*
 ** releasepage.cpp
 **
-** Release notes tab of launcher
+** Changelog tab of launcher
 **
 **---------------------------------------------------------------------------
 **
@@ -15,6 +15,8 @@
 */
 
 #include <cstring>
+#include <cstdio>
+#include <string>
 
 #include <rapidxml/rapidxml.hpp>
 #include <string_view>
@@ -33,6 +35,153 @@
 #include "zstring.h"
 
 constexpr unsigned NUMBER_OF_RELEASES_TO_DISPLAY = 3;
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+namespace
+{
+static std::wstring CreateTempScriptPath(const wchar_t* prefix)
+{
+	wchar_t tempPath[MAX_PATH] = {};
+	wchar_t tempFile[MAX_PATH] = {};
+	if (!GetTempPathW(_countof(tempPath), tempPath))
+		return {};
+	if (!GetTempFileNameW(tempPath, prefix, 0, tempFile))
+		return {};
+
+	std::wstring scriptPath = tempFile;
+	size_t dot = scriptPath.find_last_of(L'.');
+	if (dot != std::wstring::npos)
+	{
+		scriptPath = scriptPath.substr(0, dot) + L".ps1";
+	}
+	else
+	{
+		scriptPath += L".ps1";
+	}
+
+	if (!MoveFileExW(tempFile, scriptPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+	{
+		return {};
+	}
+	return scriptPath;
+}
+
+static bool WriteUtf8ScriptFile(const std::wstring& path, const std::string& content)
+{
+	FILE* fp = _wfopen(path.c_str(), L"wb");
+	if (!fp)
+		return false;
+	if (!content.empty())
+	{
+		const size_t written = fwrite(content.data(), 1, content.size(), fp);
+		if (written != content.size())
+		{
+			fclose(fp);
+			return false;
+		}
+	}
+	fclose(fp);
+	return true;
+}
+
+static FString RunPowerShellScriptCapture(const std::wstring& scriptPath)
+{
+	std::wstring command = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"";
+	command += scriptPath;
+	command += L"\" 2>&1";
+
+	FILE* pipe = _wpopen(command.c_str(), L"rt");
+	if (!pipe)
+	{
+		return {};
+	}
+
+	FString output;
+	char buffer[1024];
+	while (fgets(buffer, _countof(buffer), pipe))
+	{
+		output += buffer;
+	}
+	_pclose(pipe);
+	return output;
+}
+
+static FString FetchGitHubChangelog()
+{
+	// Match Doom Connector-style release body viewing, but keep this best-effort:
+	// if network fetch fails, the launcher falls back to packaged changelog text.
+	const std::wstring scriptPath = CreateTempScriptPath(L"hcl");
+	if (scriptPath.empty())
+	{
+		return {};
+	}
+
+	const std::string script = R"PS(
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$api = 'https://api.github.com/repos/bokoxthexchocobo/HCDE/releases?per_page=8'
+$headers = @{ 'User-Agent' = 'HCDE-Changelog' }
+$sb = New-Object System.Text.StringBuilder
+try {
+	# Keep launcher UX responsive on slow/blocked networks.
+	$releases = Invoke-RestMethod -Uri $api -Headers $headers -TimeoutSec 6
+	$count = 0
+	foreach ($release in $releases) {
+		if ($release.draft -or $release.prerelease) { continue }
+		if ($count -gt 0) {
+			[void]$sb.AppendLine()
+			[void]$sb.AppendLine('---')
+			[void]$sb.AppendLine()
+		}
+		$tag = [string]$release.tag_name
+		if ($tag.StartsWith('v') -or $tag.StartsWith('V')) { $tag = $tag.Substring(1) }
+		$published = [string]$release.published_at
+		[void]$sb.Append('HCDE v')
+		[void]$sb.Append($tag)
+		if (-not [string]::IsNullOrWhiteSpace($published)) {
+			[void]$sb.Append(' [')
+			[void]$sb.Append($published)
+			[void]$sb.Append(']')
+		}
+		[void]$sb.AppendLine()
+		[void]$sb.AppendLine()
+
+		$body = [string]$release.body
+		if ([string]::IsNullOrWhiteSpace($body)) {
+			[void]$sb.AppendLine('- No changelog provided.')
+		} else {
+			[void]$sb.AppendLine($body.Trim())
+		}
+
+		$count++
+		if ($count -ge 3) { break }
+	}
+	if ($count -gt 0) {
+		[Console]::Out.Write($sb.ToString().TrimEnd())
+	}
+} catch {
+	# Keep the launcher responsive and fall back to packaged changelog if this fails.
+}
+)PS";
+
+	if (!WriteUtf8ScriptFile(scriptPath, script))
+	{
+		DeleteFileW(scriptPath.c_str());
+		return {};
+	}
+
+	FString output = RunPowerShellScriptCapture(scriptPath);
+	DeleteFileW(scriptPath.c_str());
+	output.StripLeftRight();
+	return output;
+}
+}
+#endif
 
 ReleasePage::ReleasePage(LauncherWindow* launcher, const FStartupSelectionInfo& info) : Widget(nullptr), Launcher(launcher)
 {
@@ -77,7 +226,7 @@ FString ReleasePage::_ParseReleaseNotes(rapidxml::xml_node<char> * release)
 {
 	// braindead html to plaintext parser
 
-	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse release notes";
+	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse changelog";
 
 	auto description = release->first_node("description");
 	auto version = release->first_attribute("version");
@@ -197,19 +346,19 @@ FString ReleasePage::_BuildReleaseNotes(rapidxml::xml_document<> &doc)
 
 	// traverse to first (latest) release node
 	auto release = doc.first_node("component");
-	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse release notes";
+	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse changelog";
 	release = release->first_node("releases");
-	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse release notes";
+	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse changelog";
 	release = release->first_node("release");
+	if (!release) return GStrings.GetString("NOTES_FAIL"); // "Unable to parse changelog";
 
 	FString text;
 
 	for (unsigned i = 1; ; i++)
 	{
-		release->type();
+		if (!release) break;
 		text.AppendFormat("%s", _ParseReleaseNotes(release).GetChars());
-
-		if (!release || i >= NUMBER_OF_RELEASES_TO_DISPLAY) break;
+		if (i >= NUMBER_OF_RELEASES_TO_DISPLAY) break;
 
 		text.AppendFormat("\n\n---\n\n");
 		release = release->next_sibling("release");
@@ -229,7 +378,7 @@ char * ReleasePage::_OpenReleaseNotes()
 	if (!resf) return nullptr;
 
 	char * notes = nullptr;
-	auto lump = resf->FindEntry("meta.xml"); // created from org.zdoom.GZDoom.metainfo.xml during build
+	auto lump = resf->FindEntry("meta.xml"); // created from org.hcde.HCDE.metainfo.xml during build
 
 	if (lump >= 0)
 	{
@@ -248,13 +397,21 @@ char * ReleasePage::_OpenReleaseNotes()
 
 //==========================================================================
 //
-// Extract release notes from gzdoom.pk3
+// Extract changelog text for the launcher tab
 //
 //==========================================================================
 FString ReleasePage::GetReleaseNotes()
 {
-	// we need to be free
-	char * text = _OpenReleaseNotes();
+#ifdef _WIN32
+	const FString liveChangelog = FetchGitHubChangelog();
+	if (liveChangelog.IsNotEmpty())
+	{
+		return liveChangelog;
+	}
+#endif
+
+	// Fallback: use packaged metadata changelog from hcde.pk3.
+	char* text = _OpenReleaseNotes();
 
 	rapidxml::xml_document<> doc;
 	if (text) doc.parse<rapidxml::parse_default>(text);

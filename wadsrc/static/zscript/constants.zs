@@ -1506,6 +1506,12 @@ enum ECompatFlags
 	COMPATF2_STAYONLIFT		= 1 << 13,	// yet another MBF thing.
 	COMPATF2_NOMBF21		= 1 << 14,	// disable MBF21 features that may clash with certain maps
 	COMPATF2_VOODOO_ZOMBIES = 1 << 15,  // allow playerinfo, playerpawn, and voodoo health to all be different, and allow monster targetting of 'dead' players that have positive health
+	COMPATF2_FDTELEPORT		= 1 << 16,	// Emulate Final Doom's teleporter z glitch.
+	COMPATF2_NOACSARGCHECK	= 1 << 17,	// Disable arg count checking for ACS
+	COMPATF2_NOVDOLLLOCKMSG = 1 << 18,	// Voodoo dolls no longer trigger lock messages
+	COMPATF2_EMULATEMIKOPORTALS = 1 << 19, // Emulate Mikoportals Z Underflow
+	COMPATF2_RESERVEDLINEFLAG = 1 << 20, // MBF21: line flag 0x0800 masks extended line flags.
+	COMPATF2_NOFRIENDLYSPAWN = 1 << 21, // MBF: A_Spawn keeps the spawned actor's default friendliness.
 };
 
 enum HitWaterFlags

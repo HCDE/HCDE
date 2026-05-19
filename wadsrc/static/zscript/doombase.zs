@@ -214,6 +214,24 @@ extend class Object
 	native static void MarkSound(Sound snd);
 	native static uint BAM(double angle);
 	native static void SetMusicVolume(float vol);
+
+	// HCDE invasion mode state/status and control hooks.
+	native static int InvasionGetState();
+	native static int InvasionGetStateTics();
+	native static int InvasionGetWave();
+	native static int InvasionGetMaxWaves();
+	native static int InvasionGetWaveBudget();
+	native static int InvasionGetWaveSpawned();
+	native static int InvasionGetWaveCleared();
+	native static int InvasionGetActiveMonsterCount();
+	native static bool InvasionIsBossWave();
+	native static int InvasionGetSpawnSpotCount();
+	native static int InvasionGetActiveSpawnSpotCount();
+	native static int InvasionGetSpawnPlanBudget();
+	native static int InvasionGetSpawnActiveTag();
+	native static bool InvasionIsSpawnUsingFallback();
+	native static int InvasionGetSpawnFallbackSource();
+	native static bool InvasionControl(int action);
 }
 
 class Thinker : Object native play

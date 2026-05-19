@@ -1404,7 +1404,7 @@ OptionMenu "GLLightOptions" protected
 
 	Option "$GLLIGHTMNU_SHADOWPROFILE",         hcde_shadowprofile,   HCDEShadowProfiles
 	Tooltip "$GLLIGHTMNU_TOOLTIP_SHADOWPROFILE"
-	Command "$GLLIGHTMNU_APPLYENHANCEDSHADOWS", "hcde_enhancedshadows"
+	Command "$GLLIGHTMNU_APPLYENHANCEDSHADOWS", "hcde_applyshadowprofile"
 	Tooltip "$GLLIGHTMNU_TOOLTIP_APPLYENHANCEDSHADOWS"
 	StaticText " "
 	Option "$TCMNU_DYNLIGHTS",                  r_dynlights,          OnOff
