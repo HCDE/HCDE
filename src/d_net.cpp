@@ -366,7 +366,7 @@ static const FInvasionMonsterProfile InvasionMonsterProfiles[] =
 };
 
 static int CutsceneCountdown = 0;	// If enough people are ready, count down the timer. This won't reset between unreadies, only on intermission entrance.
-static std::atomic<uint64_t> CutsceneReady = 0u; // If in a cutscene, check if we're ready to move to move past it.
+static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to move to move past it.
 static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
 static EInvasionState InvasionState = INVS_DISABLED;
 static int InvasionStateTics = 0;
@@ -6464,28 +6464,15 @@ static void TicStabilityWait()
 	using namespace std::chrono;
 	using namespace std::this_thread;
 
-	if (!r_ticstability || stabilityticduration == 0)
+	if (!r_ticstability)
 		return;
 
-	const auto start = steady_clock::now();
-	const auto target = microseconds(stabilityticduration);
-
+	uint64_t start = duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 	while (true)
 	{
-		const auto now = steady_clock::now();
-		const auto elapsed = duration_cast<microseconds>(now - start);
-		if (elapsed >= target)
+		uint64_t cur = duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+		if (cur - start > stabilityticduration)
 			break;
-
-		const auto remaining = target - elapsed;
-		if (remaining > microseconds(1500))
-		{
-			sleep_for(milliseconds(1));
-		}
-		else
-		{
-			yield();
-		}
 	}
 }
 

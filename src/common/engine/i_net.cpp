@@ -307,8 +307,8 @@ static ENetConnectFlow NetConnectFlowState = NCF_IDLE;
 static bool DedicatedServerMode = false;
 static bool SilentNetStartMode = false;
 static bool DedicatedJoinMode = false;
-static std::atomic<bool> DedicatedServerStartRequested = false;
-static std::atomic<bool> DedicatedServerAbortRequested = false;
+static bool DedicatedServerStartRequested = false;
+static bool DedicatedServerAbortRequested = false;
 
 bool netgame = false;
 bool multiplayer = false;
@@ -1659,8 +1659,6 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 		{
 			if (consoleplayer == -1)
 			{
-				// In dedicated mode, ensure we at least log the disconnect and drop the client.
-				I_NetLog("DedicatedServer:: Connection reset by client %d", client);
 				client = -1;
 				msgSize = 0;
 			}
