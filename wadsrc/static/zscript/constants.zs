@@ -31,6 +31,15 @@ enum EStateUseFlags
 	SUF_ITEM = 8,
 };
 
+// HCDE invasion control actions for Object.InvasionControl(action).
+enum EHcdeInvasionControlAction
+{
+	INVCTL_NONE = 0,
+	INVCTL_NEXTWAVE = 1,
+	INVCTL_VICTORY = 2,
+	INVCTL_FAILURE = 3,
+};
+
 // Flags for A_PainAttack
 enum EPainAttackFlags
 {

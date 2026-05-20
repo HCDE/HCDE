@@ -67,7 +67,9 @@ FARG(blockmap, "Configuration", "Regenerates the map's BLOCKMAP.", "",
 	"Causes " GAMENAME " to ignore all the BLOCKMAP information a map provides and generate it"
 	" instead. This is equivalent to +set genblockmap 1.");
 
-FARG_ADVANCED(enablelightmaps, "Experimental", "", "");
+FARG(nolightmaps, "Configuration", "Disables LIGHTMAP lump loading.", "",
+	"Skips loading baked LIGHTMAP lump data for this run. Useful for compatibility triage"
+	" and renderer bisects.");
 
 EXTERN_FARG(xlat);
 
@@ -3299,12 +3301,14 @@ void MapLoader::SetSubsectorLightmap(const LightmapSurface &surface)
 {
 	if (!surface.ControlSector)
 	{
+		// Main floor/ceiling surfaces.
 		int index = surface.Type == ST_CEILING ? 1 : 0;
 		surface.Subsector->lightmap[index][0] = surface;
 	}
 	else
 	{
-		int index = surface.Type == ST_CEILING ? 0 : 1;
+		// 3D floor surfaces. Map ST_CEILING to index 1 (bottom) and ST_FLOOR to index 0 (top).
+		int index = surface.Type == ST_CEILING ? 1 : 0;
 		const auto &ffloors = surface.Subsector->sector->e->XFloor.ffloors;
 		for (unsigned int i = 0; i < ffloors.Size(); i++)
 		{
@@ -3362,8 +3366,10 @@ void MapLoader::LoadLightmap(MapData *map)
 	Level->LPWidth = 0;
 	Level->LPHeight = 0;
 
-	if (!Args->CheckParm(FArg_enablelightmaps))
-		return;		// this feature is still too early WIP to allow general access
+	// Lightmaps are now enabled by default. Keep an explicit opt-out switch
+	// for compatibility testing and fast renderer bisects.
+	if (Args->CheckParm(FArg_nolightmaps))
+		return;
 
 	if (!map->Size(ML_LIGHTMAP))
 		return;
@@ -3390,8 +3396,6 @@ void MapLoader::LoadLightmap(MapData *map)
 
 	if (numSurfaces == 0 || numTexCoords == 0 || numTexBytes == 0)
 		return;
-
-	Printf(PRINT_HIGH, "WARNING! Lightmaps are an experimental feature and are subject to change before being finalized. Do not expect this to work as-is in future releases of %s!\n", GAMENAME);
 
 	/*if (numSubsectors != Level->subsectors.Size())
 	{

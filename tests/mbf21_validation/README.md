@@ -16,6 +16,7 @@ The script writes:
 
 - `tests\mbf21_validation\dist\HCDE-MBF21-validation.wad`
 - `tests\mbf21_validation\dist\HCDE-MBF21-validation.pk3`
+- `tests\mbf21_validation\dist\HCDE-MBF21-validation-reserved-off.pk3`
 
 ## Run
 
@@ -28,6 +29,21 @@ Example local smoke run:
 The ZScript validator prints `HCDE_MBF21_VALIDATION: PASS` on success and
 `HCDE_MBF21_VALIDATION: FAIL` with individual error lines when a checked MBF21
 runtime behavior regresses.
+
+## Stage 1 Harness
+
+Run the Stage 1 baseline harness from `HCDE`:
+
+```powershell
+python tests\mbf21_validation\validate_mbf21_stage1.py --rebuild-pack
+```
+
+The harness runs manifest-driven MBF21 checks and writes:
+
+- `tests\mbf21_validation\dist\mbf21_stage1_report.json`
+
+The JSON report includes per-case status (`passed`, `failed`, `timeout`,
+`skipped`, `error`) and the output tail for fast regression triage.
 
 ## Coverage
 
@@ -47,9 +63,55 @@ Stage 2 adds runtime behavior checks on top of those static wiring checks:
   `comp_friendlyspawn` is enabled.
 - DEHACKED default propagation to live runtime defaults (`MeleeRange`,
   `FastSpeed`, and `LOGRAV` gravity behavior on `DoomImp`).
-- DEHACKED dropped-item behavior by killing a probe `DoomImp` and verifying a
-  nearby `Clip` count increase.
+- DEHACKED dropped-item wiring on `DoomImp` defaults (`Clip` with probability
+  `255`) so patch ingestion regressions are caught deterministically.
 
-Infighting/projectile/splash groups are still included in the patch payload and
-validated at parse/load time. A deeper behavior-level group interaction test is
-best added in a later stage with a dedicated multi-actor combat sandbox map.
+Stage 3 expands codepointer alias coverage:
+
+- DEHACKED MBF21 alias resolution for `A_SeekerMissile` and `A_Tracer2`.
+- Harness fail-fast marker for unknown codepointer parsing regressions.
+
+Stage 4 hardens MBF21 alias/factory integrity:
+
+- Runtime diagnostic if DEHSUPP alias count drifts from `MBFCodePointerFactories`.
+- Runtime diagnostic for unknown mapped action targets.
+- Harness fail markers for alias drift and unmanaged alias indices.
+
+Stage 5 adds MBF21 group runtime validation:
+
+- Native script accessors for `InfightingGroup`, `ProjectileGroup`, and
+  `SplashGroup` (`GetInfightingGroup`, `GetProjectileGroup`,
+  `GetSplashGroup`).
+- Runtime validation that DEHACKED group values reach `DoomImp` defaults.
+- Behavior check that same non-zero `infighting_group` blocks target switching.
+
+Stage 6 adds live immunity-path checks for group behavior:
+
+- Splash-group behavior check using `RadiusAttack`: same non-zero splash group
+  now verifies no radius damage is applied.
+- Projectile-group behavior check over multiple ticks: a spawned projectile
+  against same-group target verifies no damage on impact resolution.
+
+These checks now cover both static group assignment and runtime immunity
+behavior for MBF21 groups in one harness run.
+
+Stage 7 adds runtime steering validation for seeker codepointers:
+
+- `A_Tracer2` now gets a live angle-correction check on a spawned tracer
+  projectile with a real target.
+- `A_SeekerMissile` now gets a live angle-correction check in the same harness.
+
+This ensures Stage 3's alias mapping coverage is backed by concrete in-engine
+behavior checks for both seeker actions.
+
+Stage 8 adds dual compatibility-mode coverage for `comp_reservedlineflag`:
+
+- The builder now emits two PK3 variants:
+  - `HCDE-MBF21-validation.pk3` (OPTIONS includes `comp_reservedlineflag 1`)
+  - `HCDE-MBF21-validation-reserved-off.pk3` (OPTIONS omits
+    `comp_reservedlineflag`, so the harness can force it off via command line)
+- The harness manifest now runs both variants in one pass.
+- Runtime checks assert both:
+  - the expected compatibility mode was actually applied, and
+  - linedef flag translation/masking follows the correct MBF21 behavior for
+    that mode.

@@ -1219,4 +1219,6 @@ Aliases
 	A_JumpIfFlagsSet, MBF21_JumpIfFlagsSet,
 	A_AddFlags, MBF21_AddFlags,
 	A_RemoveFlags, MBF21_RemoveFlags,
+	A_SeekerMissile, A_SeekerMissile,
+	A_Tracer2, A_Tracer2,
 };

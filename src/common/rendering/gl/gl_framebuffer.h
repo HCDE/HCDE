@@ -62,6 +62,7 @@ public:
 
 	FRenderState* RenderState() override;
 	void UpdatePalette() override;
+	int MaxShadowMapTextureSize() const override;
 	const char* DeviceName() const override;
 	void SetTextureFilterMode() override;
 	IHardwareTexture *CreateHardwareTexture(int numchannels) override;

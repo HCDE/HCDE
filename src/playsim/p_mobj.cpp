@@ -8270,6 +8270,21 @@ FName AActor::GetSpecies()
 	return Species = thistype->TypeName; // [GZ] Speeds up future calls.
 }
 
+int AActor::GetInfightingGroup() const
+{
+	return GetClass()->ActorInfo()->infighting_group;
+}
+
+int AActor::GetProjectileGroup() const
+{
+	return GetClass()->ActorInfo()->projectile_group;
+}
+
+int AActor::GetSplashGroup() const
+{
+	return GetClass()->ActorInfo()->splash_group;
+}
+
 //==========================================================================
 //
 // AActor :: IsFriend

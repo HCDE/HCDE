@@ -57,9 +57,38 @@ int IShadowMap::LightsShadowmapped;
 int IShadowMap::LightsBudgetedOut;
 int IShadowMap::LightRowsUpdated;
 int IShadowMap::LightPriorityEnabled;
+int IShadowMap::BudgetHardCap;
+int IShadowMap::BudgetRuntimeCap;
+int IShadowMap::BudgetAdaptiveEnabled;
 
 CVAR(Bool, gl_light_shadowmap, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, gl_shadowmap_prioritize, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, hcde_shadow_autofallback, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, hcde_shadow_autobudget, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+CUSTOM_CVAR(Float, hcde_shadow_autobudget_targetms, 1.20f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.25f)
+		self = 0.25f;
+	else if (self > 10.0f)
+		self = 10.0f;
+}
+
+CUSTOM_CVAR(Int, hcde_shadow_autobudget_minlights, 64, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 1024)
+		self = 1024;
+}
+
+CUSTOM_CVAR(Int, hcde_shadow_autobudget_step, 32, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 256)
+		self = 256;
+}
 
 CUSTOM_CVAR(Int, gl_shadowmap_maxlights, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
@@ -72,9 +101,10 @@ CUSTOM_CVAR(Int, gl_shadowmap_maxlights, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 ADD_STAT(shadowmap)
 {
 	FString out;
-	out.Format("upload=%04.2f ms  lights=%d  eligible=%d  shadowmapped=%d  dropped=%d  rows=%d  priority=%s",
+	out.Format("upload=%04.2f ms  lights=%d  eligible=%d  shadowmapped=%d  dropped=%d  rows=%d  cap=%d/%d  adaptive=%s  priority=%s",
 		IShadowMap::UpdateCycles.TimeMS(), IShadowMap::LightsProcessed, IShadowMap::LightsEligible,
 		IShadowMap::LightsShadowmapped, IShadowMap::LightsBudgetedOut, IShadowMap::LightRowsUpdated,
+		IShadowMap::BudgetRuntimeCap, IShadowMap::BudgetHardCap, IShadowMap::BudgetAdaptiveEnabled ? "on" : "off",
 		IShadowMap::LightPriorityEnabled ? "on" : "off");
 	return out;
 }
@@ -115,6 +145,10 @@ bool IShadowMap::PerformUpdate()
 	LightsBudgetedOut = 0;
 	LightRowsUpdated = 1;
 	LightPriorityEnabled = 0;
+
+	// Note: BudgetHardCap, BudgetRuntimeCap, and BudgetAdaptiveEnabled are NOT reset here.
+	// They are configured per-frame in ApplyShadowCapabilityFallbacks based on
+	// current device capabilities and adaptive feedback.
 
 	// CollectLights will be null if the calling code decides that shadowmaps are not needed.
 	if (CollectLights != nullptr)

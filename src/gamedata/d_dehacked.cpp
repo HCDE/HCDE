@@ -940,6 +940,22 @@ static void CreateFindTracerFunc(FunctionCallEmitter &emitters, int value1, int 
 	emitters.AddParameterIntConst(state->GetIntArg(1, 10));
 }
 
+static void CreateSeekerMissileFunc(FunctionCallEmitter& emitters, int value1, int value2, MBFParamState* state)
+{
+	state->ValidateArgCount(5, "A_SeekerMissile");
+	emitters.AddParameterIntConst(state->GetIntArg(0, 0));
+	emitters.AddParameterIntConst(state->GetIntArg(1, 0));
+	emitters.AddParameterIntConst(state->GetIntArg(2, 0));
+	emitters.AddParameterIntConst(state->GetIntArg(3, 0));
+	emitters.AddParameterIntConst(state->GetIntArg(4, 0));
+}
+
+static void CreateTracer2Func(FunctionCallEmitter& emitters, int value1, int value2, MBFParamState* state)
+{
+	state->ValidateArgCount(1, "A_Tracer2");
+	emitters.AddParameterFloatConst(state->GetFloatArg(0, 0));
+}
+
 static void CreateJumpIfHealthBelowFunc(FunctionCallEmitter &emitters, int value1, int value2, MBFParamState* state)
 {
 	state->ValidateArgCount(2, "A_JumpIfHealthBelow");
@@ -1063,7 +1079,9 @@ static void (*MBFCodePointerFactories[])(FunctionCallEmitter&, int, int, MBFPara
 	CreateNoArgFunc,
 	CreateJumpIfFlagSetFunc,
 	CreateFlagSetFunc,
-	CreateFlagSetFunc
+	CreateFlagSetFunc,
+	CreateSeekerMissileFunc,
+	CreateTracer2Func
 };
 
 // Creates new functions for the given state so as to convert MBF-args (misc1 and misc2) into real args.
@@ -1076,18 +1094,29 @@ static void SetDehParams(FState *state, int codepointer, VMDisassemblyDumper &di
 
 	bool returnsState = codepointer == 6;
 
+	if (codepointer < 0 || (unsigned)codepointer >= MBFCodePointers.Size())
+	{
+		Printf(TEXTCOLOR_RED "Invalid dehacked codepointer index %d\n", codepointer);
+		return;
+	}
+
+	if ((unsigned)codepointer >= countof(MBFCodePointerFactories))
+	{
+		Printf(TEXTCOLOR_RED "Unmanaged dehacked codepointer alias num %i\n", codepointer);
+		return;
+	}
+
 	// Let's identify the codepointer we're dealing with.
 	PFunction *sym;
 	sym = dyn_cast<PFunction>(PClass::FindActor(NAME_Weapon)->FindSymbol(FName(MBFCodePointers[codepointer].name), true));
-	if (sym == NULL ) return;
-
-	if (codepointer < 0 || (unsigned)codepointer >= countof(MBFCodePointerFactories))
+	if (sym == NULL)
 	{
-		// This simply should not happen.
-		Printf("Unmanaged dehacked codepointer alias num %i\n", codepointer);
+		Printf(TEXTCOLOR_RED "Unknown dehacked codepointer target '%s'\n", MBFCodePointers[codepointer].name.GetChars());
+		return;
 	}
-	else
+
 	{
+		// The DEHSUPP alias table and this factory table must stay in lockstep.
 		MBFArgs scratchargs{};
 		auto args = stateargs.CheckKey(pstate->state);
 		if (!args) args = &scratchargs;
@@ -1165,15 +1194,15 @@ struct DehFlags2
 
 // not all of these map to real flags so this table needs handler callbacks.
 static const struct DehFlags2 deh_mobjflags_mbf21[] = {
-  {"LOGRAV",         [](AActor* defaults) { defaults->Gravity = 1. / 8.; }}, // low gravity
-  {"SHORTMRANGE",    [](AActor* defaults) { defaults->maxtargetrange = 896.; }}, // short missile range
+  {"LOGRAV",         [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_LOWGRAVITY); }}, // low gravity
+  {"SHORTMRANGE",    [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_SHORTMISSILERANGE); }}, // short missile range
   {"DMGIGNORED",     [](AActor* defaults) { defaults->flags3 |= MF3_NOTARGET; }}, // other things ignore its attacks
   {"NORADIUSDMG",    [](AActor* defaults) { defaults->flags3 |= MF3_NORADIUSDMG; }}, // doesn't take splash damage
   {"FORCERADIUSDMG", [](AActor* defaults) { defaults->flags4 |= MF4_FORCERADIUSDMG; }}, // causes splash damage even if target immune
-  {"HIGHERMPROB",    [](AActor* defaults) { defaults->MinMissileChance = 160; }}, // higher missile attack probability
-  {"RANGEHALF",      [](AActor* defaults) { defaults->missilechancemult = 0.5; }}, // use half distance for missile attack probability
+  {"HIGHERMPROB",    [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_HIGHERMPROB); }}, // higher missile attack probability
+  {"RANGEHALF",      [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_RANGEHALF); }}, // use half distance for missile attack probability
   {"NOTHRESHOLD",    [](AActor* defaults) { defaults->flags4 |= MF4_QUICKTORETALIATE; }}, // no targeting threshold
-  {"LONGMELEE",      [](AActor* defaults) { defaults->meleethreshold = 196; }}, // long melee range
+  {"LONGMELEE",      [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_LONGMELEERANGE); }}, // long melee range
   {"BOSS",           [](AActor* defaults) { defaults->flags2 |= MF2_BOSS; defaults->flags3 |= MF3_NORADIUSDMG; }}, // full volume see / death sound + splash immunity
   {"MAP07BOSS1",     [](AActor* defaults) { defaults->flags8 |= MF8_MAP07BOSS1; }}, // Tag 666 "boss" on doom 2 map 7
   {"MAP07BOSS2",     [](AActor* defaults) { defaults->flags8 |= MF8_MAP07BOSS2; }}, // Tag 667 "boss" on doom 2 map 7
@@ -1183,7 +1212,7 @@ static const struct DehFlags2 deh_mobjflags_mbf21[] = {
   {"E4M6BOSS",       [](AActor* defaults) { defaults->flags8 |= MF8_E4M6BOSS; }}, // E4M6 boss
   {"E4M8BOSS",       [](AActor* defaults) { defaults->flags8 |= MF8_E4M8BOSS; }}, // E4M8 boss
   {"RIP",            [](AActor* defaults) { defaults->flags2 |= MF2_RIP;  }}, // projectile rips through targets
-  {"FULLVOLSOUNDS",  [](AActor* defaults) { defaults->flags8 |= MF8_FULLVOLSEE; defaults->flags3 |= MF3_FULLVOLDEATH; } }, // full volume see / death sound
+  {"FULLVOLSOUNDS",  [](AActor* defaults) { HandleDeprecatedFlags(defaults, true, DEPF_FULLVOLSOUNDS); } }, // full volume see / death sound
 };
 
 static void ClearBits2Stuff(AActor* defaults)
@@ -3770,6 +3799,14 @@ void FinishDehPatch ()
 	unsigned int touchedIndex;
 	unsigned int nameindex = 0;
 
+	if (MBFCodePointers.Size() != countof(MBFCodePointerFactories))
+	{
+		Printf(
+			TEXTCOLOR_RED "DEHSUPP MBF alias count mismatch: aliases=%u factories=%u\n",
+			(unsigned)MBFCodePointers.Size(),
+			(unsigned)countof(MBFCodePointerFactories));
+	}
+
 	// For compatibility all potentially altered actors now using A_SkullFly need to be set to the original slamming behavior.
 	// Since this flag does not affect anything else let's just set it for everything, it will just be ignored by non-charging things.
 	for (auto cls : InfoNames)
@@ -3970,7 +4007,9 @@ struct FlagHandler
 #define F2(flag) { [](AActor* a) { a->flags2 |= flag; }, [](AActor* a) { a->flags2 &= ~flag; }, [](AActor* a)->bool { return a->flags2 & flag; } }
 #define F3(flag) { [](AActor* a) { a->flags3 |= flag; }, [](AActor* a) { a->flags3 &= ~flag; }, [](AActor* a)->bool { return a->flags3 & flag; } }
 #define F4(flag) { [](AActor* a) { a->flags4 |= flag; }, [](AActor* a) { a->flags4 &= ~flag; }, [](AActor* a)->bool { return a->flags4 & flag; } }
+#define F5(flag) { [](AActor* a) { a->flags5 |= flag; }, [](AActor* a) { a->flags5 &= ~flag; }, [](AActor* a)->bool { return a->flags5 & flag; } }
 #define F6(flag) { [](AActor* a) { a->flags6 |= flag; }, [](AActor* a) { a->flags6 &= ~flag; }, [](AActor* a)->bool { return a->flags6 & flag; } }
+#define F7(flag) { [](AActor* a) { a->flags7 |= flag; }, [](AActor* a) { a->flags7 &= ~flag; }, [](AActor* a)->bool { return a->flags7 & flag; } }
 #define F8(flag) { [](AActor* a) { a->flags8 |= flag; }, [](AActor* a) { a->flags8 &= ~flag; }, [](AActor* a)->bool { return a->flags8 & flag; } }
 #define DEPF(flag) { [](AActor* a) { HandleDeprecatedFlags(a, true, flag); }, [](AActor* a) { HandleDeprecatedFlags(a, false, flag); }, [](AActor* a)->bool { return !!CheckDeprecatedFlags(a, flag); } }
 
@@ -4219,35 +4258,47 @@ static FlagHandler flag1handlers[32] = {
 };
 
 static FlagHandler flag2handlers[32] = {
-	DEPF(DEPF_LOWGRAVITY),
-	DEPF(DEPF_SHORTMISSILERANGE),
-	F3(MF3_NOTARGET),
-	F3(MF3_NORADIUSDMG),
-	F4(MF4_FORCERADIUSDMG),
-	DEPF(DEPF_HIGHERMPROB),
-	DEPF(DEPF_MISSILEMORE),
-	F4(MF4_QUICKTORETALIATE),
-	DEPF(DEPF_LONGMELEERANGE),
-	{ SetBoss, ClearBoss, [](AActor* a)->bool { return a->flags2 & MF2_BOSS; } },
-	F8(MF8_MAP07BOSS1),
-	F8(MF8_MAP07BOSS2),
-	F8(MF8_E1M8BOSS),
-	F8(MF8_E2M8BOSS),
-	F8(MF8_E3M8BOSS),
-	F8(MF8_E4M6BOSS),
-	F8(MF8_E4M8BOSS),
-	F2(MF2_RIP),
-	{ SetFullVol, ClearFullVol, [](AActor* a)->bool { return a->flags8 & MF8_FULLVOLSEE; } }, // checking one of the two flags should suffice here.
+	DEPF(DEPF_LOWGRAVITY),             // 0: LOGRAV
+	DEPF(DEPF_SHORTMISSILERANGE),      // 1: SHORTMISSILERANGE
+	F3(MF3_NOTARGET),                  // 2: NOTARGET
+	F3(MF3_NORADIUSDMG),               // 3: NORADIUSDMG
+	F4(MF4_FORCERADIUSDMG),            // 4: FORCERADIUSDMG
+	DEPF(DEPF_HIGHERMPROB),            // 5: HIGHERMPROB
+	DEPF(DEPF_RANGEHALF),              // 6: RANGEHALF
+	F4(MF4_QUICKTORETALIATE),          // 7: QUICKTORETALIATE
+	DEPF(DEPF_LONGMELEERANGE),         // 8: LONGMELEERANGE
+	{ SetBoss, ClearBoss, [](AActor* a)->bool { return a->flags2 & MF2_BOSS; } }, // 9: BOSS
+	F8(MF8_MAP07BOSS1),                // 10: MAP07BOSS1
+	F8(MF8_MAP07BOSS2),                // 11: MAP07BOSS2
+	F8(MF8_E1M8BOSS),                  // 12: E1M8BOSS
+	F8(MF8_E2M8BOSS),                  // 13: E2M8BOSS
+	F8(MF8_E3M8BOSS),                  // 14: E3M8BOSS
+	F8(MF8_E4M6BOSS),                  // 15: E4M6BOSS
+	F8(MF8_E4M8BOSS),                  // 16: E4M8BOSS
+	F2(MF2_RIP),                       // 17: RIP
+	DEPF(DEPF_FULLVOLSOUNDS),          // 18: FULLVOLSOUNDS
+	{ nullptr, nullptr, nullptr },      // 19: ADDXP (unsupported)
+	F5(MF5_ALWAYSRESPAWN),             // 20: INSTANTRESPAWN (approximation)
+	{ SetNoBlockmap, ClearNoBlockmap, [](AActor* a)->bool { return a->flags & MF_NOBLOCKMAP; } }, // 21: DONTBLOCKMAP
+	{ SetNoBlockmap, ClearNoBlockmap, [](AActor* a)->bool { return a->flags & MF_NOBLOCKMAP; } }, // 22: NOBLOCKMAP
+	F(MF_NOCLIP),                      // 23: NOCLIP
+	F5(MF5_MOVEWITHSECTOR),            // 24: MOVEWITHSECTOR
+	F(MF_TELEPORT),                    // 25: TELEPORT
+	{ SetMissile, ClearMissile, [](AActor* a)->bool { return a->flags & MF_MISSILE; } }, // 26: MISSILE
+	F(MF_DROPPED),                     // 27: DROPPED
+	{ SetShadow, ClearShadow, [](AActor* a)->bool { return a->flags & MF_SHADOW; } }, // 28: SHADOW
+	F(MF_NOBLOOD),                     // 29: NOBLOOD
+	{ nullptr, nullptr, nullptr },      // 30: VOIDRETALIATE (unsupported)
+	F5(MF5_NOINFIGHTING),              // 31: NOINFIGHTING
 };
 
 
-//
 // A_JumpIfFlagsSet
 // Jumps to a state if caller has the specified thing flags set.
 //   args[0]: State to jump to
-//   args[1]: Standard Flag(s) to check
-//   args[2]: MBF21 Flag(s) to check
-//
+//   args[1]: Standard Flag(s) to check (indices 0-31)
+//   args[2]: MBF21 Flag(s) to check (indices 0-31)
+// MBF21 requirement: All specified flags must be set for the jump to occur.
 DEFINE_ACTION_FUNCTION(AActor, MBF21_JumpIfFlagsSet)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -4255,27 +4306,30 @@ DEFINE_ACTION_FUNCTION(AActor, MBF21_JumpIfFlagsSet)
 	PARAM_INT(flags);
 	PARAM_INT(flags2);
 
+	// Check each bit. If any specified flag is not set, we do not jump.
 	for (int i = 0; i < 32; i++)
 	{
-		if (flags & (1 << i) && flag1handlers[i].checker)
+		// Standard flags
+		if (flags & (1 << i))
 		{
-			if (!flag1handlers[i].checker(self)) return 0;
+			if (i >= (int)countof(flag1handlers) || !flag1handlers[i].checker || !flag1handlers[i].checker(self))
+				return 0;
 		}
-		if (flags2 & (1 << i) && flag2handlers[i].checker)
+		// MBF21 flags
+		if (flags2 & (1 << i))
 		{
-			if (!flag2handlers[i].checker(self)) return 0;
+			if (i >= (int)countof(flag2handlers) || !flag2handlers[i].checker || !flag2handlers[i].checker(self))
+				return 0;
 		}
 	}
 	self->SetState(tstate);
 	return 0;
 }
 
-//
 // A_AddFlags
 // Adds the specified thing flags to the caller.
-//   args[0]: Standard Flag(s) to add
-//   args[1]: MBF21 Flag(s) to add
-//
+//   args[0]: Standard Flag(s) to add (indices 0-31)
+//   args[1]: MBF21 Flag(s) to add (indices 0-31)
 DEFINE_ACTION_FUNCTION(AActor, MBF21_AddFlags)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -4284,24 +4338,30 @@ DEFINE_ACTION_FUNCTION(AActor, MBF21_AddFlags)
 
 	for (int i = 0; i < 32; i++)
 	{
-		if (flags & (1 << i) && flag1handlers[i].setter)
+		// Standard flags
+		if (flags & (1 << i))
 		{
-			flag1handlers[i].setter(self);
+			if (i < (int)countof(flag1handlers) && flag1handlers[i].setter)
+			{
+				flag1handlers[i].setter(self);
+			}
 		}
-		if (flags2 & (1 << i) && flag2handlers[i].setter)
+		// MBF21 flags
+		if (flags2 & (1 << i))
 		{
-			flag2handlers[i].setter(self);
+			if (i < (int)countof(flag2handlers) && flag2handlers[i].setter)
+			{
+				flag2handlers[i].setter(self);
+			}
 		}
 	}
 	return 0;
 }
 
-//
 // A_RemoveFlags
 // Removes the specified thing flags from the caller.
-//   args[0]: Flag(s) to remove
-//   args[1]: MBF21 Flag(s) to remove
-//
+//   args[0]: Standard Flag(s) to remove (indices 0-31)
+//   args[1]: MBF21 Flag(s) to remove (indices 0-31)
 DEFINE_ACTION_FUNCTION(AActor, MBF21_RemoveFlags)
 {
 	PARAM_SELF_PROLOGUE(AActor);
@@ -4310,13 +4370,21 @@ DEFINE_ACTION_FUNCTION(AActor, MBF21_RemoveFlags)
 
 	for (int i = 0; i < 32; i++)
 	{
-		if (flags & (1 << i) && flag1handlers[i].clearer)
+		// Standard flags
+		if (flags & (1 << i))
 		{
-			flag1handlers[i].clearer(self);
+			if (i < (int)countof(flag1handlers) && flag1handlers[i].clearer)
+			{
+				flag1handlers[i].clearer(self);
+			}
 		}
-		if (flags2 & (1 << i) && flag2handlers[i].clearer)
+		// MBF21 flags
+		if (flags2 & (1 << i))
 		{
-			flag2handlers[i].clearer(self);
+			if (i < (int)countof(flag2handlers) && flag2handlers[i].clearer)
+			{
+				flag2handlers[i].clearer(self);
+			}
 		}
 	}
 	return 0;

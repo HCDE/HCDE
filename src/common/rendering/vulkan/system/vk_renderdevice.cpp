@@ -270,6 +270,11 @@ const char* VulkanRenderDevice::DeviceName() const
 	return device->PhysicalDevice.Properties.Properties.deviceName;
 }
 
+int VulkanRenderDevice::MaxShadowMapTextureSize() const
+{
+	return int(device->PhysicalDevice.Properties.Properties.limits.maxImageDimension2D);
+}
+
 void VulkanRenderDevice::SetVSync(bool vsync)
 {
 	mVSync = vsync;

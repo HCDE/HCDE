@@ -5566,6 +5566,22 @@ msgid "GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPPRIORITY"
 msgstr "Gives nearer, larger dynamic lights the first shadowmap rows when the light budget is capped."
 
 #, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVE"
+msgstr "Adaptive shadow budget"
+
+#, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVETARGET"
+msgstr "Adaptive target (ms)"
+
+#, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVEMIN"
+msgstr "Adaptive min lights"
+
+#, fuzzy
+msgid "GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVESTEP"
+msgstr "Adaptive step"
+
+#, fuzzy
 msgid "GLLIGHTMNU_SPRITESHADOWDIST"
 msgstr "Sprite shadow distance"
 

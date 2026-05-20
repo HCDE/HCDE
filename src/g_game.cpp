@@ -273,7 +273,8 @@ CUSTOM_CVAR(Int, sv_gametype, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 		break;
 
 	case 4:
-		Printf("sv_gametype 4 (Invasion) is using cooperative rules until Invasion rules are wired.\n");
+		// Invasion is a native mode identity (sv_gametype 4). Keep DM/team flags
+		// disabled so legacy deathmatch/teamplay rule paths do not apply.
 		deathmatch = 0;
 		teamplay = false;
 		break;

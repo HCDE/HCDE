@@ -59,6 +59,7 @@
 #include "d_main.h"
 #include "d_net.h"
 #include "d_netinf.h"
+#include "options.h"
 #include "decallib.h"
 #include "doomdef.h"
 #include "doomfont.h"
@@ -3894,6 +3895,10 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 
 	// Load embedded Dehacked patches
 	D_LoadDehLumps(FromPWADs, 0);
+
+	// Apply DSDA-style OPTIONS compatibility directives after all DEH/BEX lumps
+	// are loaded so level compatibility flags are finalized before gameplay.
+	parseOptions();
 
 	// Create replacements for dehacked pickups
 	FinishDehPatch();

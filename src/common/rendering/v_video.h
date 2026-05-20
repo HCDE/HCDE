@@ -253,6 +253,7 @@ public:
 	// Report a game restart
 	void SetClearColor(int color);
 	virtual int Backend() { return 0; }
+	virtual int MaxShadowMapTextureSize() const { return 0; }
 	virtual const char* DeviceName() const { return "Unknown"; }
 	virtual void AmbientOccludeScene(float m5) {}
 	virtual void FirstEye() {}

@@ -54,12 +54,13 @@ static FString BuildSessionStatusText(const FServerQuerySnapshot& snapshot)
 		if (snapshot.InvasionMaxWaves > 0)
 		{
 			const bool bossWave = (snapshot.InvasionWaveFlags & 1u) != 0u;
-			waveInfo.Format(" | Wave %u/%u | Budget %u | Spawned %u | Cleared %u%s",
+			waveInfo.Format(" | Wave %u/%u | Budget %u | Spawned %u | Cleared %u | Active %u%s",
 				snapshot.InvasionWave,
 				snapshot.InvasionMaxWaves,
 				snapshot.InvasionWaveBudget,
 				snapshot.InvasionWaveSpawned,
 				snapshot.InvasionWaveCleared,
+				snapshot.InvasionActiveMonsters,
 				bossWave ? " | Boss" : "");
 		}
 		FString spotInfo = {};

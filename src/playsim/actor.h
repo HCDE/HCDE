@@ -991,6 +991,9 @@ public:
 
 	// What species am I?
 	FName GetSpecies();
+	int GetInfightingGroup() const;
+	int GetProjectileGroup() const;
+	int GetSplashGroup() const;
 
 	// set translation
 	void SetTranslation(FName trname);

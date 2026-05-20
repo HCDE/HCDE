@@ -1,0 +1,60 @@
+{
+  "cases": [
+    {
+      "id": "mbf21-validation-pack-smoke",
+      "description": "Generated MBF21 validation pack loads and reports PASS.",
+      "enabled": true,
+      "timeout_seconds": 45,
+      "prebuild_validation_pack": true,
+      "skip_if_missing_files": true,
+      "iwad": "{iwad}",
+      "files": [
+        "{root}\\tests\\mbf21_validation\\dist\\HCDE-MBF21-validation.wad",
+        "{root}\\tests\\mbf21_validation\\dist\\HCDE-MBF21-validation.pk3"
+      ],
+      "args": [
+        "+compat_reservedlineflag",
+        "0",
+        "+map",
+        "MAP01"
+      ],
+      "pass_markers": [
+        "HCDE_MBF21_VALIDATION: PASS"
+      ],
+      "fail_markers": [
+        "HCDE_MBF21_VALIDATION: FAIL",
+        "Unknown code pointer",
+        "Unmanaged dehacked codepointer alias num",
+        "Unknown dehacked codepointer target",
+        "DEHSUPP MBF alias count mismatch"
+      ]
+    },
+    {
+      "id": "mbf21-validation-pack-reserved-off",
+      "description": "Generated MBF21 validation pack with comp_reservedlineflag=0 reports PASS.",
+      "enabled": true,
+      "timeout_seconds": 45,
+      "prebuild_validation_pack": true,
+      "skip_if_missing_files": true,
+      "iwad": "{iwad}",
+      "files": [
+        "{root}\\tests\\mbf21_validation\\dist\\HCDE-MBF21-validation.wad",
+        "{root}\\tests\\mbf21_validation\\dist\\HCDE-MBF21-validation-reserved-off.pk3"
+      ],
+      "args": [
+        "+map",
+        "MAP01"
+      ],
+      "pass_markers": [
+        "HCDE_MBF21_VALIDATION: PASS"
+      ],
+      "fail_markers": [
+        "HCDE_MBF21_VALIDATION: FAIL",
+        "Unknown code pointer",
+        "Unmanaged dehacked codepointer alias num",
+        "Unknown dehacked codepointer target",
+        "DEHSUPP MBF alias count mismatch"
+      ]
+    }
+  ]
+}

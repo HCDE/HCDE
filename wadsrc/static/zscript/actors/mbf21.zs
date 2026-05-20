@@ -122,18 +122,19 @@ extend class Actor
 			return;
 
 		A_FaceTarget();
+		// SpawnMissile already sets the velocity to hit the target.
 		let mo = SpawnMissile(target, type);
 		if (!mo)
 			return;
 
-		// adjust angle
+		// adjust angle relative to current aimed angle
 		mo.angle += angle;
 
+		// add pitch offset relative to aimed pitch
 		Pitch += mo.PitchFromVel();
-		let missilespeed = abs(cos(Pitch) * mo.Speed);
 		mo.Vel3DFromAngle(mo.Speed, mo.angle, Pitch);
 
-		// adjust position
+		// adjust position relative to source actor
 		double x = Spawnofs_xy * cos(self.angle);
 		double y = Spawnofs_xy * sin(self.angle);
 		mo.SetOrigin(mo.Vec3Offset(x, y, Spawnofs_z), false);
@@ -270,8 +271,9 @@ extend class Actor
 		if (!target)
 			return;
 
-		// Check FOV first since it's faster
-		if (fov > 0 && !CheckFov(target, fov))
+		// note: mbf21 fov is the angle of the entire cone, while
+		// zdoom fov is defined as 1/2 of the cone, so halve it.
+		if (fov > 0 && !CheckFov(target, fov/2))
 			return;
 
 		if (CheckSight(target)) self.SetState(tstate);
@@ -304,8 +306,9 @@ extend class Actor
 		if (!tracer)
 			return;
 
-		// Check FOV first since it's faster
-		if (fov > 0 && !CheckFov(tracer, fov))
+		// note: mbf21 fov is the angle of the entire cone, while
+		// zdoom fov is defined as 1/2 of the cone, so halve it.
+		if (fov > 0 && !CheckFov(tracer, fov/2))
 			return;
 
 		if (CheckSight(tracer)) self.SetState(tstate);

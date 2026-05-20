@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.3.0",
+    [string]$Version = "0.4.2",
     [string]$Configuration = "RelWithDebInfo",
     [string]$OpenALSoftVersion = "1.25.2",
     [string]$SndFileDll = "",

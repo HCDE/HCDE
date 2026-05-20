@@ -982,6 +982,9 @@ class Actor : Thinker native
 	native bool TeleportMove(Vector3 pos, bool telefrag, bool modifyactor = true);
 	native clearscope double DistanceBySpeed(Actor other, double speed) const;
 	native name GetSpecies();
+	native clearscope int GetInfightingGroup() const;
+	native clearscope int GetProjectileGroup() const;
+	native clearscope int GetSplashGroup() const;
 	native void PlayActiveSound();
 	native void Howl();
 	native void DrawSplash (int count, double angle, int kind);
@@ -1315,6 +1318,8 @@ class Actor : Thinker native
 	deprecated("2.3", "Use A_StartSound() instead") native void A_PlaySoundEx(sound whattoplay, name slot, bool looping = false, int attenuation = 0);
 	deprecated("2.3", "Use A_StopSound() instead") native void A_StopSoundEx(name slot);
 	native clearscope bool IsActorPlayingSound(int channel, Sound snd = -1);
+	native void A_Tracer();
+	native void A_Tracer2(double traceang = 19.6875);
 	native void A_SeekerMissile(int threshold, int turnmax, int flags = 0, int chance = 50, int distance = 10);
 	native action state A_Jump(int chance, statelabel label, ...);
 	native Actor A_SpawnProjectile(class<Actor> missiletype, double spawnheight = 32, double spawnofs_xy = 0, double angle = 0, int flags = 0, double pitch = 0, int ptr = AAPTR_TARGET);

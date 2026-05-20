@@ -71,6 +71,7 @@ static FRandom pr_monsterrefire ("MonsterRefire");
 static FRandom pr_teleport("A_Teleport");
 static FRandom pr_bfgselfdamage("BFGSelfDamage");
 	   FRandom pr_cajump("CustomJump");
+static FRandom pr_tracer("Tracer");
 
 //==========================================================================
 //
@@ -758,6 +759,112 @@ DEFINE_ACTION_FUNCTION(AActor, A_SeekerMissile)
 			self->tracer = nullptr;
 		}
 	}
+	return 0;
+}
+
+//===========================================================================
+//
+// A_Tracer2
+//
+// Strife/Revenant compatibility tracer steering. Exposed as a native action
+// so DECORATE and ZScript actors can call it directly.
+//
+//===========================================================================
+static void DoTracer2(AActor *self, DAngle traceang)
+{
+	AActor *dest = self->tracer;
+	if (dest == nullptr || dest->health <= 0 || self->Speed == 0 || !self->CanSeek(dest))
+	{
+		return;
+	}
+
+	const DAngle exact = self->AngleTo(dest);
+	const DAngle diff = deltaangle(self->Angles.Yaw, exact);
+
+	if (diff < nullAngle)
+	{
+		self->Angles.Yaw -= traceang;
+		if (deltaangle(self->Angles.Yaw, exact) > nullAngle)
+		{
+			self->Angles.Yaw = exact;
+		}
+	}
+	else if (diff > nullAngle)
+	{
+		self->Angles.Yaw += traceang;
+		if (deltaangle(self->Angles.Yaw, exact) < nullAngle)
+		{
+			self->Angles.Yaw = exact;
+		}
+	}
+
+	self->VelFromAngle();
+
+	if (!(self->flags3 & (MF3_FLOORHUGGER | MF3_CEILINGHUGGER)))
+	{
+		const double dist = self->DistanceBySpeed(dest, self->Speed);
+		const double slope = (dest->Height >= 56.)
+			? (dest->Z() + 40. - self->Z()) / dist
+			: (dest->Z() + self->Height * (2. / 3) - self->Z()) / dist;
+
+		if (slope < self->Vel.Z)
+		{
+			self->Vel.Z -= 1. / 8;
+		}
+		else
+		{
+			self->Vel.Z += 1. / 8;
+		}
+	}
+}
+
+DEFINE_ACTION_FUNCTION(AActor, A_Tracer2)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	PARAM_FLOAT(traceang);
+	DoTracer2(self, DAngle::fromDeg(traceang));
+	return 0;
+}
+
+//===========================================================================
+//
+// A_Tracer
+//
+// Doom revenant tracer behavior: periodic smoke puff plus steering.
+//
+//===========================================================================
+DEFINE_ACTION_FUNCTION(AActor, A_Tracer)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+
+	// Preserves the original tic gating for deterministic behavior.
+	if (self->Level->maptime & 3)
+	{
+		return 0;
+	}
+
+	PClassActor *pufftype = PClass::FindActor(NAME_BulletPuff);
+	if (pufftype != nullptr)
+	{
+		P_SpawnPuff(self, pufftype, self->Pos(), self->Angles.Yaw, self->Angles.Yaw, 3);
+	}
+
+	PClassActor *smoketype = PClass::FindActor("RevenantTracerSmoke");
+	if (smoketype != nullptr)
+	{
+		AActor *smoke = Spawn(self->Level, smoketype, self->Vec3Offset(-self->Vel.X, -self->Vel.Y, 0.), ALLOW_REPLACE);
+		if (smoke != nullptr)
+		{
+			smoke->Vel.Z = 1.;
+			smoke->tics -= pr_tracer() % 4;
+			if (smoke->tics < 1)
+			{
+				smoke->tics = 1;
+			}
+		}
+	}
+
+	DoTracer2(self, DAngle::fromDeg(16.875));
 	return 0;
 }
 

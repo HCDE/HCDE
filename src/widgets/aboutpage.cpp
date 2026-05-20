@@ -16,6 +16,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -79,25 +80,53 @@ struct UpdaterLockState
 
 static constexpr double UpdaterLockStaleMinutes = 120.0;
 
-static std::wstring SanitizeWindowsArg(std::wstring value)
+// Quoting and escaping logic for Windows command-line arguments.
+// Follows the standard conventions used by the Microsoft C Runtime (CRT).
+static std::wstring QuoteWindowsCommandArg(const std::wstring& value)
 {
-	std::wstring sanitized;
-	sanitized.reserve(value.length());
-	for (auto ch : value)
+	// Quoting exactly once for Windows command-line parsing.
+	// This preserves characters used in signed download URLs (e.g. ?, &, =, %)
+	// while still preventing argument splitting.
+	std::wstring quoted;
+	quoted.reserve(value.length() + 2);
+	quoted.push_back(L'"');
+
+	size_t backslashCount = 0;
+	for (wchar_t ch : value)
 	{
-		// Whitelist: alphanumeric, period, dash, underscore, space, slash, colon.
-		// Everything else is discarded or replaced to prevent command injection.
-		if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9') ||
-			ch == L'.' || ch == L'-' || ch == L'_' || ch == L' ' || ch == L'/' || ch == L'\\' || ch == L':')
+		if (ch == L'\\')
 		{
-			sanitized.push_back(ch);
+			backslashCount++;
+			continue;
 		}
-		else
+
+		if (ch == L'"')
 		{
-			sanitized.push_back(L'_');
+			// Double the backslashes before a quote and add one to escape the quote.
+			quoted.append(backslashCount * 2 + 1, L'\\');
+			quoted.push_back(L'"');
+			backslashCount = 0;
+			continue;
 		}
+
+		if (backslashCount > 0)
+		{
+			// Backslashes followed by a non-quote are literal.
+			quoted.append(backslashCount, L'\\');
+			backslashCount = 0;
+		}
+
+		quoted.push_back(ch);
 	}
-	return sanitized;
+
+	if (backslashCount > 0)
+	{
+		// Backslashes at the end of the string must be doubled because we add a quote.
+		quoted.append(backslashCount * 2, L'\\');
+	}
+
+	quoted.push_back(L'"');
+	return quoted;
 }
 
 static std::wstring GetInstallDirPath()
@@ -212,8 +241,14 @@ static FString ReadUtf8TextFile(const std::wstring& path)
 		return {};
 	}
 
+	const size_t bomOffset =
+		(bytes.size() >= 3 &&
+		 static_cast<unsigned char>(bytes[0]) == 0xEF &&
+		 static_cast<unsigned char>(bytes[1]) == 0xBB &&
+		 static_cast<unsigned char>(bytes[2]) == 0xBF) ? 3 : 0;
+
 	FString result;
-	result.AppendCStrPart(bytes.data(), bytes.size());
+	result.AppendCStrPart(bytes.data() + bomOffset, bytes.size() - bomOffset);
 	return result;
 }
 
@@ -461,7 +496,21 @@ static bool ValidateUpdateUrl(const FString& sourceUrl, FString& normalizedUrl, 
 		return false;
 	}
 
-	if (ToLowerAscii(normalizedUrl).IndexOf(".zip") < 0)
+	// Validate the URL path itself (not query/fragment text) so we only accept
+	// actual zip package targets.
+	std::string pathPart = slash ? slash : "/";
+	const size_t suffixMarker = pathPart.find_first_of("?#");
+	if (suffixMarker != std::string::npos)
+	{
+		pathPart.resize(suffixMarker);
+	}
+
+	std::transform(pathPart.begin(), pathPart.end(), pathPart.begin(), [](unsigned char c)
+	{
+		return static_cast<char>(std::tolower(c));
+	});
+
+	if (pathPart.length() < 4 || pathPart.compare(pathPart.length() - 4, 4, ".zip") != 0)
 	{
 		error = "Update URL was rejected: expected a zip package.";
 		return false;
@@ -470,6 +519,9 @@ static bool ValidateUpdateUrl(const FString& sourceUrl, FString& normalizedUrl, 
 	return true;
 }
 
+// Robust version number parser. Extracts all numeric components from a string,
+// ignoring leading 'v' or other non-digit separators.
+// Example: "v0.4.2-hotfix1" -> {0, 4, 2, 1}
 static bool ParseVersionNumbers(const FString& version, std::vector<int>& outParts)
 {
 	const std::string input = version.GetChars();
@@ -480,17 +532,10 @@ static bool ParseVersionNumbers(const FString& version, std::vector<int>& outPar
 		{
 			token.push_back(c);
 		}
-		else
+		else if (!token.empty())
 		{
-			if (!token.empty())
-			{
-				outParts.push_back(atoi(token.c_str()));
-				token.clear();
-			}
-			if (c != '.')
-			{
-				break;
-			}
+			outParts.push_back(atoi(token.c_str()));
+			token.clear();
 		}
 	}
 	if (!token.empty())
@@ -634,163 +679,210 @@ if (-not ($allowedHosts -contains $uri.Host.ToLowerInvariant()))
 {
 	throw "Update URL host is not trusted: $($uri.Host)"
 }
-
-while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)
+if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 {
-	Start-Sleep -Milliseconds 350
+	throw "Update URL was rejected: expected a zip package."
 }
 
-# Also wait for any running game or server processes in the same directory to exit
-$runningApps = Get-Process | Where-Object {
-	$path = $_.Path -ErrorAction SilentlyContinue
-	if ($path) {
-		$name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
-		($name -eq 'hcde.exe' -or $name -eq 'hcdeserv.exe') -and $path.StartsWith($resolvedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)
-	} else { $false }
-}
-foreach ($app in $runningApps) {
-	try { $app.WaitForExit(5000) } catch {}
-}
-
-if (-not (Test-Path -LiteralPath $InstallDir))
-{
-	throw "Install directory was not found: $InstallDir"
-}
-
-$resolvedInstallDir = (Resolve-Path -LiteralPath $InstallDir).ProviderPath
-$installRoot = [System.IO.Path]::GetPathRoot($resolvedInstallDir)
-if ([string]::IsNullOrWhiteSpace($installRoot))
-{
-	throw "Install directory root could not be resolved: $resolvedInstallDir"
-}
-if ($resolvedInstallDir.TrimEnd('\') -eq $installRoot.TrimEnd('\'))
-{
-	throw "Refusing to update at filesystem root: $resolvedInstallDir"
-}
-
-$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backupDir = Join-Path $resolvedInstallDir 'backups'
-New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-$backupZip = Join-Path $backupDir ("hcde-backup-$VersionTag-$timestamp.zip")
-$updateLog = Join-Path $backupDir ("hcde-update-$VersionTag-$timestamp.log")
-$statusFile = Join-Path $backupDir 'hcde-update-last-status.txt'
-$lockFile = Join-Path $backupDir 'hcde-update.lock'
-$status = 'failed'
-$statusMessage = 'Updater did not complete.'
-$launchRequested = $false
-$rollbackAttempted = $false
-$rollbackSucceeded = $false
-
-$workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hcde-update-" + [Guid]::NewGuid().ToString("N"))
-$archivePath = Join-Path $workRoot "hcde-update.zip"
-$extractPath = Join-Path $workRoot "extract"
-New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
-
-if (Test-Path -LiteralPath $lockFile)
-{
-	$existingLock = Get-Item -LiteralPath $lockFile -ErrorAction SilentlyContinue
-	$lockAgeMinutes = if ($existingLock) { ((Get-Date).ToUniversalTime() - $existingLock.LastWriteTimeUtc).TotalMinutes } else { 0.0 }
-	if ($existingLock -and $lockAgeMinutes -ge 120)
+	# Phase 1: Wait for parent process (launcher) and any game/server instances to exit.
+	# This ensures we can overwrite the executables without 'Permission Denied' errors.
+	while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)
 	{
-		Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
-		"Removed stale updater lock: $lockFile" | Out-File -LiteralPath $updateLog -Encoding utf8
+		Start-Sleep -Milliseconds 350
 	}
-	else
+
+	if (-not (Test-Path -LiteralPath $InstallDir))
+	{
+		throw "Install directory was not found: $InstallDir"
+	}
+
+	$resolvedInstallDir = (Resolve-Path -LiteralPath $InstallDir).ProviderPath
+	$installRoot = [System.IO.Path]::GetPathRoot($resolvedInstallDir)
+	if ([string]::IsNullOrWhiteSpace($installRoot))
+	{
+		throw "Install directory root could not be resolved: $resolvedInstallDir"
+	}
+	if ($resolvedInstallDir.TrimEnd('\') -eq $installRoot.TrimEnd('\'))
+	{
+		throw "Refusing to update at filesystem root: $resolvedInstallDir"
+	}
+
+	# Check for running game or server processes that might be holding file locks.
+	$runningApps = Get-Process | Where-Object {
+		$path = $null
+		try {
+			$path = $_.Path
+		} catch {
+			$path = $null
+		}
+
+		if ($path) {
+			$name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
+			($name -eq 'hcde.exe' -or $name -eq 'hcdeserv.exe') -and $path.StartsWith($resolvedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)
+		} else { $false }
+	}
+	foreach ($app in $runningApps) {
+		# Allow a grace period for other HCDE processes to shut down.
+		try { $app.WaitForExit(5000) } catch {}
+	}
+
+	$safeVersionTag = ($VersionTag -replace '[^A-Za-z0-9._-]', '_')
+	if ([string]::IsNullOrWhiteSpace($safeVersionTag))
+	{
+		$safeVersionTag = 'unknown'
+	}
+
+	$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+	$backupDir = Join-Path $resolvedInstallDir 'backups'
+	New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+	$backupZip = Join-Path $backupDir ("hcde-backup-$safeVersionTag-$timestamp.zip")
+	$updateLog = Join-Path $backupDir ("hcde-update-$safeVersionTag-$timestamp.log")
+	$statusFile = Join-Path $backupDir 'hcde-update-last-status.txt'
+	$lockFile = Join-Path $backupDir 'hcde-update.lock'
+	$status = 'failed'
+	$statusMessage = 'Updater did not complete.'
+	$launchRequested = $false
+	$rollbackAttempted = $false
+	$rollbackSucceeded = $false
+
+	$workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hcde-update-" + [Guid]::NewGuid().ToString("N"))
+	$archivePath = Join-Path $workRoot "hcde-update.zip"
+	$extractPath = Join-Path $workRoot "extract"
+	New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
+
+	# Phase 2: Manage updater lock to prevent concurrent update attempts.
+	if (Test-Path -LiteralPath $lockFile)
+	{
+		$existingLock = Get-Item -LiteralPath $lockFile -ErrorAction SilentlyContinue
+		$lockAgeMinutes = if ($existingLock) { ((Get-Date).ToUniversalTime() - $existingLock.LastWriteTimeUtc).TotalMinutes } else { 0.0 }
+		if ($existingLock -and $lockAgeMinutes -ge 120)
+		{
+			Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+			"Removed stale updater lock: $lockFile" | Out-File -LiteralPath $updateLog -Encoding utf8
+		}
+		else
+		{
+			throw "Another updater run is already in progress."
+		}
+	}
+
+	$lockContent = @(
+		"PID=$PID",
+		"VERSION=$VersionTag",
+		"START_UTC=$((Get-Date).ToUniversalTime().ToString('o'))"
+	) -join [Environment]::NewLine
+
+	$lockBytes = [System.Text.Encoding]::UTF8.GetBytes($lockContent + [Environment]::NewLine)
+
+	try
+	{
+		# Create the lock with CreateNew for atomic acquisition.
+		$lockStream = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+		try
+		{
+			$lockStream.Write($lockBytes, 0, $lockBytes.Length)
+		}
+		finally
+		{
+			$lockStream.Dispose()
+		}
+	}
+	catch [System.IO.IOException]
 	{
 		throw "Another updater run is already in progress."
 	}
-}
 
-@(
-	"PID=$PID",
-	"VERSION=$VersionTag",
-	"START_UTC=$((Get-Date).ToUniversalTime().ToString('o'))"
-) | Out-File -LiteralPath $lockFile -Encoding utf8 -Force
-
-try
-{
-	$backupItems = Get-ChildItem -LiteralPath $resolvedInstallDir -Force | Where-Object { $_.Name -ne 'backups' }
-	if ($backupItems.Count -gt 0)
+	try
 	{
-		Compress-Archive -Path ($backupItems.FullName) -DestinationPath $backupZip -Force
-		"Backup created: $backupZip" | Out-File -LiteralPath $updateLog -Encoding utf8
-	}
-	else
-	{
-		"No backup archive was created because the install directory had no content to archive." | Out-File -LiteralPath $updateLog -Encoding utf8
-	}
-
-	Invoke-WebRequest -Uri $DownloadUrl -OutFile $archivePath -UseBasicParsing
-	Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
-
-	$payloadRoot = $extractPath
-	$children = Get-ChildItem -LiteralPath $extractPath -Force
-	if ($children.Count -eq 1 -and $children[0].PSIsContainer)
-	{
-		$payloadRoot = $children[0].FullName
-	}
-
-	$coreExe = Join-Path $payloadRoot 'hcde.exe'
-	if (-not (Test-Path -LiteralPath $coreExe))
-	{
-		throw "Update archive did not contain hcde.exe at payload root: $payloadRoot"
-	}
-
-	Copy-Item -Path (Join-Path $payloadRoot '*') -Destination $resolvedInstallDir -Recurse -Force
-	"Payload copied from: $payloadRoot" | Add-Content -LiteralPath $updateLog -Encoding utf8
-
-	$pruned = Get-ChildItem -LiteralPath $backupDir -Filter 'hcde-backup-*.zip' -File |
-		Sort-Object LastWriteTime -Descending |
-		Select-Object -Skip 6
-	foreach ($old in $pruned)
-	{
-		Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
-	}
-	$status = 'success'
-	$statusMessage = 'Update applied successfully.'
-	$launchRequested = $true
-}
-catch
-{
-	$statusMessage = $_.Exception.Message
-	if (Test-Path -LiteralPath $backupZip)
-	{
-		$rollbackAttempted = $true
-		try
+		# Phase 3: Create pre-update backup.
+		$backupItems = Get-ChildItem -LiteralPath $resolvedInstallDir -Force | Where-Object { $_.Name -ne 'backups' }
+		if ($backupItems.Count -gt 0)
 		{
-			$rollbackExtractPath = Join-Path $workRoot 'rollback'
-			New-Item -ItemType Directory -Force -Path $rollbackExtractPath | Out-Null
-			Expand-Archive -LiteralPath $backupZip -DestinationPath $rollbackExtractPath -Force
+			Compress-Archive -Path ($backupItems.FullName) -DestinationPath $backupZip -Force
+			"Backup created: $backupZip" | Out-File -LiteralPath $updateLog -Encoding utf8
+		}
+		else
+		{
+			"No backup archive was created because the install directory had no content to archive." | Out-File -LiteralPath $updateLog -Encoding utf8
+		}
 
-			$rollbackItems = Get-ChildItem -LiteralPath $rollbackExtractPath -Force
-			if ($rollbackItems.Count -gt 0)
+		# Phase 4: Download and extract update.
+		Invoke-WebRequest -Uri $DownloadUrl -OutFile $archivePath -UseBasicParsing
+		Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
+
+		# Handle nested directory in ZIP if applicable.
+		$payloadRoot = $extractPath
+		$children = Get-ChildItem -LiteralPath $extractPath -Force
+		if ($children.Count -eq 1 -and $children[0].PSIsContainer)
+		{
+			$payloadRoot = $children[0].FullName
+		}
+
+		# Validation check for core executable.
+		$coreExe = Join-Path $payloadRoot 'hcde.exe'
+		if (-not (Test-Path -LiteralPath $coreExe))
+		{
+			throw "Update archive did not contain hcde.exe at payload root: $payloadRoot"
+		}
+
+		# Phase 5: Apply payload by copying over existing files.
+		Copy-Item -Path (Join-Path $payloadRoot '*') -Destination $resolvedInstallDir -Recurse -Force
+		"Payload copied from: $payloadRoot" | Add-Content -LiteralPath $updateLog -Encoding utf8
+
+		# Prune old backups to save space (keep last 6).
+		$pruned = Get-ChildItem -LiteralPath $backupDir -Filter 'hcde-backup-*.zip' -File |
+			Sort-Object LastWriteTime -Descending |
+			Select-Object -Skip 6
+		foreach ($old in $pruned)
+		{
+			Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+		}
+		$status = 'success'
+		$statusMessage = 'Update applied successfully.'
+		$launchRequested = $true
+	}
+	catch
+	{
+		# Phase 6: Error handling and automatic rollback.
+		$statusMessage = $_.Exception.Message
+		if (Test-Path -LiteralPath $backupZip)
+		{
+			$rollbackAttempted = $true
+			try
 			{
-				Copy-Item -Path (Join-Path $rollbackExtractPath '*') -Destination $resolvedInstallDir -Recurse -Force
-				$rollbackSucceeded = $true
-				$statusMessage = "$statusMessage (rollback restored from backup)"
-				"Rollback restored from backup: $backupZip" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+				$rollbackExtractPath = Join-Path $workRoot 'rollback'
+				New-Item -ItemType Directory -Force -Path $rollbackExtractPath | Out-Null
+				Expand-Archive -LiteralPath $backupZip -DestinationPath $rollbackExtractPath -Force
+
+				$rollbackItems = Get-ChildItem -LiteralPath $rollbackExtractPath -Force
+				if ($rollbackItems.Count -gt 0)
+				{
+					Copy-Item -Path (Join-Path $rollbackExtractPath '*') -Destination $resolvedInstallDir -Recurse -Force
+					$rollbackSucceeded = $true
+					$statusMessage = "$statusMessage (rollback restored from backup)"
+					"Rollback restored from backup: $backupZip" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+				}
+				else
+				{
+					$statusMessage = "$statusMessage (rollback archive was empty)"
+					"Rollback archive was empty: $backupZip" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+				}
 			}
-			else
+			catch
 			{
-				$statusMessage = "$statusMessage (rollback archive was empty)"
-				"Rollback archive was empty: $backupZip" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+				$rollbackError = $_.Exception.Message
+				$statusMessage = "$statusMessage (rollback failed: $rollbackError)"
+				"Rollback failed: $rollbackError" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
 			}
 		}
-		catch
+		else
 		{
-			$rollbackError = $_.Exception.Message
-			$statusMessage = "$statusMessage (rollback failed: $rollbackError)"
-			"Rollback failed: $rollbackError" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+			$statusMessage = "$statusMessage (no rollback archive was available)"
 		}
-	}
-	else
-	{
-		$statusMessage = "$statusMessage (no rollback archive was available)"
-	}
 
-	"Updater failed: $statusMessage" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
-	throw
-}
+		"Updater failed: $statusMessage" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue
+		throw
+	}
 finally
 {
 	@(
@@ -804,6 +896,12 @@ finally
 	) | Out-File -LiteralPath $statusFile -Encoding utf8 -Force
 	Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
 	Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+	# Best-effort cleanup of the transient updater helper script.
+	$scriptFile = $MyInvocation.MyCommand.Path
+	if ($scriptFile -and (Test-Path -LiteralPath $scriptFile))
+	{
+		Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
+	}
 }
 
 if ($launchRequested)
@@ -832,24 +930,18 @@ if ($launchRequested)
 		return false;
 	}
 
-	const std::wstring safeInstallDir = SanitizeWindowsArg(installDir);
-	const std::wstring safeVersion = SanitizeWindowsArg(WideString(versionTag.GetChars()));
-	const std::wstring safeUrl = SanitizeWindowsArg(WideString(downloadUrl.GetChars()));
-	const std::wstring safeExePath = SanitizeWindowsArg(modulePath);
-
-	std::wstring params = L"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"";
-	params += scriptPath;
-	params += L"\" -TargetPid ";
+	std::wstring params = L"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ";
+	params += QuoteWindowsCommandArg(scriptPath);
+	params += L" -TargetPid ";
 	params += std::to_wstring(GetCurrentProcessId());
-	params += L" -InstallDir \"";
-	params += safeInstallDir;
-	params += L"\" -DownloadUrl \"";
-	params += safeUrl;
-	params += L"\" -VersionTag \"";
-	params += safeVersion;
-	params += L"\" -ExePath \"";
-	params += safeExePath;
-	params += L"\"";
+	params += L" -InstallDir ";
+	params += QuoteWindowsCommandArg(installDir);
+	params += L" -DownloadUrl ";
+	params += QuoteWindowsCommandArg(WideString(downloadUrl.GetChars()));
+	params += L" -VersionTag ";
+	params += QuoteWindowsCommandArg(WideString(versionTag.GetChars()));
+	params += L" -ExePath ";
+	params += QuoteWindowsCommandArg(modulePath);
 
 	const HINSTANCE handle = ShellExecuteW(nullptr, L"open", L"powershell.exe", params.c_str(), nullptr, SW_HIDE);
 	return reinterpret_cast<uintptr_t>(handle) > 32;
@@ -883,8 +975,6 @@ AboutPage::AboutPage(LauncherWindow* launcher, const FStartupSelectionInfo& info
 			auto data = resf->Read(lump);
 			text.AppendCStrPart(data.string(), data.size());
 		};
-
-		int lump;
 		if (resf)
 		{
 			append("about.txt");
@@ -1044,7 +1134,6 @@ void AboutPage::OnGeometryChanged()
 #endif
 
 	Notes->SetFrameGeometry(round((w-tw)/2), y, tw, th);
-	y += h;
 
 	Launcher->UpdatePlayButton();
 }

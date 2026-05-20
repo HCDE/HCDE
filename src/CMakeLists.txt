@@ -855,6 +855,7 @@ set (PCH_SOURCES
 	gamedata/gi.cpp
 	gamedata/umapinfo.cpp
 	gamedata/d_dehacked.cpp
+	gamedata/options.cpp
 	gamedata/g_doomedmap.cpp
 	gamedata/doomfont.cpp
 	gamedata/info.cpp

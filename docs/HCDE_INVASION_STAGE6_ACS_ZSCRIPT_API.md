@@ -34,6 +34,14 @@ Action values:
 - `2`: force victory (`INVCTL_VICTORY`)
 - `3`: force failure (`INVCTL_FAILURE`)
 
+ZScript also exposes a convenience enum in `constants.zs`:
+
+- `EHcdeInvasionControlAction`
+  - `INVCTL_NONE`
+  - `INVCTL_NEXTWAVE`
+  - `INVCTL_VICTORY`
+  - `INVCTL_FAILURE`
+
 ## ACS API (`CallFunction` indices)
 
 Custom ACS function ids were added in the `19700+` range:
@@ -54,6 +62,22 @@ Custom ACS function ids were added in the `19700+` range:
 - `ACSF_InvasionIsSpawnUsingFallback`
 - `ACSF_InvasionGetSpawnFallbackSource`
 - `ACSF_InvasionControlAction` (argument: action int)
+
+Example usage:
+
+```c
+// ACS (CallFunction id path)
+int wave = ACS_NamedExecuteWithResult("CallFunction", ACSF_InvasionGetWave, 0, 0, 0);
+int ok = ACS_NamedExecuteWithResult("CallFunction", ACSF_InvasionControlAction, 1, 0, 0); // next wave
+```
+
+```cpp
+// ZScript
+if (Object.InvasionGetState() == 1) // waiting
+{
+	Object.InvasionControl(INVCTL_NEXTWAVE);
+}
+```
 
 ## Authority and Safety
 

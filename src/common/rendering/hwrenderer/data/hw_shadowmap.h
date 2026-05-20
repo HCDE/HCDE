@@ -42,11 +42,14 @@ public:
 	static int LightsBudgetedOut;
 	static int LightRowsUpdated;
 	static int LightPriorityEnabled;
+	static int BudgetHardCap;
+	static int BudgetRuntimeCap;
+	static int BudgetAdaptiveEnabled;
 
 	bool PerformUpdate();
 	void FinishUpdate()
 	{
-		UpdateCycles.Clock();
+		UpdateCycles.Unclock();
 	}
 
 	int ActiveLightRows() const

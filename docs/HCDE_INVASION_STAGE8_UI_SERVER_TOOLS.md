@@ -13,11 +13,14 @@ servers without source edits.
 3. Launcher query snapshots now include invasion mode/runtime metadata:
    - game mode id and label
    - invasion state and state timer
-   - wave/max/budget/spawn/cleared counters
+   - wave/max/budget/spawn/cleared/active counters
    - boss-wave flag
    - spawn planner and fallback metadata
 4. Query decode remains backward-compatible by treating appended invasion payload
    fields as optional.
+5. Added dedicated console admin helpers:
+   - `invasion_standard`: apply the "Invasion Standard" baseline from server console.
+   - `invasion_status`: print live invasion state + current invasion tuning cvars.
 
 ## Admin-Facing Invasion CVars
 

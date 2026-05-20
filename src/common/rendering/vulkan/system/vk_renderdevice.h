@@ -79,6 +79,7 @@ public:
 	bool CompileNextShader() override;
 	void PrecacheMaterial(FMaterial *mat, int translation) override;
 	void UpdatePalette() override;
+	int MaxShadowMapTextureSize() const override;
 	const char* DeviceName() const override;
 	int Backend() override { return 1; }
 	void SetTextureFilterMode() override;

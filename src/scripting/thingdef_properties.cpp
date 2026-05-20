@@ -339,6 +339,34 @@ void HandleDeprecatedFlags(AActor *actor, int set, int index)
 		}
 		break;
 
+	case DEPF_RANGEHALF:
+		if (set)
+		{
+			actor->missilechancemult = 0.5;
+			actor->meleethreshold = 196;
+		}
+		else
+		{
+			actor->missilechancemult = 1;
+			actor->meleethreshold = 0;
+		}
+		break;
+
+	case DEPF_FULLVOLSOUNDS:
+		if (set)
+		{
+			actor->flags8 |= MF8_FULLVOLSEE;
+			actor->flags3 |= MF3_FULLVOLDEATH;
+			actor->flags3 |= MF3_FULLVOLACTIVE;
+		}
+		else
+		{
+			actor->flags8 &= ~MF8_FULLVOLSEE;
+			actor->flags3 &= ~MF3_FULLVOLDEATH;
+			actor->flags3 &= ~MF3_FULLVOLACTIVE;
+		}
+		break;
+
 
 	default:
 		break;	// silence GCC
@@ -417,6 +445,12 @@ int CheckDeprecatedFlags(AActor *actor, int index)
 
 	case DEPF_MISSILEEVENMORE:
 		return actor->missilechancemult == 0.125 || actor->missilechancemult == 0.0625;
+
+	case DEPF_RANGEHALF:
+		return actor->missilechancemult == 0.5 && actor->meleethreshold == 196;
+
+	case DEPF_FULLVOLSOUNDS:
+		return (actor->flags8 & MF8_FULLVOLSEE) && (actor->flags3 & MF3_FULLVOLDEATH);
 	}
 
 	return false; // Any entirely unknown flag is not set

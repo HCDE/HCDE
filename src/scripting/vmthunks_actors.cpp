@@ -959,6 +959,39 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetSpecies, GetSpecies)
 	ACTION_RETURN_INT(GetSpecies(self));
 }
 
+static int GetInfightingGroup(AActor *self)
+{
+	return self->GetInfightingGroup();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetInfightingGroup, GetInfightingGroup)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	ACTION_RETURN_INT(self->GetInfightingGroup());
+}
+
+static int GetProjectileGroup(AActor *self)
+{
+	return self->GetProjectileGroup();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetProjectileGroup, GetProjectileGroup)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	ACTION_RETURN_INT(self->GetProjectileGroup());
+}
+
+static int GetSplashGroup(AActor *self)
+{
+	return self->GetSplashGroup();
+}
+
+DEFINE_ACTION_FUNCTION_NATIVE(AActor, GetSplashGroup, GetSplashGroup)
+{
+	PARAM_SELF_PROLOGUE(AActor);
+	ACTION_RETURN_INT(self->GetSplashGroup());
+}
+
 static int isFriend(AActor *self, AActor *other)
 {
 	return self->IsFriend(PARAM_NULLCHECK(other, other));

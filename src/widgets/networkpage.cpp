@@ -82,12 +82,13 @@ FString BuildServerInfoText(const FServerQuerySnapshot& snapshot)
 		if (snapshot.InvasionMaxWaves > 0)
 		{
 			const bool bossWave = (snapshot.InvasionWaveFlags & 1u) != 0u;
-			info.AppendFormat("\nWave: %u/%u | Budget: %u | Spawned: %u | Cleared: %u%s",
+			info.AppendFormat("\nWave: %u/%u | Budget: %u | Spawned: %u | Cleared: %u | Active: %u%s",
 				snapshot.InvasionWave,
 				snapshot.InvasionMaxWaves,
 				snapshot.InvasionWaveBudget,
 				snapshot.InvasionWaveSpawned,
 				snapshot.InvasionWaveCleared,
+				snapshot.InvasionActiveMonsters,
 				bossWave ? " | Boss wave" : "");
 		}
 		if (snapshot.InvasionSpawnSpotCount > 0)

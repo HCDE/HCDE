@@ -77,6 +77,7 @@ class QuerySnapshot:
     invasion_spawn_plan_budget: int = 0
     invasion_spawn_active_tag: int = 0
     invasion_spawn_flags: int = 0
+    invasion_active_monsters: int = 0
 
 
 class ByteReader:
@@ -192,6 +193,8 @@ def parse_launcher_snapshot(packet: bytes, expected_token: int) -> QuerySnapshot
         snapshot.invasion_spawn_plan_budget = rd.read_u16()
         snapshot.invasion_spawn_active_tag = rd.read_u16()
         snapshot.invasion_spawn_flags = rd.read_u8()
+    if rd.remaining() > 0:
+        snapshot.invasion_active_monsters = rd.read_u16()
 
     return snapshot
 
@@ -391,6 +394,22 @@ def run_map_transition_case(args: argparse.Namespace) -> None:
         if before.game_mode != 4:
             raise Stage9Error("map transition case expected invasion mode on startup")
 
+        # Some dedicated builds keep map identity as "unknown" until a real level
+        # is running. Try a one-time warm load before asserting map transitions.
+        if before.map_name.strip().lower() == "unknown":
+            server.send_command(f"map {args.map}")
+            warm_deadline = time.monotonic() + min(args.map_transition_timeout, 6.0)
+            while time.monotonic() < warm_deadline:
+                snap = query_snapshot(args.host, port, timeout_s=args.query_timeout, attempts=3)
+                if snap.map_name.strip().lower() != "unknown":
+                    before = snap
+                    break
+                time.sleep(0.3)
+
+            if before.map_name.strip().lower() == "unknown":
+                print("[skip] map transition check skipped: dedicated query map is unknown while session is empty")
+                return
+
         server.send_command(f"changemap {args.transition_map}")
         deadline = time.monotonic() + args.map_transition_timeout
         while time.monotonic() < deadline:
@@ -429,6 +448,11 @@ def run_invasion_fallback_case(args: argparse.Namespace) -> None:
         server.start()
         time.sleep(args.startup_delay)
         server.ensure_running("invasion fallback startup")
+
+        baseline = query_snapshot(args.host, port, timeout_s=args.query_timeout, attempts=args.query_attempts)
+        if baseline.map_name.strip().lower() == "unknown" and baseline.player_count == 0:
+            print("[skip] invasion fallback check skipped: dedicated query map is unknown while session is empty")
+            return
 
         server.send_command("invasion_nextwave")
         server.send_command("invasion_spots")

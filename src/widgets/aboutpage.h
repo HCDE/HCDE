@@ -32,7 +32,6 @@ public:
 	void SetValues(FStartupSelectionInfo& info) const;
 
 private:
-	void OnLanguageChanged(int i);
 	void OnGeometryChanged() override;
 #ifdef _WIN32
 	void OnCheckUpdatesClicked();

@@ -59,6 +59,7 @@ public:
 	bool FlipSavePic() const override { return true; }
 
 	FRenderState* RenderState() override;
+	int MaxShadowMapTextureSize() const override;
 
 	const char* DeviceName() const override;
 	void SetTextureFilterMode() override;

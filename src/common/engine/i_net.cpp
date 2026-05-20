@@ -631,7 +631,18 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	FServerQuerySnapshot snapshot = {};
 	const char* hostname = sv_hostname;
 	snapshot.HostName = hostname != nullptr && hostname[0] != 0 ? FString(hostname) : FString(GAMENAME " server");
-	snapshot.MapName = level.LevelName.IsNotEmpty() ? level.LevelName : FString("unknown");
+	// Query consumers depend on stable map ids for automation (for example map
+	// transition validation), so prefer map lump names over display titles.
+	if (primaryLevel != nullptr && primaryLevel->MapName.IsNotEmpty())
+		snapshot.MapName = primaryLevel->MapName;
+	else if (level.MapName.IsNotEmpty())
+		snapshot.MapName = level.MapName;
+	else if (primaryLevel != nullptr && primaryLevel->LevelName.IsNotEmpty())
+		snapshot.MapName = primaryLevel->LevelName;
+	else if (level.LevelName.IsNotEmpty())
+		snapshot.MapName = level.LevelName;
+	else
+		snapshot.MapName = "unknown";
 	snapshot.GameName = GameStartupInfo.Name.IsNotEmpty() ? GameStartupInfo.Name : FString(GAMENAME);
 	snapshot.SessionState = ConnectFlowName(NetConnectFlowState);
 	snapshot.Version = GetVersionString();
@@ -640,7 +651,9 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	const int visibleMaxClients = I_GetVisibleMaxClients();
 	const int advertisedMaxClients = sv_maxplayers > 0 ? clamp<int>(sv_maxplayers, connectedClients, visibleMaxClients) : visibleMaxClients;
 	snapshot.MaxPlayers = uint8_t(clamp<int>(advertisedMaxClients, 0, UINT8_MAX));
-	snapshot.PlayerCount = uint8_t(clamp<int>(connectedClients, 0, UINT8_MAX));
+	// Keep this aligned with the serialized player rows (playeringame[]), not
+	// transient socket/connect bookkeeping.
+	snapshot.PlayerCount = 0u;
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
 	snapshot.Teamplay = teamplay;
@@ -661,6 +674,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	snapshot.InvasionSpawnActiveSpotCount = uint16_t(clamp<int>(Net_GetInvasionActiveSpawnSpotCount(), 0, UINT16_MAX));
 	snapshot.InvasionSpawnPlanBudget = uint16_t(clamp<int>(Net_GetInvasionSpawnPlanBudget(), 0, UINT16_MAX));
 	snapshot.InvasionSpawnActiveTag = uint16_t(clamp<int>(Net_GetInvasionSpawnActiveTag(), 0, UINT16_MAX));
+	snapshot.InvasionActiveMonsters = uint16_t(clamp<int>(Net_GetInvasionActiveMonsterCount(), 0, UINT16_MAX));
 	const uint8_t fallbackSource = uint8_t(clamp<int>(Net_GetInvasionSpawnFallbackSource(), 0, 7));
 	uint8_t spawnFlags = 0u;
 	if (Net_IsInvasionSpawnUsingFallback())
@@ -691,6 +705,7 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 			snapshot.Players.Push(player);
 		}
 	}
+	snapshot.PlayerCount = uint8_t(clamp<size_t>(snapshot.Players.Size(), size_t(0), size_t(UINT8_MAX)));
 
 	return snapshot;
 }
@@ -830,7 +845,8 @@ static bool SendLauncherInfo(const sockaddr_in& to, const uint8_t* request, int 
 	    !writer.WriteShort(snapshot.InvasionSpawnActiveSpotCount) ||
 	    !writer.WriteShort(snapshot.InvasionSpawnPlanBudget) ||
 	    !writer.WriteShort(snapshot.InvasionSpawnActiveTag) ||
-	    !writer.WriteByte(snapshot.InvasionSpawnFlags))
+	    !writer.WriteByte(snapshot.InvasionSpawnFlags) ||
+	    !writer.WriteShort(snapshot.InvasionActiveMonsters))
 		return false;
 
 	if (sendto(MySocket, reinterpret_cast<const char*>(writer.Buffer.data()), static_cast<int>(writer.Offset), 0,
@@ -1065,6 +1081,7 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 	snapshot.InvasionSpawnPlanBudget = 0u;
 	snapshot.InvasionSpawnActiveTag = 0u;
 	snapshot.InvasionSpawnFlags = 0u;
+	snapshot.InvasionActiveMonsters = 0u;
 
 	uint8_t playerCount = 0u;
 	if (!ReadQueryByte(data, offset, length, playerCount))
@@ -1195,6 +1212,18 @@ static bool TryReadServerQuerySnapshot(const uint8_t* data, size_t length, FServ
 		snapshot.InvasionSpawnPlanBudget = invasionSpawnPlanBudget;
 		snapshot.InvasionSpawnActiveTag = invasionSpawnActiveTag;
 		snapshot.InvasionSpawnFlags = invasionSpawnFlags;
+	}
+
+	if (offset < length)
+	{
+		uint16_t invasionActiveMonsters = 0u;
+		if (!ReadQueryShort(data, offset, length, invasionActiveMonsters))
+		{
+			if (error != nullptr)
+				error->Format("Query invasion active-monster metadata was truncated");
+			return false;
+		}
+		snapshot.InvasionActiveMonsters = invasionActiveMonsters;
 	}
 
 	return true;

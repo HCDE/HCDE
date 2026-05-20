@@ -216,7 +216,9 @@ enum
 	DEPF_HIGHERMPROB = 13,
 	// all that follow need ZScript emulation!
 	DEPF_MISSILEMORE = 14,
-	DEPF_MISSILEEVENMORE = 15
+	DEPF_MISSILEEVENMORE = 15,
+	DEPF_RANGEHALF = 16,
+	DEPF_FULLVOLSOUNDS = 17
 };
 
 // Types of old style decorations

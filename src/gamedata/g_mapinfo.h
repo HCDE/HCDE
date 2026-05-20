@@ -412,6 +412,11 @@ struct level_info_t
 	int8_t		brightfog;
 	int8_t		lightadditivesurfaces;
 	int8_t		notexturefill;
+	// Stage 3 map-level shadow controls.
+	// -1 means "unset" and falls back to global/runtime capability behavior.
+	int			HcdeShadowProfileOverride;
+	int			HcdeShadowQualityCap;
+	int			HcdeShadowMaxLightsCap;
 	FVector3	skyrotatevector;
 	FVector3	skyrotatevector2;
 

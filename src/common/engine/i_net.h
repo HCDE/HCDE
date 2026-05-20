@@ -120,6 +120,8 @@ struct FServerQuerySnapshot
 	uint16_t InvasionSpawnPlanBudget = 0u;
 	uint16_t InvasionSpawnActiveTag = 0u;
 	uint8_t InvasionSpawnFlags = 0u;
+	// Numeric mirror for live-wave pressure in launcher UIs and query tooling.
+	uint16_t InvasionActiveMonsters = 0u;
 	uint8_t PlayerCount = 0u;
 	uint8_t MaxPlayers = 0u;
 	uint8_t Skill = 0u;

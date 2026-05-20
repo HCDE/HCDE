@@ -799,7 +799,7 @@ static void M_ApplyHCDEShadowProfile(int profile, bool announce)
 	}
 }
 
-CUSTOM_CVARD(Int, hcde_shadowprofile, HCDE_SHADOWPROFILE_QUAKE, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "applies HCDE grouped shadow settings. 0 = manual, 1 = off, 2 = performance, 3 = balanced, 4 = enhanced, 5 = cinematic, 6 = quake-style, 7 = doom3-style")
+CUSTOM_CVARD(Int, hcde_shadowprofile, HCDE_SHADOWPROFILE_DOOM3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, "applies HCDE grouped shadow settings. 0 = manual, 1 = off, 2 = performance, 3 = balanced, 4 = enhanced, 5 = cinematic, 6 = quake-style, 7 = doom3-style")
 {
 	if (self < HCDE_SHADOWPROFILE_MANUAL)
 	{
@@ -822,6 +822,12 @@ CCMD(hcde_applyshadowprofile)
 CCMD(hcde_enhancedshadows)
 {
 	hcde_shadowprofile = HCDE_SHADOWPROFILE_ENHANCED;
+	M_ApplyHCDEShadowProfile(hcde_shadowprofile, true);
+}
+
+CCMD(hcde_quakeshadows)
+{
+	hcde_shadowprofile = HCDE_SHADOWPROFILE_QUAKE;
 	M_ApplyHCDEShadowProfile(hcde_shadowprofile, true);
 }
 

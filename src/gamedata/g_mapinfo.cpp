@@ -321,6 +321,9 @@ void level_info_t::Reset()
 	lightmode = ELightMode::NotSet;
 	notexturefill = -1;
 	lightadditivesurfaces = -1;
+	HcdeShadowProfileOverride = -1;
+	HcdeShadowQualityCap = -1;
+	HcdeShadowMaxLightsCap = -1;
 	skyrotatevector = FVector3(0, 0, 1);
 	skyrotatevector2 = FVector3(0, 0, 1);
 	lightblendmode = ELightBlendMode::DEFAULT;
@@ -1021,6 +1024,17 @@ void FMapInfoParser::ParseNextMap(FString &mapname)
 	}
 }
 
+static int NormalizeHcdeShadowQualityCap(int value)
+{
+	if (value >= 8192) return 8192;
+	if (value >= 4096) return 4096;
+	if (value >= 2048) return 2048;
+	if (value >= 1024) return 1024;
+	if (value >= 512) return 512;
+	if (value >= 256) return 256;
+	return 128;
+}
+
 //==========================================================================
 //
 // Map options
@@ -1700,6 +1714,58 @@ DEFINE_MAP_OPTION(lightblendmode, false)
 	else
 	{
 		parse.sc.ScriptMessage("Invalid light blend mode %s", parse.sc.String);
+	}
+}
+
+DEFINE_MAP_OPTION(hcde_shadowprofile, false)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+
+	// -1 clears the map override. 0..7 mirror hcde_shadowprofile CVAR values.
+	int profile = parse.sc.Number;
+	if (profile < -1) profile = -1;
+	else if (profile > 7) profile = 7;
+	info->HcdeShadowProfileOverride = profile;
+}
+
+DEFINE_MAP_OPTION(hcde_shadowqualitycap, false)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+
+	// -1 clears the map override. Any other value is normalized to the closest
+	// supported shadowmap tier (128..8192).
+	int qualityCap = parse.sc.Number;
+	if (qualityCap < 0)
+	{
+		info->HcdeShadowQualityCap = -1;
+	}
+	else
+	{
+		info->HcdeShadowQualityCap = NormalizeHcdeShadowQualityCap(qualityCap);
+	}
+}
+
+DEFINE_MAP_OPTION(hcde_shadowmaxlightscap, false)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+
+	// -1 clears the map override. Non-negative values are clamped to the
+	// shadowmap light row range.
+	int maxLightsCap = parse.sc.Number;
+	if (maxLightsCap < 0)
+	{
+		info->HcdeShadowMaxLightsCap = -1;
+	}
+	else if (maxLightsCap > 1024)
+	{
+		info->HcdeShadowMaxLightsCap = 1024;
+	}
+	else
+	{
+		info->HcdeShadowMaxLightsCap = maxLightsCap;
 	}
 }
 

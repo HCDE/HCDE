@@ -237,6 +237,11 @@ const char* OpenGLFrameBuffer::DeviceName() const
 	return gl.modelstring;
 }
 
+int OpenGLFrameBuffer::MaxShadowMapTextureSize() const
+{
+	return gl.max_texturesize;
+}
+
 //==========================================================================
 //
 // Swap the buffers

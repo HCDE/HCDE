@@ -1418,6 +1418,10 @@ OptionMenu "GLLightOptions" protected
 	Tooltip "$GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPBUDGET"
 	Option "$GLLIGHTMNU_LIGHTSHADOWMAPPRIORITY", gl_shadowmap_prioritize, YesNo
 	Tooltip "$GLLIGHTMNU_TOOLTIP_LIGHTSHADOWMAPPRIORITY"
+	Option "$GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVE", hcde_shadow_autobudget, YesNo
+	Slider "$GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVETARGET", hcde_shadow_autobudget_targetms, 0.25, 6.0, 0.05, 2
+	Slider "$GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVEMIN", hcde_shadow_autobudget_minlights, 0.0, 1024.0, 32.0, 0
+	Slider "$GLLIGHTMNU_LIGHTSHADOWMAPADAPTIVESTEP", hcde_shadow_autobudget_step, 1.0, 256.0, 1.0, 0
 	StaticText " "
 	Option "$DSPLYMNU_SPRITESHADOW",            r_actorspriteshadow,           SpriteShadowModes
 	Option "$GLLIGHTMNU_SPRITESHADOWSTYLE",     r_actorspriteshadowstyle,      SpriteShadowStyles

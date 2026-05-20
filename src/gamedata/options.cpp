@@ -117,7 +117,7 @@ static struct dsda_options dsda_LumpOptions(int lumpnum)
 
 	lump.length = fileSystem.FileLength(lumpnum);
 	auto data = fileSystem.ReadFile(lumpnum);
-	lump.data = (char*)data.GetMem();
+	lump.data = (char*)data.data();
 
 	while (dsda_ReadOption(buf, OPTIONS_LINE_LENGTH, &lump))
 	{
@@ -176,8 +176,7 @@ void parseOptions()
 		setmaskedflag(lev.compatflags2, lev.compatmask2, COMPATF2_AVOID_HAZARDS, opt.monster_avoid_hazards);
 		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_MBFMONSTERMOVE, opt.monster_friction);
 		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_DROPOFF, opt.comp_dropoff);
-		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_CORPSEGIBS, opt.comp_vile);
-		setflag(lev.flags3, LEVEL3_VILEOPTION, opt.comp_vile);
+		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_VILEGHOSTS, opt.comp_vile);
 		setflag(lev.flags3, LEVEL3_NOJUMPDOWN, opt.dog_jumping < 0 ? -1 : !opt.dog_jumping);	// this one's rather pointless, but well...
 		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_LIMITPAIN, opt.comp_pain);
 		setmaskedflag(lev.compatflags, lev.compatmask, COMPATF_NODOORLIGHT, opt.comp_doorlight);
