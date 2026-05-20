@@ -52,6 +52,16 @@ EXTERN_CVAR(Int, hcde_shadowprofile)
 EXTERN_CVAR(Float, hcde_shadow_autobudget_targetms)
 EXTERN_CVAR(Int, hcde_shadow_autobudget_minlights)
 EXTERN_CVAR(Int, hcde_shadow_autobudget_step)
+
+// When enabled, HCDE can shadowmap all active dynamic lights (except lights
+// explicitly tagged with NOSHADOWMAP), even if the engine did not pre-mark
+// them as shadowmapped during link-time heuristics.
+CVAR(Bool, hcde_shadow_forcealllights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// Optional diagnostics for shadowmap gating. Keep disabled by default to avoid
+// per-frame console noise.
+CVAR(Bool, hcde_shadow_debuggate, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
 extern bool NoInterpolateView;
 
 static SWSceneDrawer *swdrawer;
@@ -310,7 +320,12 @@ void CollectLights(FLevelLocals* Level, const DVector3& viewPos, int viewPortalG
 		IShadowMap::LightsProcessed++;
 		light->mShadowmapIndex = 1024; // Default to 'no shadowmap' index
 
-		if (light->shadowmapped && light->IsActive())
+		// HCDE fallback path: treat active dynamic lights as shadow candidates
+		// when force-all-lights is enabled, unless the light explicitly opts out.
+		const bool canForceShadow = hcde_shadow_forcealllights && !light->DontShadowmap();
+		const bool shouldShadowmap = light->shadowmapped || canForceShadow;
+
+		if (shouldShadowmap && light->IsActive())
 		{
 			// Candidate lights are scored based on proximity and screen coverage.
 			candidates.push_back({ light, ShadowLightPriorityScore(light, viewPos, viewPortalGroup) });
@@ -378,7 +393,14 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		ApplyShadowCapabilityFallbacks(camera != nullptr ? camera->Level : nullptr);
 	}
 
-	if (mainview && toscreen && !(camera->Level->flags3 & LEVEL3_NOSHADOWMAP) && camera->Level->HasDynamicLights && gl_light_shadowmap && screen->allowSSBO() && (screen->hwcaps & RFL_SHADER_STORAGE_BUFFER))
+	// Some maps/mods can spawn dynamic lights without reliably toggling
+	// Level->HasDynamicLights. Also honor a non-empty runtime light list.
+	const bool hasDynamicLightSources = camera->Level->HasDynamicLights || camera->Level->lights != nullptr;
+	const bool mapDisablesShadowmaps = (camera->Level->flags3 & LEVEL3_NOSHADOWMAP) != 0;
+	const bool hasSSBOSupport = screen->allowSSBO() && (screen->hwcaps & RFL_SHADER_STORAGE_BUFFER);
+	const bool allowShadowmapPass = mainview && toscreen && !mapDisablesShadowmaps && hasDynamicLightSources && gl_light_shadowmap && hasSSBOSupport;
+
+	if (allowShadowmapPass)
 	{
 		screen->SetAABBTree(camera->Level->aabbTree);
 		const DVector3 viewPos = mainvp.Pos;
@@ -393,6 +415,25 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 		// null all references to the level if we do not need a shadowmap. This will shortcut all internal calculations without further checks.
 		screen->SetAABBTree(nullptr);
 		screen->mShadowMap.SetCollectLights(nullptr);
+
+		// Optional one-line diagnostics that explain exactly why the shadow pass
+		// was skipped in a playable scene.
+		if (hcde_shadow_debuggate && mainview && toscreen && camera != nullptr && camera->Level != nullptr)
+		{
+			static uint64_t nextGateLogMs = 0;
+			const uint64_t nowMs = I_msTime();
+			if (nowMs >= nextGateLogMs)
+			{
+				nextGateLogMs = nowMs + 1500;
+				Printf("HCDE shadow gate: enabled=%d mapNoShadow=%d lightsFlag=%d lightsList=%d ssbo=%d hwcap=%d\n",
+					gl_light_shadowmap ? 1 : 0,
+					mapDisablesShadowmaps ? 1 : 0,
+					camera->Level->HasDynamicLights ? 1 : 0,
+					camera->Level->lights != nullptr ? 1 : 0,
+					screen->allowSSBO() ? 1 : 0,
+					(screen->hwcaps & RFL_SHADER_STORAGE_BUFFER) ? 1 : 0);
+			}
+		}
 	}
 
 	screen->SetLevelMesh(camera->Level->levelMesh);

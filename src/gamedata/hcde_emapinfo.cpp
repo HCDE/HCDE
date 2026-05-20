@@ -231,7 +231,12 @@ namespace
 		char* end = nullptr;
 		errno = 0;
 		const long parsed = std::strtol(value.c_str(), &end, 0);
+		// Reject malformed values and explicit long->int narrowing overflow.
 		if (errno != 0 || end == value.c_str() || !TrimCopy(end).empty())
+		{
+			return false;
+		}
+		if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max())
 		{
 			return false;
 		}

@@ -12,9 +12,11 @@
 #include "hcde_edf.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -304,8 +306,14 @@ namespace
 		}
 
 		char* end = nullptr;
+		errno = 0;
 		const long parsed = std::strtol(value.c_str(), &end, 0);
-		if (end == value.c_str() || *end != '\0')
+		// Reject malformed tokens and long->int overflow before narrowing.
+		if (errno == ERANGE || end == value.c_str() || *end != '\0')
+		{
+			return false;
+		}
+		if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max())
 		{
 			return false;
 		}

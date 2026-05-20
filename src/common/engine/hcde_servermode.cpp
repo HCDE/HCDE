@@ -14,6 +14,8 @@
 
 #include "hcde_servermode.h"
 
+#include <cerrno>
+#include <limits>
 #include <stdlib.h>
 
 #include "debugtrace.h"
@@ -77,7 +79,21 @@ int ReadIntValue(const FArg& arg)
 	const int index = Args != nullptr ? Args->CheckParm(arg) : 0;
 	if (!IsValueArg(index + 1))
 		return 0;
-	return atoi(Args->GetArg(index + 1));
+
+	// Parse integer arguments strictly so malformed or out-of-range values do not
+	// silently become 0/garbage via atoi().
+	errno = 0;
+	char* end = nullptr;
+	const long parsed = strtol(Args->GetArg(index + 1), &end, 10);
+	if (errno == ERANGE || end == Args->GetArg(index + 1) || *end != '\0')
+	{
+		return 0;
+	}
+	if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max())
+	{
+		return 0;
+	}
+	return static_cast<int>(parsed);
 }
 
 void AssignArgValue(FString& out, const FArg& arg)
