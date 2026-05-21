@@ -166,8 +166,10 @@ bool isConsoleApp()
 		DWORD pids[2];
 		DWORD num_pids = GetConsoleProcessList(pids, 2);
 		bool win32con_is_exclusive = (num_pids <= 1);
+		HANDLE stdoutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+		const bool hasValidStdout = (stdoutHandle != nullptr && stdoutHandle != INVALID_HANDLE_VALUE);
 
-		returnvalue = ((GetConsoleWindow() != NULL && !win32con_is_exclusive) || (GetStdHandle(STD_OUTPUT_HANDLE) != NULL));
+		returnvalue = ((GetConsoleWindow() != NULL && !win32con_is_exclusive) || hasValidStdout);
 		alreadychecked = true;
 	}
 
@@ -304,9 +306,9 @@ int DoMain (HINSTANCE hInstance)
 
 	// Figure out what directory the program resides in.
 	WCHAR progbuff[1024];
-	if (GetModuleFileNameW(nullptr, progbuff, sizeof progbuff) == 0)
+	if (GetModuleFileNameW(nullptr, progbuff, _countof(progbuff)) == 0)
 	{
-		MessageBoxA(nullptr, "Fatal", "Could not determine program location.", MB_ICONEXCLAMATION|MB_OK);
+		MessageBoxA(nullptr, "Could not determine program location.", "Fatal", MB_ICONEXCLAMATION|MB_OK);
 		exit(-1);
 	}
 

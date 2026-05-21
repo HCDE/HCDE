@@ -1,0 +1,35 @@
+// HCDE combined mod compatibility sound aliases.
+// This merges the previous split HCDE Brutal Doom and The Island patches.
+// Entries only point to sounds that are expected to exist in the loaded mod(s).
+
+// -- Brutal Doom compatibility --
+CHGNSHOT CHGNSHOT
+BIGSCREA bigscrea
+mp401 MP401
+MP402 MP402
+Explode3 Explode3
+NUKEEXPL NUKEEXP
+USASPUL1 USASPULL
+
+$alias BODYF BodyThud
+$alias DISTFMG FARHMG
+$alias DISTFRRIFLE FARRIF
+$alias EXPLOSIO Explosion
+$alias MP40 Chaingun/Fire
+$alias PRSDRAW Plasma/Draw
+$alias weapons/aim ads/in
+$alias weapons/empty Weapon/Empty
+$alias weapons/explode Explosion
+$alias weapons/fistwhoosh Melee/Swing
+$alias weapons/minigunfire CHGNSHOT
+
+// -- The Island compatibility --
+monster/vulsi4 DSVULSI3
+Hanger/Active GK_IDLE1
+weapons/gntidl DSSHOCK
+// The MicroUzi replaces the pistol but some lookup paths canonicalize or
+// fall back to weapon aliases before resolving the mod's mixed-case name.
+microuzi/fire DSUZIFIR
+weapons/uzi DSUZIFIR
+weapons/uzifire DSUZIFIR
+weapons/pistol DSUZIFIR

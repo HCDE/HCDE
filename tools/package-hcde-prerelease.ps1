@@ -5,7 +5,11 @@ param(
     [string]$SndFileDll = "",
     [string]$SndFileLicense = "",
     [switch]$Build,
-    [switch]$IncludeSymbols
+    [switch]$IncludeSymbols,
+    [switch]$Upload,
+    [string]$Repo = "bokoxthexchocobo/HCDE",
+    [string]$ReleaseTag = "",
+    [string]$GhCli = "gh"
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,26 +144,105 @@ function Resolve-SndFileRuntime {
     throw "Required sndfile.dll not found. HCDE uses it for WAV/OGG mod sounds; pass -SndFileDll or place sndfile.dll in build\\deps."
 }
 
-function Copy-ModCompatRuntime {
+function Get-ModCompatRuntimeFiles {
     param(
         [string]$BuildRoot,
-        [string]$BuildConfigDir,
-        [string]$StageDir
+        [string]$BuildConfigDir
+    )
+
+    $requiredCompatNames = @(
+        "hcde_mod_compat_combined.pk3",
+        "hcde_mod_compat_pink_valley_eng.pk3"
     )
 
     $compatFiles = @()
-    $compatFiles += Get-ChildItem -LiteralPath $BuildConfigDir -Filter "hcde_mod_compat*.pk3" -File -ErrorAction SilentlyContinue
-    $compatFiles += Get-ChildItem -LiteralPath $BuildRoot -Filter "hcde_mod_compat*.pk3" -File -ErrorAction SilentlyContinue
-    $compatFiles = $compatFiles |
-        Group-Object Name |
-        ForEach-Object { $_.Group | Sort-Object FullName -Descending | Select-Object -First 1 }
+    foreach ($compatName in $requiredCompatNames) {
+        $candidatePaths = @(
+            (Join-Path $BuildConfigDir $compatName),
+            (Join-Path $BuildRoot $compatName)
+        )
 
-    if (-not $compatFiles -or $compatFiles.Count -eq 0) {
-        throw "Required HCDE mod compatibility PK3 files were not found. Build the compat targets before packaging."
+        $resolved = $candidatePaths |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+
+        if (-not $resolved) {
+            throw "Required HCDE mod compatibility PK3 '$compatName' was not found. Build the compat targets before packaging."
+        }
+
+        $compatFiles += Get-Item -LiteralPath $resolved
     }
 
-    foreach ($file in $compatFiles) {
-        Copy-Item -LiteralPath $file.FullName -Destination $StageDir
+    return $compatFiles
+}
+
+function Upload-ReleaseAssets {
+    param(
+        [string]$GhCliPath,
+        [string]$Repository,
+        [string]$Tag,
+        [string]$VersionLabel,
+        [string]$ReleaseNotesFile,
+        [string[]]$Assets
+    )
+
+    $gh = $GhCliPath
+    $resolvedGh = Get-Command $gh -ErrorAction SilentlyContinue
+    if ($null -eq $resolvedGh) {
+        throw "GitHub CLI not found: $gh"
+    }
+    $gh = $resolvedGh.Source
+
+    $releaseExists = $false
+    $prevEa = $ErrorActionPreference
+    try {
+        # gh returns non-zero and writes to stderr when a release is missing.
+        # Treat that as "not found" instead of a terminating PowerShell error.
+        $ErrorActionPreference = "Continue"
+        & $gh release view $Tag --repo $Repository 1>$null 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $releaseExists = $true
+        }
+    }
+    finally {
+        $ErrorActionPreference = $prevEa
+    }
+
+    if (-not $releaseExists) {
+        & $gh release create $Tag `
+            --repo $Repository `
+            --title "HCDE v$VersionLabel" `
+            --notes-file $ReleaseNotesFile `
+            --draft
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed."
+        }
+    }
+    else {
+        & $gh release edit $Tag `
+            --repo $Repository `
+            --title "HCDE v$VersionLabel" `
+            --notes-file $ReleaseNotesFile `
+            --draft
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh release edit failed."
+        }
+    }
+
+    & $gh release upload $Tag @Assets --repo $Repository --clobber
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release upload failed."
+    }
+
+    $remoteAssets = & $gh release view $Tag --repo $Repository --json assets --jq '.assets[].name'
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh release asset verification failed."
+    }
+    foreach ($asset in $Assets) {
+        $assetName = [System.IO.Path]::GetFileName($asset)
+        if (-not ($remoteAssets -contains $assetName)) {
+            throw "Release asset verification failed. Missing remote asset: $assetName"
+        }
     }
 }
 
@@ -168,8 +251,11 @@ $buildRoot = Join-Path $repoRoot "build"
 $buildConfigDir = Join-Path $buildRoot $Configuration
 $releaseRoot = Join-Path $buildRoot "releases"
 $packageName = "HCDE-$Version-windows-x64"
+$compatPackageName = "HCDE-$Version-compat-mods"
 $stageDir = Join-Path $releaseRoot $packageName
+$compatStageDir = Join-Path $releaseRoot $compatPackageName
 $packageZip = Join-Path $releaseRoot "$packageName.zip"
+$compatZip = Join-Path $releaseRoot "$compatPackageName.zip"
 $symbolsZip = Join-Path $releaseRoot "$packageName-symbols.zip"
 
 if ($Build) {
@@ -183,13 +269,22 @@ if (-not (Test-Path -LiteralPath $releaseRoot)) {
 }
 $releaseRoot = Resolve-RequiredPath $releaseRoot
 $stageDir = Assert-ChildPath -Parent $releaseRoot -Child $stageDir
+$compatStageDir = Assert-ChildPath -Parent $releaseRoot -Child $compatStageDir
 $packageZip = Assert-ChildPath -Parent $releaseRoot -Child $packageZip
+$compatZip = Assert-ChildPath -Parent $releaseRoot -Child $compatZip
 $symbolsZip = Assert-ChildPath -Parent $releaseRoot -Child $symbolsZip
 
 if (Test-Path -LiteralPath $stageDir) {
     Remove-Item -LiteralPath $stageDir -Recurse -Force
 }
 New-Item -Path $stageDir -ItemType Directory | Out-Null
+
+if (Test-Path -LiteralPath $compatStageDir) {
+    Remove-Item -LiteralPath $compatStageDir -Recurse -Force
+}
+New-Item -Path $compatStageDir -ItemType Directory | Out-Null
+
+$compatFiles = Get-ModCompatRuntimeFiles -BuildRoot $buildRoot -BuildConfigDir $buildConfigDir
 
 $runtimeFiles = @(
     "hcde.exe",
@@ -204,7 +299,6 @@ $runtimeFiles = @(
 foreach ($file in $runtimeFiles) {
     Copy-Item -LiteralPath (Resolve-RequiredPath (Join-Path $buildConfigDir $file)) -Destination $stageDir
 }
-Copy-ModCompatRuntime -BuildRoot $buildRoot -BuildConfigDir $buildConfigDir -StageDir $stageDir
 
 $runtimeDirs = @("fm_banks")
 foreach ($dir in $runtimeDirs) {
@@ -250,10 +344,31 @@ The corresponding source for this release is the v$Version tag:
 https://github.com/bokoxthexchocobo/HCDE/tree/v$Version
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "RELEASE-NOTES.txt") -Encoding UTF8
 
+foreach ($compatFile in $compatFiles) {
+    Copy-Item -LiteralPath $compatFile.FullName -Destination $compatStageDir -Force
+}
+
+@"
+HCDE $Version compat add-ons
+
+This package contains optional HCDE-owned compatibility resources.
+These files are not part of the core engine runtime package and can be loaded
+as extras alongside mods they target.
+
+Included:
+- hcde_mod_compat_combined.pk3
+- hcde_mod_compat_pink_valley_eng.pk3
+"@ | Set-Content -LiteralPath (Join-Path $compatStageDir "README.txt") -Encoding UTF8
+
 if (Test-Path -LiteralPath $packageZip) {
     Remove-Item -LiteralPath $packageZip -Force
 }
 Compress-Archive -LiteralPath $stageDir -DestinationPath $packageZip -CompressionLevel Optimal
+
+if (Test-Path -LiteralPath $compatZip) {
+    Remove-Item -LiteralPath $compatZip -Force
+}
+Compress-Archive -LiteralPath $compatStageDir -DestinationPath $compatZip -CompressionLevel Optimal
 
 if ($IncludeSymbols) {
     $symbolsStage = Join-Path $releaseRoot "$packageName-symbols"
@@ -270,6 +385,39 @@ if ($IncludeSymbols) {
 }
 
 Write-Host "Runtime package: $packageZip"
+Write-Host "Compat package: $compatZip"
 if ($IncludeSymbols) {
     Write-Host "Symbols package: $symbolsZip"
+}
+
+if ($Upload) {
+    $resolvedTag = $ReleaseTag
+    if ([string]::IsNullOrWhiteSpace($resolvedTag)) {
+        $resolvedTag = "v$Version"
+    }
+
+    $releaseNotesFile = Join-Path $releaseRoot "HCDE-$Version-release-notes.txt"
+    @"
+HCDE $Version
+
+- Windows x64 runtime package uploaded as a standalone asset.
+- Optional HCDE compatibility PK3 files uploaded as a separate compat zip.
+"@ | Set-Content -LiteralPath $releaseNotesFile -Encoding UTF8
+
+    $assets = [System.Collections.Generic.List[string]]::new()
+    $assets.Add($packageZip)
+    $assets.Add($compatZip)
+    if ($IncludeSymbols) {
+        $assets.Add($symbolsZip)
+    }
+
+    Upload-ReleaseAssets `
+        -GhCliPath $GhCli `
+        -Repository $Repo `
+        -Tag $resolvedTag `
+        -VersionLabel $Version `
+        -ReleaseNotesFile $releaseNotesFile `
+        -Assets $assets.ToArray()
+
+    Write-Host "Uploaded release assets to $Repo tag $resolvedTag"
 }

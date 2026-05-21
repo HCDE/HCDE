@@ -969,9 +969,10 @@ static bool C_HandleKey (event_t *ev, FCommandBuffer &buffer)
 		{
 			// Execute command line (ENTER)
 			FString bufferText = buffer.GetText();
+			constexpr PrintFlag PRINT_CONSOLE_ECHO = static_cast<PrintFlag>(127);
 
 			bufferText.StripLeftRight();
-			Printf(static_cast<PrintFlag>(127), TEXTCOLOR_WHITE "]%s\n", bufferText.GetChars()); // FIXME: wtf is 127 here?
+			Printf(PRINT_CONSOLE_ECHO, TEXTCOLOR_WHITE "]%s\n", bufferText.GetChars());
 
 			if (bufferText.Len() == 0)
 			{

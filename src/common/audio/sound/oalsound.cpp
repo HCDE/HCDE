@@ -1281,8 +1281,14 @@ void OpenALSoundRenderer::UnloadSound(SoundHandle sfx)
 
 SoundStream *OpenALSoundRenderer::CreateStream(SoundStreamCallback callback, int buffbytes, SampleType stype, ChannelConfig chans, int samplerate, void *userdata)
 {
-	if(StreamThread.get_id() == std::thread::id())
-		StreamThread = std::thread(std::mem_fn(&OpenALSoundRenderer::BackgroundProc), this);
+	{
+		std::unique_lock<std::mutex> lock(StreamLock);
+		if(!StreamThread.joinable())
+		{
+			QuitThread.store(false);
+			StreamThread = std::thread(std::mem_fn(&OpenALSoundRenderer::BackgroundProc), this);
+		}
+	}
 	OpenALSoundStream *stream = new OpenALSoundStream(this);
 	if (!stream->Init(callback, buffbytes, stype, chans, samplerate, userdata))
 	{

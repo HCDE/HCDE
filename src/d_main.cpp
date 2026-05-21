@@ -527,6 +527,7 @@ int NoWipe;				// [RH] Allow wipe? (Needs to be set each time)
 bool singletics = false;	// debug flag to cancel adaptiveness
 FString startmap;
 bool setmap;
+bool setmapFromLauncherDefault;
 int setskill = -1;
 bool autostart;
 bool advancedemo;
@@ -2416,6 +2417,7 @@ static void CheckCmdLine()
 
 	// get skill / episode / map from parms
 	setmap = false;
+	setmapFromLauncherDefault = false;
 	if (gameinfo.gametype != GAME_Hexen)
 	{
 		startmap = (gameinfo.flags & GI_MAPxx) ? "MAP01" : "E1M1";
@@ -2465,6 +2467,16 @@ static void CheckCmdLine()
 	FString mapvalue = Args->TakeValue(FArg_map);
 	if (mapvalue.IsNotEmpty())
 	{
+		const bool launcherDefaultMap =
+			!stricmp(mapvalue.GetChars(), "MAP01") || !stricmp(mapvalue.GetChars(), "E1M1");
+		const char* compatMapOverride = HCDE_ModCompat_ResolveStartupMapOverride(mapvalue.GetChars());
+		if (compatMapOverride != nullptr && P_CheckMapData(compatMapOverride))
+		{
+			Printf("HCDE: remapped startup map %s -> %s for active mod compatibility.\n",
+				mapvalue.GetChars(), compatMapOverride);
+			mapvalue = compatMapOverride;
+		}
+
 		if (!P_CheckMapData(mapvalue.GetChars()))
 		{
 			Printf ("Can't find map %s\n", mapvalue.GetChars());
@@ -2473,6 +2485,7 @@ static void CheckCmdLine()
 		{
 			startmap = mapvalue;
 			autostart = setmap = true;
+			setmapFromLauncherDefault = launcherDefaultMap && compatMapOverride == nullptr;
 		}
 	}
 
@@ -2573,10 +2586,28 @@ static void CheckEpisodeCmd()
 
 	// If -warp or +map were already used, keep whatever existing value they had.
 	if (!setEpisode && setmap)
+	{
+		if (!setmapFromLauncherDefault || AllEpisodes.Size() == 0)
+		{
+			return;
+		}
+
+		const auto& episodeStart = AllEpisodes[0].mEpisodeMap;
+		if (episodeStart.IsEmpty() || !stricmp(episodeStart.GetChars(), startmap.GetChars()))
+		{
+			return;
+		}
+
+		Printf("HCDE: startup map %s came from launcher default; using episode start map %s.\n",
+			startmap.GetChars(), episodeStart.GetChars());
+		startmap = episodeStart;
+		setmapFromLauncherDefault = false;
 		return;
+	}
 
 	startmap = AllEpisodes[episode].mEpisodeMap;
 	setmap = true;
+	setmapFromLauncherDefault = false;
 	if (setEpisode)
 		autostart = true;
 }

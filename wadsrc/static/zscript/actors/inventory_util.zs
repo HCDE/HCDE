@@ -702,6 +702,14 @@ extend class Actor
 
 	clearscope int CountInv(class<Inventory> itemtype, int ptr_select = AAPTR_DEFAULT) const
 	{
+		// Some third-party event handlers call CountInv through transient null player
+		// pawns during startup/join windows (e.g., players[0].mo.CountInv(...)).
+		// Treat those as an empty inventory query instead of aborting the VM.
+		if (self == null)
+		{
+			return 0;
+		}
+
 		let realself = GetPointer(ptr_select);
 		if (realself == NULL || itemtype == NULL)
 		{

@@ -1,0 +1,4 @@
+version "4.15.1"
+
+// HCDE-owned compatibility overrides for THE_PINK_VALLEY - ENG.
+#include "zscript/hcde_pink_valley_eventhandler_fix.zs"

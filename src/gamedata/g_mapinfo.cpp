@@ -594,6 +594,42 @@ bool FMapInfoParser::CheckFloat()
 	else return sc.CheckFloat();
 }
 
+static bool HCDE_MapInfo_CheckOptionalFloatCompat(FMapInfoParser& parse, const char* property)
+{
+	if (parse.CheckFloat())
+	{
+		return true;
+	}
+
+	if (parse.format_type == FMapInfoParser::FMT_New &&
+		HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_MAPINFO_SKY_SPEED_NO_COMMA))
+	{
+		bool matchedLegacyValue = false;
+		if (parse.sc.CheckFloat())
+		{
+			matchedLegacyValue = true;
+		}
+		else if (parse.sc.CheckNumber())
+		{
+			parse.sc.Float = static_cast<double>(parse.sc.Number);
+			matchedLegacyValue = true;
+		}
+
+		if (matchedLegacyValue)
+		{
+			static bool warned = false;
+			if (!warned)
+			{
+				Printf("HCDE: tolerated MAPINFO '%s' value without comma for known mod compatibility.\n", property);
+				warned = true;
+			}
+			return true;
+		}
+	}
+
+	return false;
+}
+
 //==========================================================================
 //
 // skips an entire parameter list that's separated by commas
@@ -1114,7 +1150,7 @@ DEFINE_MAP_OPTION(sky1, true)
 {
 	parse.ParseAssign();
 	parse.ParseLumpOrTextureName(info->SkyPic1);
-	if (parse.CheckFloat())
+	if (HCDE_MapInfo_CheckOptionalFloatCompat(parse, "sky1"))
 	{
 		if (parse.HexenHack)
 		{
@@ -1128,7 +1164,7 @@ DEFINE_MAP_OPTION(sky2, true)
 {
 	parse.ParseAssign();
 	parse.ParseLumpOrTextureName(info->SkyPic2);
-	if (parse.CheckFloat())
+	if (HCDE_MapInfo_CheckOptionalFloatCompat(parse, "sky2"))
 	{
 		if (parse.HexenHack)
 		{
@@ -1142,7 +1178,7 @@ DEFINE_MAP_OPTION(skymist, true)
 {
 	parse.ParseAssign();
 	parse.ParseLumpOrTextureName(info->SkyMistPic);
-	if (parse.CheckFloat())
+	if (HCDE_MapInfo_CheckOptionalFloatCompat(parse, "skymist"))
 	{
 		if (parse.HexenHack)
 		{

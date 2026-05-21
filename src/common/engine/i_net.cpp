@@ -26,6 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <array>
+#include <cerrno>
+#include <limits>
 #include <mutex>
 
 /* [Petteri] Use Winsock if compiling for Win32: */
@@ -1800,6 +1802,13 @@ void I_NetCmd(ENetCommand cmd)
 
 static void SetClientAck(size_t client, size_t from, bool add)
 {
+	if (client >= static_cast<size_t>(MAXPLAYERS) || from >= static_cast<size_t>(MAXPLAYERS) || from >= 64u)
+	{
+		DebugTrace::Markf("net", "ignored invalid client ack update client=%zu from=%zu add=%u",
+			client, from, add ? 1u : 0u);
+		return;
+	}
+
 	const uint64_t bit = (uint64_t)1u << from;
 	if (add)
 		Connected[client].InfoAck |= bit;
@@ -1809,6 +1818,9 @@ static void SetClientAck(size_t client, size_t from, bool add)
 
 static bool ClientGotAck(size_t client, size_t from)
 {
+	if (client >= static_cast<size_t>(MAXPLAYERS) || from >= static_cast<size_t>(MAXPLAYERS) || from >= 64u)
+		return false;
+
 	return (Connected[client].InfoAck & ((uint64_t)1u << from));
 }
 
@@ -1816,6 +1828,23 @@ static bool GetConnection(sockaddr_in& from)
 {
 	GetPacket(&from);
 	return NetBufferLength > 0;
+}
+
+static bool TryParseStrictInt(const char* text, int& out)
+{
+	if (text == nullptr || text[0] == '\0')
+		return false;
+
+	errno = 0;
+	char* end = nullptr;
+	const long parsed = strtol(text, &end, 10);
+	if (errno == ERANGE || end == text || *end != '\0')
+		return false;
+	if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max())
+		return false;
+
+	out = static_cast<int>(parsed);
+	return true;
 }
 
 static void RejectConnection(const sockaddr_in& to, ENetConnectType reason)
@@ -2164,13 +2193,20 @@ static bool Host_CheckForConnections(void* connected)
 				I_NetClientConnected(RemoteClient, 16u);
 			}
 		}
-		else if (NetBuffer[1] == PRE_USER_INFO_ACK)
-		{
-			if (NetBufferLength < 7u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host userinfo ack"))
-				continue;
+			else if (NetBuffer[1] == PRE_USER_INFO_ACK)
+			{
+				if (NetBufferLength < 7u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host userinfo ack"))
+					continue;
 
-			SetClientAck(RemoteClient, NetBuffer[6], true);
-		}
+				const uint8_t ackClient = NetBuffer[6];
+				if (ackClient >= MaxClients || ackClient >= MAXPLAYERS)
+				{
+					DebugTrace::Markf("net", "ignored invalid host userinfo ack slot=%u max=%d",
+						static_cast<unsigned>(ackClient), MaxClients);
+					continue;
+				}
+				SetClientAck(RemoteClient, ackClient, true);
+			}
 		else if (NetBuffer[1] == PRE_GAME_INFO_ACK)
 		{
 			if (NetBufferLength < 6u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host gameinfo ack"))
@@ -2207,11 +2243,17 @@ static bool Host_CheckForConnections(void* connected)
 				I_NetClientConnected(RemoteClient, 16u);
 				break;
 			}
-			case HPS_USER_INFO_ACK:
-				if (!CheckHCDEPregameService(RemoteClient, HCDEServiceHeaderSize + 1u, "host service userinfo ack"))
+				case HPS_USER_INFO_ACK:
+					if (!CheckHCDEPregameService(RemoteClient, HCDEServiceHeaderSize + 1u, "host service userinfo ack"))
+						break;
+					if (NetBuffer[HCDEServiceHeaderSize] >= MaxClients || NetBuffer[HCDEServiceHeaderSize] >= MAXPLAYERS)
+					{
+						DebugTrace::Markf("net", "ignored invalid HCDE userinfo ack slot=%u max=%d",
+							static_cast<unsigned>(NetBuffer[HCDEServiceHeaderSize]), MaxClients);
+						break;
+					}
+					SetClientAck(RemoteClient, NetBuffer[HCDEServiceHeaderSize], true);
 					break;
-				SetClientAck(RemoteClient, NetBuffer[HCDEServiceHeaderSize], true);
-				break;
 			case HPS_GAME_INFO_ACK:
 				if (!CheckHCDEPregameService(RemoteClient, HCDEServiceHeaderSize, "host service gameinfo ack"))
 					break;
@@ -2537,7 +2579,16 @@ static bool HostGame(int arg)
 		DebugTrace::Mark("net", "host request cancelled before network start");
 		throw CExitEvent(0);
 	}
-	int requestedClients = (arg < Args->NumArgs()) ? atoi(Args->GetArg(arg)) : 0;
+	int requestedClients = 0;
+	if (arg < Args->NumArgs())
+	{
+		const char* rawClientCount = Args->GetArg(arg);
+		if (!TryParseStrictInt(rawClientCount, requestedClients))
+		{
+			DebugTrace::Warningf("net", "invalid host client count '%s', using default", rawClientCount != nullptr ? rawClientCount : "<null>");
+			requestedClients = 0;
+		}
+	}
 	if (DedicatedServerMode)
 	{
 		if (requestedClients <= 0)
@@ -2753,16 +2804,22 @@ static bool Guest_ContactHost(void* unused)
 			MaxClients = NetBuffer[7];
 			I_NetUpdatePlayers(NetBuffer[6], MaxClients);
 		}
-		else if (NetBuffer[1] == PRE_DISCONNECT)
-		{
-			if (NetBufferLength < 7u || !CheckSessionToken(Connected[0], ReadSessionToken(NetBuffer, 3u), "host disconnect"))
-				continue;
+			else if (NetBuffer[1] == PRE_DISCONNECT)
+			{
+				if (NetBufferLength < 7u || !CheckSessionToken(Connected[0], ReadSessionToken(NetBuffer, 3u), "host disconnect"))
+					continue;
 
-			I_ClearClient(NetBuffer[2]);
-			NetworkClients -= NetBuffer[2];
-			SetClientAck(consoleplayer, NetBuffer[2], false);
-			I_NetClientDisconnected(NetBuffer[2], "host reported disconnect");
-		}
+				const int disconnectedClient = NetBuffer[2];
+				if (disconnectedClient < 0 || disconnectedClient >= MaxClients || disconnectedClient >= MAXPLAYERS)
+				{
+					DebugTrace::Markf("net", "ignored invalid disconnect slot=%d max=%d", disconnectedClient, MaxClients);
+					continue;
+				}
+				I_ClearClient(disconnectedClient);
+				NetworkClients -= disconnectedClient;
+				SetClientAck(consoleplayer, disconnectedClient, false);
+				I_NetClientDisconnected(disconnectedClient, "host reported disconnect");
+			}
 		else if (NetBuffer[1] == PRE_FULL)
 		{
 			I_NetError("The game is full");
@@ -3072,17 +3129,22 @@ static bool Guest_ContactHost(void* unused)
 			NetBufferLength = 6u;
 			SendPacket(from);
 		}
-		else if (NetBuffer[1] == PRE_USER_INFO)
-		{
-			if (msgSize < 7)
-				continue;
+			else if (NetBuffer[1] == PRE_USER_INFO)
+			{
+				if (msgSize < 7)
+					continue;
 
 			if (!CheckSessionToken(Connected[0], ReadSessionToken(NetBuffer, 3u), "guest userinfo"))
 				continue;
 
-			const int c = NetBuffer[2];
-			if (!ClientGotAck(consoleplayer, c))
-			{
+				const int c = NetBuffer[2];
+				if (c < 0 || c >= MaxClients || c >= MAXPLAYERS)
+				{
+					DebugTrace::Markf("net", "ignored legacy peer userinfo for invalid client %d max=%d", c, MaxClients);
+					continue;
+				}
+				if (!ClientGotAck(consoleplayer, c))
+				{
 				NetworkClients += c;
 				size_t byte = 7u;
 				if (c > 0)
@@ -3251,13 +3313,31 @@ bool I_InitNetwork()
 	// set up for network
 	const char* v = Args->CheckValue(FArg_dup);
 	if (v != nullptr)
-		TicDup = clamp<int>(atoi(v), 1, MAXTICDUP);
+	{
+		int parsedDup = 0;
+		if (TryParseStrictInt(v, parsedDup))
+		{
+			TicDup = clamp<int>(parsedDup, 1, MAXTICDUP);
+		}
+		else
+		{
+			DebugTrace::Warningf("net", "invalid -dup value '%s', keeping default", v);
+		}
+	}
 
 	v = Args->CheckValue(FArg_port);
 	if (v != nullptr)
 	{
-		GamePort = atoi(v);
-		Printf("Using alternate port %d\n", GamePort);
+		int parsedPort = 0;
+		if (TryParseStrictInt(v, parsedPort) && parsedPort > 0 && parsedPort <= 65535)
+		{
+			GamePort = parsedPort;
+			Printf("Using alternate port %d\n", GamePort);
+		}
+		else
+		{
+			DebugTrace::Warningf("net", "invalid -port value '%s', keeping default %u", v, static_cast<unsigned>(GamePort));
+		}
 	}
 
 	net_password = Args->CheckValue(FArg_password);

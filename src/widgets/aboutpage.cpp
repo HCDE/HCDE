@@ -581,9 +581,14 @@ $headers = @{ 'User-Agent' = 'HCDE-Updater' }
 $release = Invoke-RestMethod -Uri $api -Headers $headers
 $tag = [string]$release.tag_name
 $zipAssets = @($release.assets | Where-Object { $_.name -match '(?i)\.zip$' })
+$runtimeZipAssets = @($zipAssets | Where-Object {
+	$name = [string]$_.name
+	($name -match '(?i)^HCDE-.*-windows-x64\.zip$' -or $name -match '(?i)windows.*x64|win.*x64|hcde.*x64') -and
+	($name -notmatch '(?i)(symbols?|pdb|debug|source|src)')
+})
 $asset = $null
-if ($zipAssets.Count -gt 0) {
-	$asset = $zipAssets |
+if ($runtimeZipAssets.Count -gt 0) {
+	$asset = $runtimeZipAssets |
 		Sort-Object `
 			@{ Expression = {
 				$name = [string]$_.name
@@ -720,11 +725,26 @@ if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 			$name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
 			($name -eq 'hcde.exe' -or $name -eq 'hcdeserv.exe') -and $path.StartsWith($resolvedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)
 		} else { $false }
-	}
-	foreach ($app in $runningApps) {
-		# Allow a grace period for other HCDE processes to shut down.
-		try { $app.WaitForExit(5000) } catch {}
-	}
+		}
+		foreach ($app in $runningApps) {
+			# Allow a grace period for other HCDE processes to shut down.
+			try { $app.WaitForExit(5000) } catch {}
+		}
+
+		$stillRunning = @()
+		foreach ($app in $runningApps) {
+			try {
+				if (-not $app.HasExited) {
+					$stillRunning += $app
+				}
+			} catch {
+				# Ignore transient process-query errors and treat missing entries as exited.
+			}
+		}
+		if ($stillRunning.Count -gt 0) {
+			$names = ($stillRunning | ForEach-Object { $_.ProcessName } | Sort-Object -Unique) -join ', '
+			throw "HCDE processes are still running and holding files: $names"
+		}
 
 	$safeVersionTag = ($VersionTag -replace '[^A-Za-z0-9._-]', '_')
 	if ([string]::IsNullOrWhiteSpace($safeVersionTag))

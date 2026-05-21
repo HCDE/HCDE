@@ -19,6 +19,7 @@ struct HCDEModCompatEntry
 {
 	const char* Label;
 	const char* ResourceFile;
+	const char* StartupMapOverride;
 	const char* const* Patterns;
 	unsigned int Flags;
 };
@@ -51,6 +52,13 @@ static const char* const TheIslandPatterns[] =
 	nullptr
 };
 
+static const char* const PinkValleyPatterns[] =
+{
+	"THE_PINK_VALLEY - ENG*",
+	"the_pink_valley*",
+	nullptr
+};
+
 static const char* const MonstersAndAddonsPatterns[] =
 {
 	"Monstersandaddons*.pk3",
@@ -59,29 +67,41 @@ static const char* const MonstersAndAddonsPatterns[] =
 };
 
 static unsigned int ActiveCompatFlags = 0u;
+static const char* ActiveStartupMapOverride = nullptr;
 
 static const HCDEModCompatEntry ModCompatEntries[] =
 {
 	{
 		"Brutal Doom railgun server compatibility",
-		"hcde_mod_compat_brutaldoom.pk3",
+		"hcde_mod_compat_combined.pk3",
+		nullptr,
 		BrutalDoomRailgunPatterns,
 		0u
 	},
 	{
 		"Aliens Eradication dedicated player input compatibility",
 		nullptr,
+		nullptr,
 		AliensEradicationPatterns,
 		HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT
 	},
 	{
 		"The Island MAPINFO and sound compatibility",
-		"hcde_mod_compat_theisland.pk3",
+		"hcde_mod_compat_combined.pk3",
+		nullptr,
 		TheIslandPatterns,
 		HCDE_MODCOMPAT_MAPINFO_TRAILING_TEXT_COMMA
 	},
 	{
+		"Pink Valley map compatibility",
+		"hcde_mod_compat_pink_valley_eng.pk3",
+		"A_NEW_DAY",
+		PinkValleyPatterns,
+		HCDE_MODCOMPAT_MAPINFO_SKY_SPEED_NO_COMMA
+	},
+	{
 		"Monsters and Addons settings controller script compatibility",
+		nullptr,
 		nullptr,
 		MonstersAndAddonsPatterns,
 		HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS
@@ -176,6 +196,7 @@ static void HCDE_ModCompat_NormalizeAliensEradicationOrder(std::vector<FileSys::
 void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConfigFile* config)
 {
 	ActiveCompatFlags = 0u;
+	ActiveStartupMapOverride = nullptr;
 
 	if (pwads.empty())
 	{
@@ -195,6 +216,11 @@ void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConf
 		{
 			ActiveCompatFlags |= entry.Flags;
 			Printf("HCDE: enabled mod compatibility '%s'.\n", entry.Label);
+		}
+		if (ActiveStartupMapOverride == nullptr && entry.StartupMapOverride != nullptr && entry.StartupMapOverride[0] != '\0')
+		{
+			ActiveStartupMapOverride = entry.StartupMapOverride;
+			Printf("HCDE: startup map compatibility override is '%s'.\n", ActiveStartupMapOverride);
 		}
 
 		if (entry.ResourceFile == nullptr || entry.ResourceFile[0] == '\0')
@@ -224,4 +250,22 @@ void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConf
 bool HCDE_ModCompat_IsActive(unsigned int flags)
 {
 	return (ActiveCompatFlags & flags) == flags;
+}
+
+const char* HCDE_ModCompat_ResolveStartupMapOverride(const char* requestedMap)
+{
+	if (ActiveStartupMapOverride == nullptr || requestedMap == nullptr || requestedMap[0] == '\0')
+	{
+		return nullptr;
+	}
+
+	// Doom Connector commonly passes MAP01/E1M1 as a default map value. For mods
+	// with a custom first map, treat those two values as a launcher default and
+	// remap them to the known compatibility entrypoint.
+	if (stricmp(requestedMap, "MAP01") != 0 && stricmp(requestedMap, "E1M1") != 0)
+	{
+		return nullptr;
+	}
+
+	return ActiveStartupMapOverride;
 }

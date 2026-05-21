@@ -21,11 +21,16 @@ function Select-HcdeReleaseAsset {
     param([object[]]$Assets)
 
     $zipAssets = @($Assets | Where-Object { $_.name -match '(?i)\.zip$' })
-    if ($zipAssets.Count -eq 0) {
+    $runtimeZipAssets = @($zipAssets | Where-Object {
+        $name = [string]$_.name
+        (($name -match '(?i)^HCDE-.*-windows-x64\.zip$') -or ($name -match '(?i)windows.*x64|win.*x64|hcde.*x64')) -and
+        ($name -notmatch '(?i)(symbols?|pdb|debug|source|src)')
+    })
+    if ($runtimeZipAssets.Count -eq 0) {
         return $null
     }
 
-    return $zipAssets |
+    return $runtimeZipAssets |
         Sort-Object `
             @{ Expression = {
                 $name = [string]$_.name

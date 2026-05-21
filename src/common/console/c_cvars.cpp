@@ -57,6 +57,31 @@ int cvar_defflags;
 
 static ConsoleCallbacks* callbacks;
 
+// cvarsearch accepts free-form user text and is invoked while the UI is live.
+// Keep matching linear and literal to avoid recursive wildcard backtracking
+// stalls on pathological patterns.
+static bool CVarSearchContainsNoCase(const char* haystack, const char* needle)
+{
+	if (needle == nullptr || needle[0] == '\0')
+	{
+		return true;
+	}
+	if (haystack == nullptr || haystack[0] == '\0')
+	{
+		return false;
+	}
+
+	const size_t needleLen = strlen(needle);
+	for (const char* scan = haystack; *scan != '\0'; ++scan)
+	{
+		if (strnicmp(scan, needle, needleLen) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 // Install game-specific handlers, mainly to deal with serverinfo and userinfo CVARs.
 // This is to keep the console independent of game implementation details for easier reusability.
 void C_InstallHandlers(ConsoleCallbacks* cb)
@@ -1706,7 +1731,11 @@ CCMD (toggle)
 
 void FBaseCVar::ListVars (const char *filter, int listtype)
 {
+	// Prevent huge cvarsearch dumps from monopolizing the UI thread.
+	static constexpr int CVARSEARCH_MAX_PRINTED_RESULTS = 512;
+
 	int count = 0;
+	int printed = 0;
 
 	bool plain = listtype == LCT_Plain;
 	bool includedesc = listtype == LCT_FullSearch;
@@ -1721,13 +1750,14 @@ void FBaseCVar::ListVars (const char *filter, int listtype)
 
 		if (filter && includedesc)
 		{
-			// search always allow partial matches
-			// also allow matching to cvar name, localised description, and description language-id
-
-			FString SearchString = FString("*") + filter + "*";
-			ismatch = CheckWildcards (SearchString.GetChars(), var->GetName()) ||
-				CheckWildcards (SearchString.GetChars(), var->GetDescription().GetChars()) ||
-				CheckWildcards (SearchString.GetChars(), GStrings.localize(var->GetDescription().GetChars()));
+			// Search always allows partial matches against name, localized
+			// description, and description language-id key.
+			const char* name = var->GetName();
+			const char* desc = var->GetDescription().GetChars();
+			const char* localizedDesc = GStrings.localize(desc);
+			ismatch = CVarSearchContainsNoCase(name, filter) ||
+				CVarSearchContainsNoCase(desc, filter) ||
+				CVarSearchContainsNoCase(localizedDesc, filter);
 		}
 		else
 		{
@@ -1748,6 +1778,11 @@ void FBaseCVar::ListVars (const char *filter, int listtype)
 			else
 			{
 				++count;
+				if (includedesc && printed >= CVARSEARCH_MAX_PRINTED_RESULTS)
+				{
+					continue;
+				}
+				++printed;
 
 				Printf ("%c%c%c%c%c %s = %s",
 					flags & CVAR_ARCHIVE ? 'A' : ' ',
@@ -1773,6 +1808,10 @@ void FBaseCVar::ListVars (const char *filter, int listtype)
 
 			}
 		}
+	}
+	if (includedesc && count > printed)
+	{
+		Printf("... %d additional search results omitted. Refine your filter to narrow results.\n", count - printed);
 	}
 	Printf ("%d cvars\n", count);
 }

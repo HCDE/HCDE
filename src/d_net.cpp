@@ -379,6 +379,9 @@ static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to
 static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
 static EInvasionState InvasionState = INVS_DISABLED; // Authoritative game phase.
 static int InvasionStateTics = 0;                  // Time remaining in current phase (if applicable).
+static EInvasionState InvasionAnnouncementState = INVS_DISABLED; // Local last-seen state for HUD/console announcement dedupe.
+static int InvasionAnnouncementWave = 0;              // Local last-seen wave for announcement transitions.
+static int InvasionAnnouncementLastCountdownSecond = -1; // Last second announced for "Prepare for invasion".
 static int InvasionReplicatedActiveMonsterCount = 0; // Cached count for client UI.
 static int InvasionWipeGraceTics = 0;              // Grace period before declaring failure after all players die.
 static FRandom pr_invasion("Invasion");            // Seeded RNG for invasion spawning/selection.
@@ -468,6 +471,78 @@ static bool Net_IsInvasionRoundActiveState(EInvasionState state)
 	return state == INVS_SPAWNING || state == INVS_CLEANUP || state == INVS_INTERMISSION;
 }
 
+static void Net_ResetInvasionAnnouncements()
+{
+	InvasionAnnouncementState = INVS_DISABLED;
+	InvasionAnnouncementWave = 0;
+	InvasionAnnouncementLastCountdownSecond = -1;
+}
+
+static void Net_ShowInvasionStatusMessage(const char* text)
+{
+	if (text == nullptr || text[0] == '\0')
+		return;
+
+	// In client/listen sessions, use a centered HUD message so the wave flow
+	// is visible during combat. Dedicated servers fall back to console output.
+	if (!I_IsDedicatedServerMode() && gamestate == GS_LEVEL)
+	{
+		C_MidPrint(nullptr, text, true);
+	}
+	else
+	{
+		Printf(PRINT_HIGH, "%s\n", text);
+	}
+}
+
+static void Net_TickInvasionAnnouncements()
+{
+	if (!netgame || demoplayback || !Net_IsInvasionModeEnabled())
+	{
+		Net_ResetInvasionAnnouncements();
+		return;
+	}
+
+	const EInvasionState state = InvasionState;
+	const int wave = max(InvasionWaveDirector.Wave, 0);
+	const EInvasionState prevState = InvasionAnnouncementState;
+
+	if (state != prevState || wave != InvasionAnnouncementWave)
+	{
+		// Emit a completion message when a wave exits active combat and enters
+		// intermission or victory.
+		if ((state == INVS_INTERMISSION || state == INVS_VICTORY)
+			&& wave > 0
+			&& prevState != INVS_DISABLED
+			&& prevState != INVS_WAITING
+			&& prevState != INVS_COUNTDOWN)
+		{
+			FString msg;
+			msg.Format("Wave %d completed", wave);
+			Net_ShowInvasionStatusMessage(msg.GetChars());
+		}
+
+		if (state != INVS_COUNTDOWN)
+			InvasionAnnouncementLastCountdownSecond = -1;
+
+		InvasionAnnouncementState = state;
+		InvasionAnnouncementWave = wave;
+	}
+
+	if (state == INVS_COUNTDOWN)
+	{
+		const int tics = max(CutsceneCountdown, max(InvasionStateTics, 0));
+		const int seconds = (tics + TICRATE - 1) / TICRATE;
+		if (seconds > 0 && seconds != InvasionAnnouncementLastCountdownSecond)
+		{
+			FString msg;
+			msg.Format("Prepare for invasion: %d", seconds);
+			Net_ShowInvasionStatusMessage(msg.GetChars());
+			InvasionAnnouncementLastCountdownSecond = seconds;
+		}
+	}
+}
+
 static int  LevelStartDebug = 0;
 static int	LevelStartDelay = 0; // While this is > 0, don't start generating packets yet.
 static ELevelStartStatus LevelStartStatus = LST_READY; // Listen for when to actually start making tics.
@@ -515,6 +590,8 @@ static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int a
 extern	bool	 advancedemo;
 
 static size_t GetNetBufferSize();
+static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream);
+static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream);
 static void HSendPacket(int client, size_t size);
 
 static uint32_t HCDELiveReadBE32(const uint8_t* data)
@@ -1417,6 +1494,11 @@ static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t
 		InvasionSpawnDirectory.TotalSpawnBudget, InvasionSpawnDirectory.ActiveTag,
 		InvasionSpawnDirectory.UsingFallback ? 1 : 0,
 		int(InvasionSpawnDirectory.FallbackSource));
+
+	// Remote clients receive invasion phase transitions through snapshots.
+	// Tick announcements after applying to keep countdown and wave-complete
+	// messages in sync with the authoritative state.
+	Net_TickInvasionAnnouncements();
 	return true;
 }
 
@@ -2343,7 +2425,8 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 			commandOffsetsSeen |= commandMask;
 
 			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
-			SkipUserCmdMessage(skipper);
+			if (!Net_TrySkipUserCmdMessage(skipper))
+				return RejectHCDEServerSnapshotBuild(client, "invalid-command-record", legacySize, recordCursor);
 			const uint8_t* commandEnd = skipper.Data();
 			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
 			if (commandPayloadBytes == 0u)
@@ -2535,7 +2618,8 @@ static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket,
 
 			const uint8_t* commandStart = &legacyPacket[recordCursor];
 			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
-			SkipUserCmdMessage(skipper);
+			if (!Net_TrySkipUserCmdMessage(skipper))
+				return RejectHCDEClientInputBuild(client, "invalid-command-record", legacySize, recordCursor);
 			const uint8_t* commandEnd = skipper.Data();
 			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
 			if (commandPayloadBytes == 0u)
@@ -4143,6 +4227,7 @@ static void Net_ResetInvasionState(const char* reason)
 	Net_DestroyTrackedInvasionMonsters(reason != nullptr ? reason : "reset");
 	InvasionWaveDirector.Reset();
 	InvasionSpawnDirectory.Reset();
+	Net_ResetInvasionAnnouncements();
 	InvasionReplicatedActiveMonsterCount = 0;
 	InvasionWipeGraceTics = 0;
 	if (Net_IsInvasionModeEnabled())
@@ -4767,11 +4852,20 @@ void Net_SetWaiting()
 //		with our variable length Command.
 static size_t GetNetBufferSize()
 {
+	if (NetBufferLength == 0u)
+		return 0u;
+
 	if (NetBuffer[0] & NCMD_EXIT)
 		return 1 + I_IsHCDEServiceAuthoritySlot(RemoteClient);
-	// TODO: Need a skipper for this.
+
+	// Setup/control messages are variable-sized. We still validate the common
+	// minimum header here so obviously truncated packets are rejected.
 	if (NetBuffer[0] & NCMD_SETUP)
+	{
+		if (NetBufferLength < 2u)
+			return 2u;
 		return NetBufferLength;
+	}
 	if (NetBuffer[0] & (NCMD_LATENCY | NCMD_LATENCYACK))
 		return 2;
 	if (HCDELiveLooksLikePacket())
@@ -4787,43 +4881,82 @@ static size_t GetNetBufferSize()
 	}
 
 	// Header info
-	unsigned int totalBytes = 10;
-	if (NetBuffer[0] & NCMD_QUITTERS)
-		totalBytes += NetBuffer[totalBytes] + 1;
+	size_t totalBytes = 10u;
+	if (NetBufferLength < totalBytes)
+		return totalBytes;
 
+	if (NetBuffer[0] & NCMD_QUITTERS)
+	{
+		const size_t quitterCountBytes = size_t(NetBuffer[totalBytes]) + 1u;
+		totalBytes += quitterCountBytes;
+		if (NetBufferLength < totalBytes)
+			return totalBytes;
+	}
+
+	if (NetBufferLength < totalBytes + 1u)
+		return totalBytes + 1u;
 	const int playerCount = NetBuffer[totalBytes++];
+
+	if (NetBufferLength < totalBytes + 1u)
+		return totalBytes + 1u;
 	const int numTics = NetBuffer[totalBytes++];
 	if (numTics > 0)
-		totalBytes += 4;
+	{
+		totalBytes += 4u;
+		if (NetBufferLength < totalBytes)
+			return totalBytes;
+	}
+
+	if (NetBufferLength < totalBytes + 1u)
+		return totalBytes + 1u;
 	const int ranTics = NetBuffer[totalBytes++];
 	if (ranTics > 0)
-		totalBytes += 4;
+	{
+		totalBytes += 4u;
+		if (NetBufferLength < totalBytes)
+			return totalBytes;
+	}
 	// Stability buffer/commands ahead
 	++totalBytes;
+	if (NetBufferLength < totalBytes)
+		return totalBytes;
 
 	// Minimum additional packet size per player:
 	// 1 byte for player number
 	// If from the host, 2 bytes for the latency to the host
-	int padding = 1;
+	size_t padding = 1u;
 	if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
-		padding += 2;
+		padding += 2u;
 	if (NetBufferLength < totalBytes + playerCount * padding)
 		return totalBytes + playerCount * padding;
 
-	TArrayView<uint8_t> skipper = TArrayView(&NetBuffer[totalBytes], MAX_MSGLEN - totalBytes);
+	TArrayView<uint8_t> skipper = TArrayView(&NetBuffer[totalBytes], NetBufferLength - totalBytes);
 	for (int p = 0; p < playerCount; ++p)
 	{
-		AdvanceStream(skipper, 1);
+		if (skipper.Size() < 1u)
+			return NetBufferLength + 1u;
+		AdvanceStream(skipper, 1u); // player number
 		if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
-			AdvanceStream(skipper, 2);
+		{
+			if (skipper.Size() < 2u)
+				return NetBufferLength + 1u;
+			AdvanceStream(skipper, 2u);
+		}
 
 		for (int i = 0; i < ranTics; ++i)
-			AdvanceStream(skipper, 3);
+		{
+			if (skipper.Size() < 3u)
+				return NetBufferLength + 1u;
+			AdvanceStream(skipper, 3u);
+		}
 
 		for (int i = 0; i < numTics; ++i)
 		{
-			AdvanceStream(skipper, 1);
-			SkipUserCmdMessage(skipper);
+			if (skipper.Size() < 1u)
+				return NetBufferLength + 1u;
+			AdvanceStream(skipper, 1u); // sequence offset byte
+			if (!Net_TrySkipUserCmdMessage(skipper))
+				return NetBufferLength + 1u;
 		}
 	}
 
@@ -5323,18 +5456,40 @@ static void GetPackets()
 			// back together correctly. Normally this wouldn't matter as much but since we need to keep
 			// clients in lock step a misordered packet will instantly cause a desync.
 			TArray<TArrayView<uint8_t>> data = {}; // each contained TArrayView represents a packet.
+			bool malformedCommandRecord = false;
 			for (int t = 0; t < totalTics; ++t)
 			{
+				if (curByte >= int(NetBufferLength))
+				{
+					malformedCommandRecord = true;
+					break;
+				}
+
 				// Try and reorder the tics if they're all there but end up out of order.
 				const int ofs = NetBuffer[curByte++];
 
-				TArrayView<uint8_t> skipper = TArrayView(&NetBuffer[curByte], MAX_MSGLEN - curByte);
-				SkipUserCmdMessage(skipper);
+				if (curByte > int(NetBufferLength))
+				{
+					malformedCommandRecord = true;
+					break;
+				}
+
+				TArrayView<uint8_t> skipper = TArrayView(&NetBuffer[curByte], NetBufferLength - curByte);
+				if (!Net_TrySkipUserCmdMessage(skipper))
+				{
+					malformedCommandRecord = true;
+					break;
+				}
 
 				TArrayView<uint8_t> packet = TArrayView(&NetBuffer[curByte], skipper.Data() - &NetBuffer[curByte]);
 				data.Insert(ofs, packet);
 
 				curByte += skipper.Data() - &NetBuffer[curByte];
+			}
+			if (malformedCommandRecord)
+			{
+				clientState.Flags |= CF_MISSING_SEQ;
+				continue;
 			}
 
 			// If it's from a previous waiting period, the commands are no longer relevant.
@@ -6936,6 +7091,7 @@ void TryRunTics()
 		++gametic;
 		if (I_IsLocalHCDEServiceAuthority())
 			Net_TickInvasionState();
+		Net_TickInvasionAnnouncements();
 		MakeConsistencies();
 
 		if (stabilize)
@@ -7813,44 +7969,78 @@ static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int a
 // not to execute them. Right now this is making setting up net commands a nightmare.
 // Reads through the network stream but doesn't actually execute any command. Used for getting the size of a stream.
 // The skip amount is the number of bytes the command possesses. This should mirror the bytes in Net_DoCommand().
-void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
+static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 {
 	size_t skip = 0;
+	auto tryReadCStringBytes = [&stream](size_t offset, size_t& bytesWithNull) -> bool
+	{
+		if (offset > stream.Size())
+			return false;
+
+		const uint8_t* start = stream.Data() + offset;
+		const size_t available = stream.Size() - offset;
+		const void* terminator = memchr(start, 0, available);
+		if (terminator == nullptr)
+			return false;
+
+		bytesWithNull = size_t(static_cast<const uint8_t*>(terminator) - start) + 1u;
+		return true;
+	};
+
+	size_t stringBytes = 0u;
 	switch (cmd)
 	{
 		case DEM_SAY:
-			skip = strlen((char *)(stream.Data() + 1)) + 2;
+			if (!tryReadCStringBytes(1u, stringBytes))
+				return false;
+			skip = 1u + stringBytes;
 			break;
 
 		case DEM_ADDBOT:
-			skip = strlen((char *)(stream.Data() + 1)) + 6;
+			if (!tryReadCStringBytes(1u, stringBytes))
+				return false;
+			skip = stringBytes + 5u;
 			break;
 
 		case DEM_GIVECHEAT:
 		case DEM_TAKECHEAT:
-			skip = strlen((char *)(stream.Data())) + 5;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes + 4u;
 			break;
 
 		case DEM_SETINV:
-			skip = strlen((char *)(stream.Data())) + 6;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes + 5u;
 			break;
 
 		case DEM_NETEVENT:
-			skip = strlen((char *)(stream.Data())) + 15;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes + 14u;
 			break;
 
 		case DEM_ZSC_CMD:
-			skip = strlen((char*)(stream.Data())) + 1;
-			skip += ((stream[skip] << 8) | stream[skip + 1]) + 2;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes;
+			if (skip > stream.Size() || stream.Size() - skip < 2u)
+				return false;
+			skip += 2u + ((size_t(stream[skip]) << 8) | size_t(stream[skip + 1]));
 			break;
 
 		case DEM_SUMMON2:
 		case DEM_SUMMONFRIEND2:
 		case DEM_SUMMONFOE2:
-			skip = strlen((char *)(stream.Data())) + 26;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes + 25u;
 			break;
 		case DEM_CHANGEMAP2:
-			skip = strlen((char *)(stream.Data() + 1)) + 2;
+			if (!tryReadCStringBytes(1u, stringBytes))
+				return false;
+			skip = 1u + stringBytes;
 			break;
 		case DEM_MUSICCHANGE:
 		case DEM_PRINT:
@@ -7866,7 +8056,9 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 		case DEM_MORPHEX:
 		case DEM_KILLCLASSCHEAT:
 		case DEM_MDK:
-			skip = strlen((char *)(stream.Data())) + 1;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes;
 			break;
 
 		case DEM_WARPCHEAT:
@@ -7894,15 +8086,21 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 			break;
 
 		case DEM_SAVEGAME:
-			skip = strlen((char *)(stream.Data())) + 1;
-			skip += strlen((char *)(stream.Data()) + skip) + 1;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes;
+			if (!tryReadCStringBytes(skip, stringBytes))
+				return false;
+			skip += stringBytes;
 			break;
 
 		case DEM_SINFCHANGEDXOR:
 		case DEM_SINFCHANGED:
 			{
+				if (stream.Size() < 1u)
+					return false;
 				uint8_t t = stream[0];
-				skip = 1 + (t & 63);
+				skip = 1u + (t & 63u);
 				if (cmd == DEM_SINFCHANGED)
 				{
 					switch (t >> 6)
@@ -7915,29 +8113,39 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 						skip += 4;
 						break;
 					case CVAR_String:
-						skip += strlen((char*)(stream.Data() + skip)) + 1;
+						if (!tryReadCStringBytes(skip, stringBytes))
+							return false;
+						skip += stringBytes;
 						break;
 					}
 				}
 				else
 				{
-					skip += 1;
+					skip += 1u;
 				}
 			}
 			break;
 
 		case DEM_RUNSCRIPT:
 		case DEM_RUNSCRIPT2:
-			skip = 3 + *(stream.Data() + 2) * 4;
+			if (stream.Size() < 3u)
+				return false;
+			skip = 3u + size_t(stream[2]) * 4u;
 			break;
 
 		case DEM_RUNNAMEDSCRIPT:
-			skip = strlen((char *)(stream.Data())) + 2;
-			skip += ((*(stream.Data() + skip - 1)) & 127) * 4;
+			if (!tryReadCStringBytes(0u, stringBytes))
+				return false;
+			skip = stringBytes + 1u;
+			if (skip > stream.Size())
+				return false;
+			skip += size_t(stream[skip - 1u] & 127u) * 4u;
 			break;
 
 		case DEM_RUNSPECIAL:
-			skip = 3 + *(stream.Data() + 2) * 4;
+			if (stream.Size() < 3u)
+				return false;
+			skip = 3u + size_t(stream[2]) * 4u;
 			break;
 
 		case DEM_CONVREPLY:
@@ -7947,23 +8155,134 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 		case DEM_SETSLOT:
 		case DEM_SETSLOTPNUM:
 			{
-				skip = 2 + (cmd == DEM_SETSLOTPNUM);
-				for (int numweapons = stream[skip-1]; numweapons > 0; --numweapons)
-					skip += 1 + (stream[skip] >> 7);
+				skip = 2u + (cmd == DEM_SETSLOTPNUM ? 1u : 0u);
+				if (skip == 0u || skip > stream.Size())
+					return false;
+				for (int numweapons = stream[skip - 1u]; numweapons > 0; --numweapons)
+				{
+					if (skip >= stream.Size())
+						return false;
+					skip += 1u + (stream[skip] >> 7);
+				}
 			}
 			break;
 
 		case DEM_ADDSLOT:
 		case DEM_ADDSLOTDEFAULT:
-			skip = 2 + (stream[1] >> 7);
+			if (stream.Size() < 2u)
+				return false;
+			skip = 2u + (stream[1] >> 7);
 			break;
 
 		case DEM_SETPITCHLIMIT:
-			skip = 2;
+			skip = 2u;
 			break;
+
+		// Commands with no payload bytes.
+		case DEM_SUICIDE:
+		case DEM_KILLBOTS:
+		case DEM_INVUSEALL:
+		case DEM_PAUSE:
+		case DEM_CENTERVIEW:
+		case DEM_CROUCH:
+		case DEM_CHECKAUTOSAVE:
+		case DEM_DOAUTOSAVE:
+		case DEM_CONVCLOSE:
+		case DEM_CONVNULL:
+		case DEM_REVERTCAMERA:
+		case DEM_FINISHGAME:
+		case DEM_READIED:
+		case DEM_USEFLECHETTE:
+			skip = 0u;
+			break;
+
+		default:
+			return false;
 	}
 
+	if (skip > stream.Size())
+		return false;
 	AdvanceStream(stream, skip);
+	return true;
+}
+
+static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream)
+{
+	while (stream.Size() > 0u)
+	{
+		const uint8_t type = stream[0];
+		AdvanceStream(stream, 1u);
+		if (type == DEM_USERCMD)
+		{
+			if (stream.Size() < 1u)
+				return false;
+
+			const uint8_t flags = stream[0];
+			AdvanceStream(stream, 1u);
+
+			if (flags & UCMDF_BUTTONS)
+			{
+				if (stream.Size() < 1u)
+					return false;
+				uint8_t in = stream[0];
+				AdvanceStream(stream, 1u);
+				if (in & MoreButtons)
+				{
+					if (stream.Size() < 1u)
+						return false;
+					in = stream[0];
+					AdvanceStream(stream, 1u);
+					if (in & MoreButtons)
+					{
+						if (stream.Size() < 1u)
+							return false;
+						in = stream[0];
+						AdvanceStream(stream, 1u);
+						if (in & MoreButtons)
+						{
+							if (stream.Size() < 1u)
+								return false;
+							AdvanceStream(stream, 1u);
+						}
+					}
+				}
+			}
+
+			auto skipAxis = [&stream]() -> bool
+			{
+				if (stream.Size() < 2u)
+					return false;
+				AdvanceStream(stream, 2u);
+				return true;
+			};
+
+			if ((flags & UCMDF_PITCH) && !skipAxis()) return false;
+			if ((flags & UCMDF_YAW) && !skipAxis()) return false;
+			if ((flags & UCMDF_FORWARDMOVE) && !skipAxis()) return false;
+			if ((flags & UCMDF_SIDEMOVE) && !skipAxis()) return false;
+			if ((flags & UCMDF_UPMOVE) && !skipAxis()) return false;
+			if ((flags & UCMDF_ROLL) && !skipAxis()) return false;
+			return true;
+		}
+		if (type == DEM_EMPTYUSERCMD)
+			return true;
+
+		if (!Net_TrySkipCommand(type, stream))
+			return false;
+	}
+
+	return false;
+}
+
+void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
+{
+	if (!Net_TrySkipCommand(cmd, stream))
+	{
+		// Keep progress monotonic in skip mode so malformed payloads cannot stall
+		// packet scanning loops.
+		if (stream.Size() > 0u)
+			AdvanceStream(stream, 1u);
+	}
 }
 
 // This was taken out of shared_hud, because UI code shouldn't do low level calculations that may change if the backing implementation changes.

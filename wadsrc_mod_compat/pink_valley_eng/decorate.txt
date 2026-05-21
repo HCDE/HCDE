@@ -1,0 +1,8 @@
+// HCDE Pink Valley compatibility placeholder.
+// Keep this as HCDE-owned glue code only. Do not copy third-party mod code.
+//
+// Source archive fingerprint:
+// THE_PINK_VALLEY - ENG.pk3
+// SHA-256: 875dc2b479eae0ed1f92fa82a86b3d7fac9fc0237c00f3294e65e65b0a666e62
+//
+// Add narrow compatibility shims here as we confirm concrete runtime failures.

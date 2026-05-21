@@ -1,0 +1,147 @@
+// HCDE compatibility override for THE_PINK_VALLEY - ENG.pk3.
+// This keeps the original map chain but normalizes SKY1 syntax so MAPINFO
+// parses reliably under HCDE's stricter grammar.
+
+CLEAREPISODES
+
+EPISODE A_NEW_DAY
+{
+   name = "THE PINK VALLEY"
+   key = "P"
+}
+
+MAP A_NEW_DAY "A_NEW_DAY"
+{
+NEXT = MONONO
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP MONONO "WHERES MONONO?"
+{
+NEXT = my_name
+SKY1 = SKY1, 0
+}
+
+MAP my_name "MY_NAME_IS_NOT_IMPORTANT"
+{
+NEXT = SHOW
+SKY1 = SKY1, 0
+}
+
+MAP SHOW "SHOW_IN_THE_PARK"
+{
+NEXT = HAPPY
+SKY1 = SKY1, 0
+}
+
+MAP HAPPY "HAPPY_LAST_YEAR_OF_SCHOOL"
+{
+NEXT = SUPER
+SKY1 = SKY1, 0
+}
+
+MAP SUPER "PANIC_IN_THE_SUPER"
+{
+NEXT = no_home
+SKY1 = SKY1, 0
+}
+
+MAP no_home "no_home"
+{
+NEXT = _a_new_day_
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP _a_new_day_ "_a_new_day_"
+{
+NEXT = I_WANT_MY_MONONO
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP I_WANT_MY_MONONO "WHERES MONONO?"
+{
+NEXT = FUCK_YOU_DUMBASS
+SKY1 = SKY1, 0
+}
+
+MAP FUCK_YOU_DUMBASS "EVERYONE ARE FUCKING IDIOTS EXCEPT ME"
+{
+NEXT = home
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP home "home"
+{
+NEXT = _
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP _ "non-existent yellow"
+{
+NEXT = pink
+SKY1 = SKY1, 0
+NoIntermission
+NOJUMP
+}
+
+MAP pink "a new day"
+{
+NEXT = skin
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP skin "FLESH CANNOT BE REPLACED"
+{
+NEXT = __
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP __ "un bacio"
+{
+NEXT = thewayaheadfeelslonely
+secretnext = MELANCOLIA
+SKY1 = SKY1, 0
+NoIntermission
+}
+
+MAP thewayaheadfeelslonely "......"
+{
+NEXT = a_day
+SKY1 = SKY1, 0
+NoIntermission
+NoJump
+}
+
+MAP MELANCOLIA "......"
+{
+NEXT = A_NEW_DAY
+SKY1 = SKY1, 0
+NoIntermission
+NoJump
+}
+
+MAP a_day "a_new_day"
+{
+NEXT = dinoclowns
+SKY1 = SKY1, 0
+interMUSIC = LAVIP1
+}
+
+MAP dinoclowns "KILLER DINO CLOWNS FROM THE NINE DIMENSION"
+{
+SKY1 = SKY1, 0
+}
+
+MAP PRUEBAS "PICO PALQUE LEE"
+{
+NEXT = MAP01
+SKY1 = SKY1, 0
+NoIntermission
+}
