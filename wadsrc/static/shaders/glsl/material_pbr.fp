@@ -72,10 +72,16 @@ float quadraticDistanceAttenuation(vec4 lightpos)
 	return attenuation;
 }
 
-float linearDistanceAttenuation(vec4 lightpos)
+float linearDistanceAttenuation(vec4 lightpos, float linearity)
 {
 	float lightdistance = distance(lightpos.xyz, pixelpos.xyz);
-	return clamp((lightpos.w - lightdistance) / lightpos.w, 0.0, 1.0);
+	float attenuation = clamp((lightpos.w - lightdistance) / lightpos.w, 0.0, 1.0);
+	if (linearity >= 0.0)
+	{
+		float falloffExp = mix(2.0, 1.0, clamp(linearity, 0.0, 1.0));
+		attenuation = pow(attenuation, falloffExp);
+	}
+	return attenuation;
 }
 
 vec3 ProcessMaterialLight(Material material, vec3 ambientLight)
@@ -114,7 +120,7 @@ vec3 ProcessMaterialLight(Material material, vec3 ambientLight)
 				vec3 L = normalize(lightpos.xyz - worldpos);
 				vec3 H = normalize(V + L);
 
-				float attenuation = linearDistanceAttenuation(lightpos);
+				float attenuation = linearDistanceAttenuation(lightpos, lightspot2.z);
 				if (lightspot1.w == 1.0)
 					attenuation *= spotLightAttenuation(lightpos, lightspot1.xyz, lightspot2.x, lightspot2.y);
 				if (lightcolor.a < 0.0)
@@ -122,7 +128,7 @@ vec3 ProcessMaterialLight(Material material, vec3 ambientLight)
 
 				if (attenuation > 0.0)
 				{
-					attenuation *= shadowAttenuation(lightpos, lightcolor.a);
+					attenuation *= shadowAttenuation(lightpos, lightcolor.a, lightspot2.w);
 
 					vec3 radiance = lightcolor.rgb * attenuation;
 
@@ -154,7 +160,7 @@ vec3 ProcessMaterialLight(Material material, vec3 ambientLight)
 				vec3 L = normalize(lightpos.xyz - worldpos);
 				vec3 H = normalize(V + L);
 
-				float attenuation = linearDistanceAttenuation(lightpos);
+				float attenuation = linearDistanceAttenuation(lightpos, lightspot2.z);
 				if (lightspot1.w == 1.0)
 					attenuation *= spotLightAttenuation(lightpos, lightspot1.xyz, lightspot2.x, lightspot2.y);
 				if (lightcolor.a < 0.0)
@@ -162,7 +168,7 @@ vec3 ProcessMaterialLight(Material material, vec3 ambientLight)
 
 				if (attenuation > 0.0)
 				{
-					attenuation *= shadowAttenuation(lightpos, lightcolor.a);
+					attenuation *= shadowAttenuation(lightpos, lightcolor.a, lightspot2.w);
 
 					vec3 radiance = lightcolor.rgb * attenuation;
 

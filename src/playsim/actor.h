@@ -1260,6 +1260,11 @@ public:
 	player_t		*player;		// only valid if type of PlayerPawn
 	TObjPtr<AActor*>	LastLookActor;	// Actor last looked for (if TIDtoHate != 0)
 	DVector3		SpawnPoint; 	// For nightmare respawn
+	// UDMF dynamic-light overrides captured at spawn time. They are applied to
+	// internal FDynamicLight instances when those are attached in PostBeginPlay.
+	float			UDMFLightSoftShadowRadius = -1.f;
+	float			UDMFLightLinearity = -1.f;
+	int				UDMFLightShadowMinQuality = -1;
 	int				StartHealth;
 	uint8_t			WeaveIndexXY;	// Separated from special2 because it's used by globally accessible functions.
 	uint8_t			WeaveIndexZ;

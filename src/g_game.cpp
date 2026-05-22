@@ -1681,9 +1681,25 @@ void FLevelLocals::DeathMatchSpawnPlayer (int playernum)
 	FPlayerStart *spot;
 
 	selections = deathmatchstarts.Size ();
-	// [RH] We can get by with just 1 deathmatch start
+	// [HCDE] Some maps/mods (especially UDMF/Hexen-format content) expose only
+	// regular player starts and rely on mode flags instead of explicit
+	// DeathmatchStart things. In that case, prefer a safe local fallback
+	// instead of hard-crashing out of command-line single-player DM launches.
 	if (selections < 1)
-		I_Error ("No deathmatch starts");
+	{
+		FPlayerStart* fallback = PickPlayerStart(playernum, PPS_FORCERANDOM);
+		if (fallback != nullptr && fallback->type != 0)
+		{
+			Printf("No deathmatch starts found; falling back to player start for deathmatch spawn.\n");
+			AActor* mo = SpawnPlayer(fallback, playernum);
+			if (mo != nullptr) P_PlayerStartStomp(mo);
+			return;
+		}
+
+		// Keep the original failure for truly broken maps that have neither
+		// deathmatch starts nor usable player starts.
+		I_Error("No deathmatch starts");
+	}
 
 	bool hasSpawned = false;
 	for (unsigned int i = 0; i < MAXPLAYERS; ++i)

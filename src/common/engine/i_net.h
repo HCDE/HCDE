@@ -37,6 +37,7 @@ EXTERN_FARG(join);
 EXTERN_FARG(server);
 EXTERN_FARG(netwaitsilent);
 EXTERN_FARG(dedicatedjoin);
+EXTERN_FARG(joindedicated);
 
 enum ENetConstants
 {

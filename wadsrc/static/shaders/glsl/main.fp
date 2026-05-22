@@ -419,7 +419,7 @@ vec2 softshadow[9 * 3] = vec2[](
 	vec2(-0.25, 0.75)
 );
 
-float shadowAttenuation(vec4 lightpos, float lightcolorA)
+float shadowAttenuation(vec4 lightpos, float lightcolorA, float softShadowRadius)
 {
 	float shadowIndex = abs(lightcolorA) - 1.0;
 	if (shadowIndex >= 1024.0)
@@ -440,15 +440,20 @@ float shadowAttenuation(vec4 lightpos, float lightcolorA)
 		vec3 v = (abs(direction.x) > abs(direction.y)) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
 		vec3 xdir = normalize(cross(direction, v));
 		vec3 ydir = cross(direction, xdir);
+		float softScale = 1.0;
+		if (softShadowRadius > 0.0)
+			softScale = clamp(softShadowRadius, 0.25, 4.0);
 
 		float sum = 0.0;
-		int step_count = uShadowmapFilter * 9;
-		for (int i = 0; i <= step_count; i++)
+		// Keep sample count and normalization aligned so attenuation never exceeds 1.0.
+		int step_count = min(uShadowmapFilter, 2) * 9;
+		int sample_count = step_count + 1;
+		for (int i = 0; i < sample_count; i++)
 		{
-			vec3 pos = target + xdir * softshadow[i].x + ydir * softshadow[i].y;
+			vec3 pos = target + xdir * softshadow[i].x * softScale + ydir * softshadow[i].y * softScale;
 			sum += traceHit(origin, normalize(pos - origin), dist) ? 0.0 : 1.0;
 		}
-		return sum / step_count;
+		return sum / sample_count;
 	}
 }
 
@@ -523,7 +528,7 @@ float sampleShadowmap(vec3 planePoint, float v)
 	return step(dist2, texture(ShadowMap, vec2(u, v)).x);
 }
 
-float sampleShadowmapPCF(vec3 planePoint, float v)
+float sampleShadowmapPCF(vec3 planePoint, float v, float softShadowRadius)
 {
 	float bias = 1.0;
 	float negD = dot(vWorldNormal.xyz, planePoint);
@@ -538,11 +543,14 @@ float sampleShadowmapPCF(vec3 planePoint, float v)
 	vec2 isize = textureSize(ShadowMap, 0);
 	float scale = float(isize.x);
 	float texelPos = floor(shadowDirToU(ray.xz) * scale);
+	float softScale = 1.0;
+	if (softShadowRadius > 0.0)
+		softScale = clamp(softShadowRadius, 0.25, 4.0);
 
 	float sum = 0.0;
 	float step_count = uShadowmapFilter;
 
-	texelPos -= step_count + 0.5;
+	texelPos -= step_count * softScale + 0.5;
 	for (float x = -step_count; x <= step_count; x++)
 	{
 		float u = fract(texelPos / scale);
@@ -555,12 +563,12 @@ float sampleShadowmapPCF(vec3 planePoint, float v)
 
 		float dist2 = dot(dir, dir);
 		sum += step(dist2, texture(ShadowMap, vec2(u, v)).x);
-		texelPos++;
+		texelPos += softScale;
 	}
 	return sum / (uShadowmapFilter * 2.0 + 1.0);
 }
 
-float shadowmapAttenuation(vec4 lightpos, float shadowIndex)
+float shadowmapAttenuation(vec4 lightpos, float shadowIndex, float softShadowRadius)
 {
 	if (shadowIndex >= 1024.0)
 		return 1.0; // No shadowmap available for this light
@@ -579,19 +587,19 @@ float shadowmapAttenuation(vec4 lightpos, float shadowIndex)
 	}
 	else
 	{
-		return sampleShadowmapPCF(planePoint, v);
+		return sampleShadowmapPCF(planePoint, v, softShadowRadius);
 	}
 }
 
-float shadowAttenuation(vec4 lightpos, float lightcolorA)
+float shadowAttenuation(vec4 lightpos, float lightcolorA, float softShadowRadius)
 {
 	float shadowIndex = abs(lightcolorA) - 1.0;
-	return shadowmapAttenuation(lightpos, shadowIndex);
+	return shadowmapAttenuation(lightpos, shadowIndex, softShadowRadius);
 }
 
 #else
 
-float shadowAttenuation(vec4 lightpos, float lightcolorA)
+float shadowAttenuation(vec4 lightpos, float lightcolorA, float softShadowRadius)
 {
 	return 1.0;
 }

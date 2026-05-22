@@ -146,7 +146,7 @@ void HCDE_ServerMode_InitFromArgs()
 	Runtime.DedicatedServer = Args->CheckParm(FArg_server) != 0;
 	Runtime.HostMode = Args->CheckParm(FArg_host) != 0;
 	Runtime.JoinMode = Args->CheckParm(FArg_join) != 0;
-	Runtime.DedicatedJoin = Args->CheckParm(FArg_dedicatedjoin) != 0;
+	Runtime.DedicatedJoin = Args->CheckParm(FArg_dedicatedjoin) != 0 || Args->CheckParm(FArg_joindedicated) != 0;
 	Runtime.NetWaitSilent = Args->CheckParm(FArg_netwaitsilent) != 0;
 	Runtime.RequestedServerSlots = ReadIntValue(FArg_server);
 	Runtime.GamePort = ReadIntValue(FArg_port);
@@ -155,6 +155,10 @@ void HCDE_ServerMode_InitFromArgs()
 	if (Runtime.MapArg.IsEmpty())
 		Runtime.MapArg = ReadWarpValue();
 	AssignArgValue(Runtime.JoinAddress, FArg_join);
+	if (Runtime.JoinAddress.IsEmpty())
+		AssignArgValue(Runtime.JoinAddress, FArg_joindedicated);
+	if (Runtime.JoinAddress.IsEmpty())
+		AssignArgValue(Runtime.JoinAddress, FArg_dedicatedjoin);
 	Runtime.FlowState = "startup";
 
 	if (Runtime.DedicatedExecutable && !Runtime.DedicatedServer)

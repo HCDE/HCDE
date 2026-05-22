@@ -272,6 +272,9 @@ void AActor::Serialize(FSerializer &arc)
 		A("threshold", threshold)
 		A("player", player)
 		A("spawnpoint", SpawnPoint)
+		A("udmflightsoftshadowradius", UDMFLightSoftShadowRadius)
+		A("udmflightlinearity", UDMFLightLinearity)
+		A("udmflightshadowminquality", UDMFLightShadowMinQuality)
 		A("spawnangle", SpawnAngle)
 		A("starthealth", StartHealth)
 		A("skillrespawncount", skillrespawncount)
@@ -6913,6 +6916,8 @@ AActor *FLevelLocals::SpawnMapThing (FMapThing *mthing, int position)
 	// allow color strings for lights and reshuffle the args for spot lights
 	if (i->IsDescendantOf(NAME_DynamicLight))
 	{
+		auto &lightflags = mobj->IntVar(NAME_lightflags);
+
 		if (mthing->arg0str != NAME_None)
 		{
 			PalEntry color = V_GetColor(mthing->arg0str.GetChars());
@@ -6920,14 +6925,46 @@ AActor *FLevelLocals::SpawnMapThing (FMapThing *mthing, int position)
 			mobj->args[1] = color.g;
 			mobj->args[2] = color.b;
 		}
-		else if (mobj->IntVar(NAME_lightflags) & LF_SPOT)
+		else if (lightflags & LF_SPOT)
 		{
 			mobj->args[0] = RPART(mthing->args[0]);
 			mobj->args[1] = GPART(mthing->args[0]);
 			mobj->args[2] = BPART(mthing->args[0]);
 		}
 
-		if (mobj->IntVar(NAME_lightflags) & LF_SPOT)
+		// UDMF can explicitly set these booleans to either true or false.
+		// Track "defined" flags so we only override class defaults when a map
+		// author actually specified the key.
+		if (mthing->LightNoShadowMapDefined)
+		{
+			if (mthing->LightNoShadowMap) lightflags |= LF_NOSHADOWMAP;
+			else lightflags &= ~LF_NOSHADOWMAP;
+		}
+		if (mthing->LightDontLightActorsDefined)
+		{
+			if (mthing->LightDontLightActors) lightflags |= LF_DONTLIGHTACTORS;
+			else lightflags &= ~LF_DONTLIGHTACTORS;
+		}
+		if (mthing->LightDontLightMapDefined)
+		{
+			if (mthing->LightDontLightMap) lightflags |= LF_DONTLIGHTMAP;
+			else lightflags &= ~LF_DONTLIGHTMAP;
+		}
+
+		if (mthing->LightSoftShadowRadius >= 0.0)
+		{
+			mobj->UDMFLightSoftShadowRadius = (float)mthing->LightSoftShadowRadius;
+		}
+		if (mthing->LightLinearity >= 0.0)
+		{
+			mobj->UDMFLightLinearity = (float)mthing->LightLinearity;
+		}
+		if (mthing->LightShadowMinQuality >= 0)
+		{
+			mobj->UDMFLightShadowMinQuality = mthing->LightShadowMinQuality;
+		}
+
+		if (lightflags & LF_SPOT)
 		{
 			mobj->AngleVar(NAME_SpotInnerAngle) = DAngle::fromDeg(mthing->args[1]);
 			mobj->AngleVar(NAME_SpotOuterAngle) = DAngle::fromDeg(mthing->args[2]);
@@ -6935,6 +6972,28 @@ AActor *FLevelLocals::SpawnMapThing (FMapThing *mthing, int position)
 	}
 
 	mobj->CallBeginPlay ();
+
+	if (i->IsDescendantOf(NAME_DynamicLight))
+	{
+		for (auto light : mobj->AttachedLights)
+		{
+			if (light == nullptr) continue;
+
+			if (mobj->UDMFLightSoftShadowRadius >= 0.f)
+			{
+				light->softShadowRadius = mobj->UDMFLightSoftShadowRadius;
+			}
+			if (mobj->UDMFLightLinearity >= 0.f)
+			{
+				light->linearity = mobj->UDMFLightLinearity;
+			}
+			if (mobj->UDMFLightShadowMinQuality >= 0)
+			{
+				light->shadowMinQuality = mobj->UDMFLightShadowMinQuality;
+			}
+		}
+	}
+
 	if (!(mobj->ObjectFlags & OF_EuthanizeMe))
 	{
 		mobj->LevelSpawned ();

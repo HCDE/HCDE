@@ -26,6 +26,11 @@ vec2 lightAttenuation(int i, vec3 normal, vec3 viewdir, float lightcolorA, float
 		return vec2(0.0); // Early out lights touching surface but not this fragment
 
 	float attenuation = clamp((lightpos.w - lightdistance) / lightpos.w, 0.0, 1.0);
+	if (lightspot2.z >= 0.0)
+	{
+		float falloffExp = mix(2.0, 1.0, clamp(lightspot2.z, 0.0, 1.0));
+		attenuation = pow(attenuation, falloffExp);
+	}
 
 	if (lightspot1.w == 1.0)
 		attenuation *= spotLightAttenuation(lightpos, lightspot1.xyz, lightspot2.x, lightspot2.y);
@@ -36,7 +41,7 @@ vec2 lightAttenuation(int i, vec3 normal, vec3 viewdir, float lightcolorA, float
 		attenuation *= clamp(dot(normal, lightdir), 0.0, 1.0);
 
 	if (attenuation > 0.0) // Skip shadow map test if possible
-		attenuation *= shadowAttenuation(lightpos, lightcolorA);
+		attenuation *= shadowAttenuation(lightpos, lightcolorA, lightspot2.w);
 
 	if (attenuation <= 0.0)
 		return vec2(0.0);

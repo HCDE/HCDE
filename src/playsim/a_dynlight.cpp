@@ -62,6 +62,9 @@ static FDynamicLight *GetLight(FLevelLocals *Level)
 	if (ret->next) ret->next->prev = ret;
 	ret->visibletoplayer = true;
 	ret->mShadowmapIndex = 1024;
+	ret->softShadowRadius = -1.0f;
+	ret->linearity = -1.0f;
+	ret->shadowMinQuality = -1;
 	ret->Level = Level;
 	ret->Pos.X = -10000000;	// not a valid coordinate.
 	return ret;
@@ -94,6 +97,22 @@ void AttachLight(AActor *self)
 	light->m_active = false;
 	light->visibletoplayer = true;
 	light->lighttype = (uint8_t)self->IntVar(NAME_lighttype);
+
+	// Apply UDMF per-light overrides that were captured on the owning actor
+	// when this map thing was spawned.
+	if (self->UDMFLightSoftShadowRadius >= 0.f)
+	{
+		light->softShadowRadius = self->UDMFLightSoftShadowRadius;
+	}
+	if (self->UDMFLightLinearity >= 0.f)
+	{
+		light->linearity = self->UDMFLightLinearity;
+	}
+	if (self->UDMFLightShadowMinQuality >= 0)
+	{
+		light->shadowMinQuality = self->UDMFLightShadowMinQuality;
+	}
+
 	self->AttachedLights.Push(light);
 
 	// Disable postponed processing of dynamic light because its setup has been completed by this function

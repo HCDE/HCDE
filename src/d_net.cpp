@@ -591,7 +591,7 @@ extern	bool	 advancedemo;
 
 static size_t GetNetBufferSize();
 static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream);
-static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream);
+static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream, bool allowImplicitEmptyAtEnd = false);
 static void HSendPacket(int client, size_t size);
 
 static uint32_t HCDELiveReadBE32(const uint8_t* data)
@@ -1506,6 +1506,7 @@ static bool HCDEDecodeLegacyUserCmdRecord(int playerNum, uint32_t sequence, cons
 {
 	eventBytes = 0u;
 	size_t inputCursor = 0u;
+	bool sawEventCommand = false;
 	while (inputCursor < dataSize)
 	{
 		const size_t eventStart = inputCursor;
@@ -1537,7 +1538,23 @@ static bool HCDEDecodeLegacyUserCmdRecord(int playerNum, uint32_t sequence, cons
 		{
 			return false;
 		}
+		sawEventCommand = true;
 	}
+
+	// Some transition tics may contain only event commands and no explicit
+	// DEM_USERCMD/DEM_EMPTYUSERCMD marker. Preserve the events and synthesize
+	// an empty command from the rolling basis so map/teleport transitions do not
+	// get rejected as malformed.
+	if (sawEventCommand)
+	{
+		if (const usercmd_t* basis = HCDEBuildUserCmdBasis(playerNum, sequence))
+			memcpy(&command, basis, sizeof(command));
+		else
+			memset(&command, 0, sizeof(command));
+		eventBytes = dataSize;
+		return true;
+	}
+
 	return false;
 }
 
@@ -2425,7 +2442,7 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 			commandOffsetsSeen |= commandMask;
 
 			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
-			if (!Net_TrySkipUserCmdMessage(skipper))
+			if (!Net_TrySkipUserCmdMessage(skipper, t + 1u == commandTics))
 				return RejectHCDEServerSnapshotBuild(client, "invalid-command-record", legacySize, recordCursor);
 			const uint8_t* commandEnd = skipper.Data();
 			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
@@ -2618,7 +2635,7 @@ static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket,
 
 			const uint8_t* commandStart = &legacyPacket[recordCursor];
 			TArrayView<uint8_t> skipper = TArrayView(const_cast<uint8_t*>(&legacyPacket[recordCursor]), legacySize - recordCursor);
-			if (!Net_TrySkipUserCmdMessage(skipper))
+			if (!Net_TrySkipUserCmdMessage(skipper, t + 1u == commandTics))
 				return RejectHCDEClientInputBuild(client, "invalid-command-record", legacySize, recordCursor);
 			const uint8_t* commandEnd = skipper.Data();
 			const size_t commandPayloadBytes = size_t(commandEnd - &legacyPacket[recordCursor]);
@@ -4722,14 +4739,26 @@ bool Net_CheckCutsceneReady()
 	if ((readyMask & mask) == mask)
 		return true;
 
-	if ((float)totalReady / totalClients < net_cutscenereadypercent)
+	const float readyRatio = (float)totalReady / totalClients;
+	const bool thresholdReached = readyRatio >= net_cutscenereadypercent;
+
+	// Keep the countdown progressing even when nobody reaches the ready threshold.
+	// This avoids an intermission deadlock if input focus is lost or clients never
+	// send DEM_READIED during map transitions.
+	if (CutsceneCountdown > 0)
+	{
+		--CutsceneCountdown;
+		if (CutsceneCountdown <= 0)
+		{
+			DebugTrace::Markf("net", "cutscene countdown auto-advance ratio=%.3f ready=%d/%d room=%u map=%s",
+				double(readyRatio), totalReady, totalClients, unsigned(CurrentRoomID),
+				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+			return true;
+		}
 		return false;
+	}
 
-	if (CutsceneCountdown <= 0)
-		return true;
-
-	--CutsceneCountdown;
-	return false;
+	return thresholdReached;
 }
 
 void Net_AdvanceCutscene()
@@ -4955,7 +4984,7 @@ static size_t GetNetBufferSize()
 			if (skipper.Size() < 1u)
 				return NetBufferLength + 1u;
 			AdvanceStream(skipper, 1u); // sequence offset byte
-			if (!Net_TrySkipUserCmdMessage(skipper))
+			if (!Net_TrySkipUserCmdMessage(skipper, i + 1 == numTics))
 				return NetBufferLength + 1u;
 		}
 	}
@@ -5025,7 +5054,22 @@ static void ClientConnecting(int client)
 	if (!I_IsLocalHCDEServiceAuthority())
 		return;
 
-	// TODO: Eventually...
+	if (client < 0 || client >= int(MAXPLAYERS))
+		return;
+
+	if (!NetworkClients.InGame(client) || I_IsHCDEServiceAuthoritySlot(client))
+		return;
+
+	// Stage 1 late-join admission: mark the connecting client as waiting so
+	// gameplay side can keep authority-gated transitions stable while setup
+	// packets are exchanged in i_net.
+	if (!players[client].waiting)
+	{
+		players[client].waiting = true;
+		Net_ResetAuthorityWaitWatchdog("late-join-connect");
+		DebugTrace::Markf("net", "late-join setup active client=%d room=%u gametic=%d clienttic=%d",
+			client, unsigned(CurrentRoomID), gametic, ClientTic);
+	}
 }
 
 void Net_ResetClientState(int clientNum)
@@ -5298,6 +5342,7 @@ static void GetPackets()
 		if (NetBuffer[0] & NCMD_SETUP)
 		{
 			HandleIncomingConnection();
+			ClientConnecting(clientNum);
 			continue;
 		}
 
@@ -5369,15 +5414,39 @@ static void GetPackets()
 				}
 			}
 		}
+		else
+		{
+			// Room ids isolate map transitions. Parsing stale-room command payloads
+			// can incorrectly raise missing-sequence/consistency flags during level
+			// changes, which then stalls synchronization in the new room.
+			DebugTrace::Markf("net", "ignored stale-room packet client=%d packet-room=%u current-room=%u gametic=%d clienttic=%d",
+				clientNum, unsigned(NetBuffer[1]), unsigned(CurrentRoomID), gametic, ClientTic);
+			continue;
+		}
 
 		const int consistencyAck = (NetBuffer[6] << 24) | (NetBuffer[7] << 16) | (NetBuffer[8] << 8) | NetBuffer[9];
 
 		int curByte = 10;
+		auto hasBytes = [&](int count) -> bool
+		{
+			return count >= 0 && curByte >= 0 && curByte + count <= int(NetBufferLength);
+		};
+		bool malformedPacketFields = false;
 		if (NetBuffer[0] & NCMD_QUITTERS)
 		{
+			if (!hasBytes(1))
+			{
+				clientState.Flags |= CF_MISSING_SEQ;
+				continue;
+			}
 			int numPlayers = NetBuffer[curByte++];
 			for (int i = 0; i < numPlayers; ++i)
 			{
+				if (!hasBytes(1))
+				{
+					malformedPacketFields = true;
+					break;
+				}
 				const int quitter = NetBuffer[curByte++];
 				Printf(PRINT_HIGH, "NetGame:: Authority reported client %d quit at gametic=%d clienttic=%d room=%u\n",
 					quitter, gametic, ClientTic, unsigned(CurrentRoomID));
@@ -5385,37 +5454,90 @@ static void GetPackets()
 					quitter, clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
 				DisconnectClient(quitter);
 			}
+			if (malformedPacketFields)
+			{
+				clientState.Flags |= CF_MISSING_SEQ;
+				continue;
+			}
 		}
 
+		if (!hasBytes(1))
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
+		}
 		const int playerCount = NetBuffer[curByte++];
 
 		int baseSequence = -1;
+		if (!hasBytes(1))
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
+		}
 		const int totalTics = NetBuffer[curByte++];
 		if (totalTics > 0)
+		{
+			if (!hasBytes(4))
+			{
+				clientState.Flags |= CF_MISSING_SEQ;
+				continue;
+			}
 			baseSequence = (NetBuffer[curByte++] << 24) | (NetBuffer[curByte++] << 16) | (NetBuffer[curByte++] << 8) | NetBuffer[curByte++];
+		}
 
 		int baseConsistency = -1;
+		if (!hasBytes(1))
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
+		}
 		const int ranTics = NetBuffer[curByte++];
 		if (ranTics > 0)
-			baseConsistency = (NetBuffer[curByte++] << 24) | (NetBuffer[curByte++] << 16) | (NetBuffer[curByte++] << 8) | NetBuffer[curByte++];
-
-		if (validID)
 		{
-			if (I_IsHCDEServiceAuthoritySlot(clientNum))
-				CommandsAhead = NetBuffer[curByte];
-			else if (I_IsLocalHCDEServiceAuthority())
-				clientState.StabilityBuffer = NetBuffer[curByte];
+			if (!hasBytes(4))
+			{
+				clientState.Flags |= CF_MISSING_SEQ;
+				continue;
+			}
+			baseConsistency = (NetBuffer[curByte++] << 24) | (NetBuffer[curByte++] << 16) | (NetBuffer[curByte++] << 8) | NetBuffer[curByte++];
 		}
+
+		if (!hasBytes(1))
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
+		}
+		if (I_IsHCDEServiceAuthoritySlot(clientNum))
+			CommandsAhead = NetBuffer[curByte];
+		else if (I_IsLocalHCDEServiceAuthority())
+			clientState.StabilityBuffer = NetBuffer[curByte];
 		++curByte;
 
 		for (int p = 0; p < playerCount; ++p)
 		{
+			if (!hasBytes(1))
+			{
+				malformedPacketFields = true;
+				break;
+			}
 			const int pNum = NetBuffer[curByte++];
+			if (pNum < 0 || pNum >= MAXPLAYERS)
+			{
+				malformedPacketFields = true;
+				DebugTrace::Warningf("net", "malformed packet player index=%d max=%d from=%d room=%u",
+					pNum, MAXPLAYERS, clientNum, unsigned(CurrentRoomID));
+				break;
+			}
 			auto& pState = ClientStates[pNum];
 
 			// This gets sent over per-player so latencies are correctly displayed.
 			if (I_IsHCDEServiceAuthoritySlot(clientNum))
 			{
+				if (!hasBytes(2))
+				{
+					malformedPacketFields = true;
+					break;
+				}
 				if (!I_IsLocalHCDEServiceAuthority())
 					pState.AverageLatency = (NetBuffer[curByte++] << 8) | NetBuffer[curByte++];
 				else
@@ -5432,8 +5554,17 @@ static void GetPackets()
 			TArray<int16_t> consistencies = {};
 			for (int r = 0; r < ranTics; ++r)
 			{
+				if (!hasBytes(3))
+				{
+					malformedPacketFields = true;
+					break;
+				}
 				int ofs = NetBuffer[curByte++];
 				consistencies.Insert(ofs, (NetBuffer[curByte++] << 8) | NetBuffer[curByte++]);
+			}
+			if (malformedPacketFields)
+			{
+				break;
 			}
 
 			for (size_t i = 0u; i < consistencies.Size(); ++i)
@@ -5475,7 +5606,7 @@ static void GetPackets()
 				}
 
 				TArrayView<uint8_t> skipper = TArrayView(&NetBuffer[curByte], NetBufferLength - curByte);
-				if (!Net_TrySkipUserCmdMessage(skipper))
+				if (!Net_TrySkipUserCmdMessage(skipper, t + 1 == totalTics))
 				{
 					malformedCommandRecord = true;
 					break;
@@ -5491,10 +5622,6 @@ static void GetPackets()
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
-
-			// If it's from a previous waiting period, the commands are no longer relevant.
-			if (!validID)
-				continue;
 
 			for (size_t i = 0u; i < data.Size(); ++i)
 			{
@@ -5524,6 +5651,11 @@ static void GetPackets()
 				if (!I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(pNum))
 					pState.SequenceAck = seq;
 			}
+		}
+		if (malformedPacketFields)
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
 		}
 	}
 
@@ -8206,8 +8338,9 @@ static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 	return true;
 }
 
-static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream)
+static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream, bool allowImplicitEmptyAtEnd)
 {
+	bool sawEventCommand = false;
 	while (stream.Size() > 0u)
 	{
 		const uint8_t type = stream[0];
@@ -8269,9 +8402,14 @@ static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream)
 
 		if (!Net_TrySkipCommand(type, stream))
 			return false;
+		sawEventCommand = true;
 	}
 
-	return false;
+	// Some transitions can legally produce a command-only tic record
+	// (events with no movement payload). Only allow this when the caller
+	// knows this record is the final one in the packet, otherwise record
+	// boundaries become ambiguous and can consume the next tic by mistake.
+	return allowImplicitEmptyAtEnd && sawEventCommand;
 }
 
 void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)

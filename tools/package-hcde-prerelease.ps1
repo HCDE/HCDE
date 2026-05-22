@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.4.2-hotfix1",
+    [string]$Version = "0.4.3-hotfix1",
     [string]$Configuration = "RelWithDebInfo",
     [string]$OpenALSoftVersion = "1.25.2",
     [string]$SndFileDll = "",
@@ -13,6 +13,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Local-first release policy: this script always creates Windows x64 release
+# packages under build\releases and writes SHA-256 checksums there. GitHub is
+# only used when -Upload is explicitly supplied.
 
 function Resolve-RequiredPath {
     param([string]$Path)
@@ -42,6 +46,24 @@ function Assert-ChildPath {
     }
 
     return $resolvedChild
+}
+
+function Write-ReleaseChecksums {
+    param(
+        [Parameter(Mandatory)][string]$OutputPath,
+        [Parameter(Mandatory)][string[]]$Assets
+    )
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($asset in $Assets) {
+        if (-not (Test-Path -LiteralPath $asset)) {
+            throw "Missing checksum asset: $asset"
+        }
+        $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+        $lines.Add("$hash  $([System.IO.Path]::GetFileName($asset))")
+    }
+    Set-Content -LiteralPath $OutputPath -Encoding ASCII -Value $lines
+    Write-Host "Checksums: $OutputPath"
 }
 
 function Resolve-OpenALSoftRuntime {
@@ -389,6 +411,14 @@ Write-Host "Compat package: $compatZip"
 if ($IncludeSymbols) {
     Write-Host "Symbols package: $symbolsZip"
 }
+
+$checksumAssets = [System.Collections.Generic.List[string]]::new()
+$checksumAssets.Add($packageZip)
+$checksumAssets.Add($compatZip)
+if ($IncludeSymbols) {
+    $checksumAssets.Add($symbolsZip)
+}
+Write-ReleaseChecksums -OutputPath (Join-Path $releaseRoot "SHA256SUMS.txt") -Assets $checksumAssets.ToArray()
 
 if ($Upload) {
     $resolvedTag = $ReleaseTag

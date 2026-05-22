@@ -168,14 +168,18 @@ int GetConScale(F2DDrawer* drawer, int altval)
 
 
 // [RH] Stretch values to make a 320x200 image best fit the screen
-// without using fractional steppings
-int CleanXfac, CleanYfac;
+// without using fractional steppings.
+//
+// Keep these initialized to safe non-zero defaults because dedicated/headless
+// paths can execute UI/intermission logic before a real framebuffer mode has
+// been established.
+int CleanXfac = 1, CleanYfac = 1;
 
-// [RH] Effective screen sizes that the above scale values give you
-int CleanWidth, CleanHeight;
+// [RH] Effective screen sizes that the above scale values give you.
+int CleanWidth = 320, CleanHeight = 200;
 
-// Above minus 1 (or 1, if they are already 1)
-int CleanXfac_1, CleanYfac_1, CleanWidth_1, CleanHeight_1;
+// Above minus 1 (or 1, if they are already 1).
+int CleanXfac_1 = 1, CleanYfac_1 = 1, CleanWidth_1 = 320, CleanHeight_1 = 200;
 
 
 //==========================================================================

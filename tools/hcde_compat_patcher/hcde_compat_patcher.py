@@ -482,6 +482,15 @@ def decode_text(data: bytes) -> str:
     return data.decode("latin-1", errors="replace")
 
 
+def decode_text_with_encoding(data: bytes) -> tuple[str, str]:
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="replace"), "latin-1"
+
+
 def is_text_candidate(name: str) -> bool:
     normalized = name.replace("\\", "/")
     base = archive_base_name(normalized)
@@ -841,7 +850,7 @@ def archive_suffix(name: str) -> str:
     return Path(normalized).suffix.lower()
 
 
-def strip_script_comment(line: str) -> str:
+def split_script_comment(line: str) -> tuple[str, str]:
     in_quote = False
     quote_char = ""
     escape = False
@@ -860,8 +869,13 @@ def strip_script_comment(line: str) -> str:
             quote_char = char
             continue
         if char == "#" or (char == "/" and index + 1 < len(line) and line[index + 1] == "/"):
-            return line[:index]
-    return line
+            return line[:index], line[index:]
+    return line, ""
+
+
+def strip_script_comment(line: str) -> str:
+    code, _ = split_script_comment(line)
+    return code
 
 
 def strip_slash_comment(line: str) -> str:
@@ -2072,6 +2086,398 @@ def scan_mod(path: Path, slug_override: str | None = None) -> ScanResult:
     )
 
 
+AUTO_RELOCATE_CHECK_IDS = {
+    "pk3-asset-namespace-conflicts",
+    "skininfo-prefix-collisions",
+}
+AUTO_MAPINFO_FIX_CHECK_ID = "mapinfo-unterminated-text-list"
+AUTO_RELOCATE_PREFIX = "hcde_compat/non_asset"
+
+HCDE_ENGINE_CHANGE_HINTS = {
+    "zscript-present": "Review HCDE's ZScript VM/runtime compatibility surface and add an engine or compat-layer gate for unsupported APIs.",
+    "decorate-railattack": "Review dedicated-server rail attack handling and fallback logic in gameplay/network paths.",
+    "player-input-assumptions": "Review player index/input behavior for dedicated server mode and ACS/ZScript helpers.",
+    "dehacked-present": "Confirm the expected DeHackEd/BEX/MBF/MBF21 profile and adjust parser/runtime compatibility flags as needed.",
+    "mapinfo-with-maps": "Review map metadata load order and map-name transitions (MAPxx/E#M# and custom map names).",
+    "eternity-compat-surface": "Extend Eternity compatibility layer support and add focused runtime validation for detected resources.",
+    "eternity-native-mapinfo-precedence": "Adjust EMAPINFO/native MAPINFO precedence rules only if the mod expects alternate priority.",
+    "eternity-edf-thingtypes": "Add or extend EDF-to-HCDE actor binding behavior in the compatibility layer.",
+    "eternity-edf-behavior-patches": "Implement manual EDF behavior shims in HCDE compat code (do not import third-party definitions directly).",
+    "eternity-extradata-references": "Extend ExtraData/XLAT resolution rules if startup logs show unresolved references.",
+    "edge-classic-compat-surface": "Design/extend EDGE compatibility adapter boundaries before runtime enablement.",
+    "edge-ddf-sections": "Extend DDF adapter coverage for detected section kinds and validate merge behavior.",
+    "edge-ddf-neutral-manifest": "Use the neutral manifest to select safe bridge fields and track unsupported properties.",
+    "edge-ddf-manual-properties": "Implement explicit adapter rules for manual DDF properties before enabling them.",
+    "edge-ddf-duplicate-properties": "Define duplicate-property conflict policy in the adapter (do not silently discard intent).",
+    "edge-ddf-candidate-translations": "Review generated ANIMDEFS/SNDINFO candidates and integrate only validated lines.",
+    "edge-ddf-include-order": "Validate DDF include order behavior against HCDE load layering.",
+    "edge-ddf-missing-includes": "Add missing include root resolution logic or require additional mod payload files.",
+    "edge-ddf-include-cycles": "Implement cycle-safe include handling in any runtime DDF adapter.",
+    "edge-ddf-reset-order": "Model reset directive ordering explicitly in adapter logic.",
+    "edge-ddf-definition-conflicts": "Implement conflict resolution policy for duplicate DDF definitions.",
+    "edge-script-runtime-needed": "COAL/Lua/RTS require an explicit sandbox/API layer before runtime support.",
+}
+
+
+def normalize_archive_entry_name(name: str) -> str:
+    return name.replace("\\", "/").lstrip("/")
+
+
+def check_hits_by_id(result: ScanResult, check_id: str) -> list[TextHit]:
+    for check in result.checks:
+        if check.id == check_id:
+            return check.hits
+    return []
+
+
+def write_hcde_engine_change_report(result: ScanResult, out_dir: Path, handled_check_ids: set[str]) -> None:
+    # Keep the report focused on checks that still need manual/engine work after
+    # any automatic transforms have already been applied.
+    unresolved_engine_checks: list[CompatibilityCheck] = []
+    unresolved_other_checks: list[CompatibilityCheck] = []
+    for check in result.checks:
+        if check.id in handled_check_ids:
+            continue
+        if check.id in HCDE_ENGINE_CHANGE_HINTS:
+            unresolved_engine_checks.append(check)
+        elif check.severity in {"manual", "candidate", "blocker"}:
+            unresolved_other_checks.append(check)
+
+    report_data = {
+        "slug": result.slug,
+        "source_path": result.source_path,
+        "source_sha256": result.sha256,
+        "auto_handled_check_ids": sorted(handled_check_ids),
+        "engine_changes_needed": [
+            {
+                "id": check.id,
+                "severity": check.severity,
+                "title": check.title,
+                "detail": check.detail,
+                "hcde_change_hint": HCDE_ENGINE_CHANGE_HINTS.get(check.id, ""),
+                "evidence": [asdict(hit) for hit in check.hits[:20]],
+            }
+            for check in unresolved_engine_checks
+        ],
+        "other_unresolved_checks": [
+            {
+                "id": check.id,
+                "severity": check.severity,
+                "title": check.title,
+                "detail": check.detail,
+                "evidence": [asdict(hit) for hit in check.hits[:20]],
+            }
+            for check in unresolved_other_checks
+        ],
+    }
+
+    (out_dir / "hcde_engine_change_report.json").write_text(
+        json.dumps(report_data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    lines: list[str] = []
+    lines.append(f"# HCDE Engine Change Report: {result.slug}")
+    lines.append("")
+    lines.append("This report lists checks that the auto-attempt patcher did not directly transform.")
+    lines.append("It highlights likely HCDE engine/compatibility-layer work that should happen next.")
+    lines.append("")
+    lines.append(f"- Source: `{Path(result.source_path).name}`")
+    lines.append(f"- SHA-256: `{result.sha256}`")
+    lines.append(f"- Auto-handled checks: `{', '.join(sorted(handled_check_ids)) if handled_check_ids else 'none'}`")
+    lines.append("")
+
+    lines.append("## HCDE Changes Needed")
+    lines.append("")
+    if unresolved_engine_checks:
+        for check in unresolved_engine_checks:
+            lines.append(f"### {check.title}")
+            lines.append("")
+            lines.append(f"- Id: `{check.id}`")
+            lines.append(f"- Severity: `{check.severity}`")
+            lines.append(f"- Why it remains: {check.detail}")
+            lines.append(f"- Suggested HCDE work: {HCDE_ENGINE_CHANGE_HINTS.get(check.id, 'Review engine compatibility layer behavior and add targeted support.')}")
+            if check.hits:
+                lines.append("- Evidence:")
+                for hit in check.hits[:12]:
+                    safe = hit.text.replace("`", "'")
+                    lines.append(f"  - `{hit.entry}:{hit.line}`: `{safe}`")
+            lines.append("")
+    else:
+        lines.append("No unresolved checks were mapped to HCDE engine changes.")
+        lines.append("")
+
+    lines.append("## Other Unresolved Checks")
+    lines.append("")
+    if unresolved_other_checks:
+        for check in unresolved_other_checks:
+            lines.append(f"- `{check.id}` ({check.severity}): {check.title}")
+    else:
+        lines.append("- none")
+    lines.append("")
+
+    (out_dir / "hcde_engine_change_report.md").write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def terminate_mapinfo_assignment_line(line: str) -> tuple[str, bool]:
+    code, comment = split_script_comment(line)
+    trimmed = code.rstrip()
+    if not trimmed:
+        return line, False
+    if trimmed.endswith(";"):
+        return line, False
+    if trimmed.endswith(","):
+        trimmed = trimmed[:-1].rstrip() + ";"
+    else:
+        trimmed += ";"
+    suffix = comment
+    if suffix and not suffix.startswith((" ", "\t")):
+        suffix = " " + suffix
+    return trimmed + suffix, True
+
+
+def auto_fix_mapinfo_text(text: str) -> tuple[str, list[int]]:
+    text_keys = "entertext|exittext|exittextsecret|intertext|intertextsecret"
+    assign_rx = re.compile(rf"^\s*({text_keys})\s*=", re.IGNORECASE)
+    block_start_rx = re.compile(r"^\s*(clusterdef|episode|map)\b", re.IGNORECASE)
+
+    lines = text.splitlines()
+    had_newline = text.endswith("\n")
+    changed_lines: list[int] = []
+    index = 0
+
+    while index < len(lines):
+        stripped = strip_script_comment(lines[index]).strip()
+        match = assign_rx.search(stripped)
+        if match is None:
+            index += 1
+            continue
+
+        if ";" in stripped:
+            index += 1
+            continue
+
+        probe = index + 1
+        while probe < len(lines):
+            probe_line = strip_script_comment(lines[probe]).strip()
+            if ";" in probe_line:
+                break
+
+            if probe_line == "}" or block_start_rx.search(probe_line):
+                target = None
+                for previous in range(probe - 1, index - 1, -1):
+                    if strip_script_comment(lines[previous]).strip():
+                        target = previous
+                        break
+                if target is None:
+                    target = index
+
+                updated_line, changed = terminate_mapinfo_assignment_line(lines[target])
+                if changed:
+                    lines[target] = updated_line
+                    changed_lines.append(target + 1)
+                break
+            probe += 1
+        else:
+            target = None
+            for previous in range(len(lines) - 1, index - 1, -1):
+                if strip_script_comment(lines[previous]).strip():
+                    target = previous
+                    break
+            if target is None:
+                target = index
+
+            updated_line, changed = terminate_mapinfo_assignment_line(lines[target])
+            if changed:
+                lines[target] = updated_line
+                changed_lines.append(target + 1)
+
+        index = max(index + 1, probe)
+
+    rebuilt = "\n".join(lines)
+    if had_newline:
+        rebuilt += "\n"
+    return rebuilt, changed_lines
+
+
+def read_payload_for_auto_attempt(path: Path) -> tuple[dict[str, bytes], str]:
+    suffix = path.suffix.lower()
+    payload: dict[str, bytes] = {}
+
+    if path.is_dir():
+        for entry in sorted(path.rglob("*")):
+            if not entry.is_file():
+                continue
+            rel = entry.relative_to(path).as_posix()
+            try:
+                payload[rel] = entry.read_bytes()
+            except OSError:
+                continue
+        return payload, "directory"
+
+    if suffix in {".pk3", ".zip", ".pkz"}:
+        with zipfile.ZipFile(path, "r") as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                payload[info.filename] = archive.read(info.filename)
+        return payload, "zip"
+
+    return payload, "unsupported"
+
+
+def unique_relocated_entry_name(source_name: str, used: set[str]) -> str:
+    normalized = normalize_archive_entry_name(source_name).replace(":", "_")
+    candidate = f"{AUTO_RELOCATE_PREFIX}/{normalized}"
+    current = candidate
+    serial = 2
+    while current.lower() in used:
+        if "." in candidate:
+            base, ext = candidate.rsplit(".", 1)
+            current = f"{base}_{serial}.{ext}"
+        else:
+            current = f"{candidate}_{serial}"
+        serial += 1
+    used.add(current.lower())
+    return current
+
+
+def write_auto_patch_attempt(result: ScanResult, source_path: Path, out_dir: Path) -> tuple[list[str], set[str]]:
+    notes: list[str] = []
+    handled_check_ids: set[str] = set()
+    payload, payload_kind = read_payload_for_auto_attempt(source_path)
+    if payload_kind == "unsupported":
+        notes.append("Auto attempt skipped: only directory/.pk3/.zip inputs are supported.")
+        return notes, handled_check_ids
+    if not payload:
+        notes.append("Auto attempt skipped: no readable payload entries were found.")
+        return notes, handled_check_ids
+
+    lookup = {
+        normalize_archive_entry_name(name).lower(): name
+        for name in payload.keys()
+    }
+    # Track relocation candidates by originating check id so the engine-change
+    # report can hide only checks that were actually transformed.
+    relocate_entries: set[str] = set()
+    relocate_sources_by_check: dict[str, set[str]] = {check_id: set() for check_id in AUTO_RELOCATE_CHECK_IDS}
+    for check_id in AUTO_RELOCATE_CHECK_IDS:
+        for hit in check_hits_by_id(result, check_id):
+            normalized = normalize_archive_entry_name(hit.entry).lower()
+            resolved = lookup.get(normalized)
+            if resolved is not None:
+                relocate_entries.add(resolved)
+                relocate_sources_by_check[check_id].add(resolved)
+
+    mapinfo_targets: set[str] = set()
+    for hit in check_hits_by_id(result, AUTO_MAPINFO_FIX_CHECK_ID):
+        normalized = normalize_archive_entry_name(hit.entry).lower()
+        resolved = lookup.get(normalized)
+        if resolved is not None:
+            mapinfo_targets.add(resolved)
+
+    if not relocate_entries and not mapinfo_targets:
+        notes.append("Auto attempt found no safe transformations for this mod.")
+        return notes, handled_check_ids
+
+    fixed_payload: dict[str, bytes] = {}
+    used_names: set[str] = set()
+    actions: list[dict[str, object]] = []
+    mapinfo_fix_count = 0
+
+    for source_name in sorted(payload.keys(), key=lambda item: item.lower()):
+        target_name = source_name
+        if source_name in relocate_entries:
+            target_name = unique_relocated_entry_name(source_name, used_names)
+            for check_id, sources in relocate_sources_by_check.items():
+                if source_name in sources:
+                    handled_check_ids.add(check_id)
+            actions.append(
+                {
+                    "action": "relocate_non_asset",
+                    "source": source_name,
+                    "target": target_name,
+                }
+            )
+        else:
+            used_names.add(normalize_archive_entry_name(target_name).lower())
+
+        content = payload[source_name]
+        if source_name in mapinfo_targets:
+            text, encoding = decode_text_with_encoding(content)
+            fixed_text, changed_lines = auto_fix_mapinfo_text(text)
+            if changed_lines:
+                mapinfo_fix_count += len(changed_lines)
+                handled_check_ids.add(AUTO_MAPINFO_FIX_CHECK_ID)
+                try:
+                    content = fixed_text.encode(encoding)
+                except UnicodeEncodeError:
+                    content = fixed_text.encode("utf-8")
+                actions.append(
+                    {
+                        "action": "terminate_mapinfo_text_assignment",
+                        "entry": target_name,
+                        "lines": changed_lines,
+                    }
+                )
+
+        fixed_payload[target_name] = content
+
+    auto_dir = out_dir / "auto_patch_attempt"
+    auto_dir.mkdir(parents=True, exist_ok=True)
+    fixed_archive = auto_dir / f"{result.slug}.hcde-autoattempt.pk3"
+    with zipfile.ZipFile(fixed_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name in sorted(fixed_payload.keys(), key=lambda item: item.lower()):
+            archive.writestr(name, fixed_payload[name])
+
+    summary = {
+        "source": str(source_path.resolve()),
+        "source_sha256": result.sha256,
+        "output_archive": str(fixed_archive.resolve()),
+        "transforms": actions,
+        "counts": {
+            "relocated_entries": sum(1 for item in actions if item["action"] == "relocate_non_asset"),
+            "mapinfo_line_fixes": mapinfo_fix_count,
+        },
+    }
+    (auto_dir / "autopatch_report.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (auto_dir / "README.md").write_text(
+        textwrap.dedent(
+            f"""\
+            # Auto Attempt Patch: {result.slug}
+
+            This folder contains an automatically patched local test copy.
+            It is generated from your local mod input for quick smoke tests and
+            is not meant to be committed to HCDE source control.
+
+            Output archive:
+            - `{fixed_archive.name}`
+
+            Transform counts:
+            - relocated non-asset namespace entries: `{summary["counts"]["relocated_entries"]}`
+            - MAPINFO text terminator fixes: `{summary["counts"]["mapinfo_line_fixes"]}`
+
+            Detailed transform metadata is in `autopatch_report.json`.
+            """
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    notes.append(f"Auto attempt output: {fixed_archive}")
+    notes.append(f"Auto attempt report: {auto_dir / 'autopatch_report.json'}")
+    return notes, handled_check_ids
+
+
 def render_report(result: ScanResult) -> str:
     lines: list[str] = []
     lines.append(f"# HCDE Compat Candidate: {result.slug}")
@@ -2708,7 +3114,7 @@ def render_edge_stage5_validation(result: ScanResult, out_dir: Path | None = Non
     return "\n".join(lines)
 
 
-def write_candidate(result: ScanResult, out_root: Path) -> Path:
+def write_candidate(result: ScanResult, out_root: Path, source_path: Path | None = None, auto_attempt: bool = False) -> Path:
     out_dir = out_root / result.slug
     static_dir = out_dir / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -2760,6 +3166,17 @@ def write_candidate(result: ScanResult, out_root: Path) -> Path:
         newline="\n",
     )
     (static_dir / "decorate.txt").write_text(render_decorate_stub(result), encoding="utf-8", newline="\n")
+    handled_check_ids: set[str] = set()
+    if auto_attempt and source_path is not None:
+        notes, auto_handled = write_auto_patch_attempt(result, source_path, out_dir)
+        if notes:
+            (out_dir / "auto_patch_attempt.md").write_text(
+                "\n".join(f"- {line}" for line in notes) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        handled_check_ids = set(auto_handled)
+    write_hcde_engine_change_report(result, out_dir, handled_check_ids)
     return out_dir
 
 
@@ -2773,6 +3190,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=Path("build") / "compat-candidates",
         help="Output directory for generated candidate folders.",
+    )
+    parser.add_argument(
+        "--auto-attempt",
+        action="store_true",
+        help="Generate a local auto-attempt patched PK3 copy for safe heuristics (review output only).",
     )
     parser.add_argument("--slug", help="Override output slug. Only valid with one input mod.")
     parser.add_argument("--json", action="store_true", help="Print scan metadata JSON to stdout.")
@@ -2790,7 +3212,7 @@ def main(argv: list[str] | None = None) -> int:
     for mod in args.mods:
         try:
             result = scan_mod(mod, slug_override=args.slug)
-            outputs.append(write_candidate(result, args.out))
+            outputs.append(write_candidate(result, args.out, source_path=mod, auto_attempt=args.auto_attempt))
             results.append(result)
         except (OSError, ValueError, zipfile.BadZipFile, struct.error) as exc:
             print(f"{mod}: {exc}", file=sys.stderr)

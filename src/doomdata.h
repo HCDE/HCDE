@@ -376,6 +376,17 @@ struct FMapThing
 	int			FloatbobPhase;
 	int			friendlyseeblocks;
 	FName arg0str;
+
+	// UDMF dynamic-light overrides (parsed from thing keys).
+	bool		LightNoShadowMap;
+	bool		LightDontLightActors;
+	bool		LightDontLightMap;
+	bool		LightNoShadowMapDefined;
+	bool		LightDontLightActorsDefined;
+	bool		LightDontLightMapDefined;
+	double		LightSoftShadowRadius;
+	double		LightLinearity;
+	int			LightShadowMinQuality;
 };
 
 

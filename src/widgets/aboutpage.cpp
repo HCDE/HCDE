@@ -521,7 +521,7 @@ static bool ValidateUpdateUrl(const FString& sourceUrl, FString& normalizedUrl, 
 
 // Robust version number parser. Extracts all numeric components from a string,
 // ignoring leading 'v' or other non-digit separators.
-// Example: "v0.4.2-hotfix1" -> {0, 4, 2, 1}
+// Example: "v0.4.3-hotfix1" -> {0, 4, 3, 1}
 static bool ParseVersionNumbers(const FString& version, std::vector<int>& outParts)
 {
 	const std::string input = version.GetChars();
@@ -689,6 +689,135 @@ if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 	throw "Update URL was rejected: expected a zip package."
 }
 
+function Get-InstallScopedHcdeProcesses {
+	param([Parameter(Mandatory=$true)][string]$Root)
+
+	$results = @()
+	$seen = @{}
+	# Include the launcher so lock waits also account for secondary launchers
+	# started from the same install directory.
+	$candidates = Get-Process -Name hcde,hcdeserv,hcdelaunch -ErrorAction SilentlyContinue
+
+	foreach ($proc in $candidates) {
+		$path = $null
+		try {
+			$path = $proc.Path
+		} catch {
+			$path = $null
+		}
+		if (-not $path) {
+			try {
+				$path = $proc.MainModule.FileName
+			} catch {
+				$path = $null
+			}
+		}
+
+		if ($path -and $path.StartsWith($Root, [System.StringComparison]::OrdinalIgnoreCase)) {
+			if (-not $seen.ContainsKey($proc.Id)) {
+				$results += $proc
+				$seen[$proc.Id] = $true
+			}
+		}
+	}
+
+	return $results
+}
+
+function Wait-ForInstallProcessesToExit {
+	param(
+		[Parameter(Mandatory=$true)][string]$Root,
+		[int]$TimeoutSeconds = 45
+	)
+
+	$deadlineUtc = (Get-Date).ToUniversalTime().AddSeconds([Math]::Max(1, $TimeoutSeconds))
+	while ($true) {
+		$running = @(Get-InstallScopedHcdeProcesses -Root $Root)
+		if ($running.Count -eq 0) {
+			return
+		}
+
+		foreach ($proc in $running) {
+			try {
+				$proc.WaitForExit(400)
+			} catch {
+				# Ignore transient wait errors.
+			}
+		}
+
+		if ((Get-Date).ToUniversalTime() -ge $deadlineUtc) {
+			$names = ($running | ForEach-Object { "{0} (PID {1})" -f $_.ProcessName, $_.Id } | Sort-Object -Unique) -join ', '
+			throw "HCDE processes are still running and holding files: $names"
+		}
+		Start-Sleep -Milliseconds 250
+	}
+}
+
+function Wait-ForFileUnlock {
+	param(
+		[Parameter(Mandatory=$true)][string]$Path,
+		[Parameter(Mandatory=$true)][string]$Root,
+		[int]$TimeoutSeconds = 60
+	)
+
+	if (-not (Test-Path -LiteralPath $Path)) {
+		return
+	}
+
+	$deadlineUtc = (Get-Date).ToUniversalTime().AddSeconds([Math]::Max(1, $TimeoutSeconds))
+	while ($true) {
+		$stream = $null
+		try {
+			$stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+			return
+		} catch {
+			if ((Get-Date).ToUniversalTime() -ge $deadlineUtc) {
+				throw "Timed out waiting for file lock release: $Path ($($_.Exception.Message))"
+			}
+			Wait-ForInstallProcessesToExit -Root $Root -TimeoutSeconds 2
+			Start-Sleep -Milliseconds 250
+		} finally {
+			if ($stream) {
+				$stream.Dispose()
+			}
+		}
+	}
+}
+
+function Copy-TreeWithRetries {
+	param(
+		[Parameter(Mandatory=$true)][string]$SourcePattern,
+		[Parameter(Mandatory=$true)][string]$Destination,
+		[Parameter(Mandatory=$true)][string]$Root,
+		[Parameter(Mandatory=$true)][string]$Phase,
+		[int]$MaxAttempts = 40
+	)
+
+	$attemptLimit = [Math]::Max(1, $MaxAttempts)
+	for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+		try {
+			Copy-Item -Path $SourcePattern -Destination $Destination -Recurse -Force
+			return
+		} catch {
+			if ($attempt -ge $attemptLimit) {
+				throw "$Phase failed after $attempt attempts: $($_.Exception.Message)"
+			}
+
+			$running = @(Get-InstallScopedHcdeProcesses -Root $Root)
+			foreach ($proc in $running) {
+				try {
+					$proc.WaitForExit(500)
+				} catch {
+					# Ignore transient wait errors and keep retrying.
+				}
+			}
+
+			$delay = [Math]::Min(1500, 200 + ($attempt * 50))
+			Start-Sleep -Milliseconds $delay
+		}
+	}
+}
+
 	# Phase 1: Wait for parent process (launcher) and any game/server instances to exit.
 	# This ensures we can overwrite the executables without 'Permission Denied' errors.
 	while (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)
@@ -712,39 +841,12 @@ if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 		throw "Refusing to update at filesystem root: $resolvedInstallDir"
 	}
 
-	# Check for running game or server processes that might be holding file locks.
-	$runningApps = Get-Process | Where-Object {
-		$path = $null
-		try {
-			$path = $_.Path
-		} catch {
-			$path = $null
-		}
-
-		if ($path) {
-			$name = [System.IO.Path]::GetFileName($path).ToLowerInvariant()
-			($name -eq 'hcde.exe' -or $name -eq 'hcdeserv.exe') -and $path.StartsWith($resolvedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)
-		} else { $false }
-		}
-		foreach ($app in $runningApps) {
-			# Allow a grace period for other HCDE processes to shut down.
-			try { $app.WaitForExit(5000) } catch {}
-		}
-
-		$stillRunning = @()
-		foreach ($app in $runningApps) {
-			try {
-				if (-not $app.HasExited) {
-					$stillRunning += $app
-				}
-			} catch {
-				# Ignore transient process-query errors and treat missing entries as exited.
-			}
-		}
-		if ($stillRunning.Count -gt 0) {
-			$names = ($stillRunning | ForEach-Object { $_.ProcessName } | Sort-Object -Unique) -join ', '
-			throw "HCDE processes are still running and holding files: $names"
-		}
+	# Ensure install-local HCDE processes are fully gone and key files are writable.
+	Wait-ForInstallProcessesToExit -Root $resolvedInstallDir -TimeoutSeconds 60
+	$lockSensitiveFiles = @('hcde.exe', 'hcdeserv.exe', 'hcdelaunch.exe')
+	foreach ($fileName in $lockSensitiveFiles) {
+		Wait-ForFileUnlock -Path (Join-Path $resolvedInstallDir $fileName) -Root $resolvedInstallDir -TimeoutSeconds 60
+	}
 
 	$safeVersionTag = ($VersionTag -replace '[^A-Za-z0-9._-]', '_')
 	if ([string]::IsNullOrWhiteSpace($safeVersionTag))
@@ -845,8 +947,9 @@ if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 			throw "Update archive did not contain hcde.exe at payload root: $payloadRoot"
 		}
 
-		# Phase 5: Apply payload by copying over existing files.
-		Copy-Item -Path (Join-Path $payloadRoot '*') -Destination $resolvedInstallDir -Recurse -Force
+		# Phase 5: Apply payload by copying over existing files with lock-aware retries.
+		$payloadPattern = Join-Path $payloadRoot '*'
+		Copy-TreeWithRetries -SourcePattern $payloadPattern -Destination $resolvedInstallDir -Root $resolvedInstallDir -Phase 'Payload copy'
 		"Payload copied from: $payloadRoot" | Add-Content -LiteralPath $updateLog -Encoding utf8
 
 		# Prune old backups to save space (keep last 6).
@@ -877,7 +980,8 @@ if (-not ($uri.AbsolutePath -match '(?i)\.zip$'))
 				$rollbackItems = Get-ChildItem -LiteralPath $rollbackExtractPath -Force
 				if ($rollbackItems.Count -gt 0)
 				{
-					Copy-Item -Path (Join-Path $rollbackExtractPath '*') -Destination $resolvedInstallDir -Recurse -Force
+					$rollbackPattern = Join-Path $rollbackExtractPath '*'
+					Copy-TreeWithRetries -SourcePattern $rollbackPattern -Destination $resolvedInstallDir -Root $resolvedInstallDir -Phase 'Rollback copy'
 					$rollbackSucceeded = $true
 					$statusMessage = "$statusMessage (rollback restored from backup)"
 					"Rollback restored from backup: $backupZip" | Add-Content -LiteralPath $updateLog -Encoding utf8 -ErrorAction SilentlyContinue

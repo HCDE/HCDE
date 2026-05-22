@@ -46,8 +46,36 @@ Useful output files:
   commands and log triage patterns for validating Stage 4 candidate
   translations against a specific IWAD/resource set.
 - `metadata.json`: source path, SHA-256, archive entries, and scanner results.
+- `hcde_engine_change_report.md` / `hcde_engine_change_report.json`: unresolved
+  checks mapped to likely HCDE engine/compatibility-layer work.
 - `suggested_hcde_mod_compat_entry.cpp.txt`: matcher stub for review.
 - `static/decorate.txt`: empty DECORATE patch stub with TODO notes.
+
+Optional auto-attempt mode:
+
+```powershell
+python tools\hcde_compat_patcher\hcde_compat_patcher.py C:\Mods\example.pk3 --auto-attempt
+```
+
+When `--auto-attempt` is enabled and safe transformations are available, the
+candidate also includes:
+
+- `auto_patch_attempt/<slug>.hcde-autoattempt.pk3`: a local test copy with safe
+  heuristic transforms applied.
+- `auto_patch_attempt/autopatch_report.json`: machine-readable transform report.
+- `auto_patch_attempt/README.md`: summary of what was changed.
+
+Current safe heuristics:
+
+- Relocate non-asset files found in sprite/texture/sound namespaces to
+  `hcde_compat/non_asset/...` inside the generated local test copy.
+- Attempt to repair MAPINFO text assignments that have no clear terminator by
+  inserting a trailing `;` (or replacing a trailing `,` with `;`).
+
+This mode is for local smoke testing only. Do not commit generated third-party
+content or treat auto-attempt output as approved compat code. If a candidate
+still needs engine-side work, use `hcde_engine_change_report.md` to see which
+HCDE areas likely need changes.
 
 To use a candidate:
 

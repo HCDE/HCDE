@@ -275,20 +275,27 @@ CCMD(clean)
 
 void V_UpdateModeSize (int width, int height)
 {
+	// Headless/dedicated flows may execute this before a fully initialized
+	// framebuffer exists. Clamp to safe dimensions so scale divisors stay valid.
+	const int fbw = screen != nullptr ? screen->GetWidth() : width;
+	const int fbh = screen != nullptr ? screen->GetHeight() : height;
+	const int safeFbw = max(fbw, 1);
+	const int safeFbh = max(fbh, 1);
+
 	// This calculates the menu scale.
 	// The optimal scale will always be to fit a virtual 640 pixel wide display onto the screen.
 	// Exceptions are made for a few ranges where the available virtual width is > 480.
 
 	// This reference size is being used so that on 800x450 (small 16:9) a scale of 2 gets used.
 
-	CleanXfac = max(min(screen->GetWidth() / 400, screen->GetHeight() / 240), 1);
+	CleanXfac = max(min(safeFbw / 400, safeFbh / 240), 1);
 	if (CleanXfac >= 4) CleanXfac--;	// Otherwise we do not have enough space for the episode/skill menus in some languages.
 	CleanYfac = CleanXfac;
-	CleanWidth = screen->GetWidth() / CleanXfac;
-	CleanHeight = screen->GetHeight() / CleanYfac;
+	CleanWidth = max(safeFbw / max(CleanXfac, 1), 1);
+	CleanHeight = max(safeFbh / max(CleanYfac, 1), 1);
 
-	int w = screen->GetWidth();
-	int h = screen->GetHeight();
+	int w = safeFbw;
+	int h = safeFbh;
 
 	// clamp screen aspect ratio to 17:10, for anything wider the width will be reduced
 	double aspect = (double)w / h;
@@ -304,9 +311,10 @@ void V_UpdateModeSize (int width, int height)
 	else if (w < 1920) factor = 2;
 	else factor = int(factor * 0.7);
 
+	if (factor < 1) factor = 1;
 	CleanYfac_1 = CleanXfac_1 = factor;// max(1, int(factor * 0.7));
-	CleanWidth_1 = width / CleanXfac_1;
-	CleanHeight_1 = height / CleanYfac_1;
+	CleanWidth_1 = max(width, 1) / max(CleanXfac_1, 1);
+	CleanHeight_1 = max(height, 1) / max(CleanYfac_1, 1);
 
 	DisplayWidth = width;
 	DisplayHeight = height;

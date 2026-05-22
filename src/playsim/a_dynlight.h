@@ -293,9 +293,12 @@ public:
 
 	float radius;			// The maximum size the light can be with its current settings.
 	float m_currentRadius;	// The current light size.
+	float softShadowRadius;	// Per-light soft shadow radius override from map thing (negative = unset).
+	float linearity;		// Per-light falloff curve override from map thing (negative = unset).
 	int m_tickCount;
 	int m_lastUpdate;
 	int mShadowmapIndex;
+	int shadowMinQuality;	// Minimum shadowmap quality required for this light to cast shadowmaps.
 	bool m_active;
 	bool visibletoplayer;
 	bool shadowmapped;

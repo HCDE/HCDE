@@ -210,7 +210,7 @@ void WriteUserCmdMessage(const usercmd_t& cmd, const usercmd_t* basis, TArrayVie
 // of the command when getting the length of the stream.
 void SkipUserCmdMessage(TArrayView<uint8_t>& stream)
 {
-	while (true)
+	while (stream.Size() > 0u)
 	{
 		const uint8_t type = ReadInt8(stream);
 		if (type == DEM_USERCMD)
@@ -245,7 +245,11 @@ void SkipUserCmdMessage(TArrayView<uint8_t>& stream)
 		}
 		else
 		{
+			const size_t before = stream.Size();
 			Net_SkipCommand(type, stream);
+			// Keep this resilient against malformed/truncated command records.
+			if (stream.Size() >= before)
+				break;
 		}
 	}
 }
@@ -261,18 +265,34 @@ void ReadUserCmdMessage(TArrayView<uint8_t>& stream, int player, int tic)
 
 	// Skip until we reach the player command. Event data will get read off once the
 	// tick is actually executed.
-	int type;
-	while ((type = ReadInt8(stream)) != DEM_USERCMD && type != DEM_EMPTYUSERCMD)
+	int type = DEM_EMPTYUSERCMD;
+	bool foundUserCmd = false;
+	while (stream.Size() > 0u)
+	{
+		type = ReadInt8(stream);
+		if (type == DEM_USERCMD || type == DEM_EMPTYUSERCMD)
+		{
+			foundUserCmd = true;
+			break;
+		}
+
+		const size_t before = stream.Size();
 		Net_SkipCommand(type, stream);
+		if (stream.Size() >= before)
+			break;
+	}
 
 	// Subtract a byte to account for the fact the stream head is now sitting on the
 	// user command. This gets cleared first because it previously got cleared after
 	// executing but that breaks packet-server mode and I have no idea what side effects
 	// might happen if it's not wiped first.
+	const size_t payloadBytes = foundUserCmd
+		? size_t(stream.Data() - start - 1)
+		: size_t(stream.Data() - start);
 	curTic.Data.SetData(nullptr, 0u);
-	curTic.Data.SetData(start, int(stream.Data() - start - 1));
+	curTic.Data.SetData(start, int(payloadBytes));
 
-	if (type == DEM_USERCMD)
+	if (foundUserCmd && type == DEM_USERCMD)
 	{
 		UnpackUserCmd(ticCmd,
 			tic > 0 ? &ClientStates[player].Tics[(tic - 1) % BACKUPTICS].Command : nullptr, stream);

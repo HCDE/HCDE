@@ -121,6 +121,14 @@ namespace
 		return cap;
 	}
 
+	int ResolveShadowMinQuality(int value)
+	{
+		if (value <= 0) return 0;
+		// Support small tier-style values as well as direct texture-size values.
+		if (value <= 8) return std::min(8192, 128 << value); // 1->256, 2->512, 3->1024, ...
+		return value;
+	}
+
 	struct FShadowProfileOverrideState
 	{
 		const level_info_t* ActiveMap = nullptr;
@@ -135,6 +143,7 @@ namespace
 	};
 
 	int gShadowRuntimeBudgetCap = 1024;
+	int gShadowLightsGatedByQuality = 0;
 
 	void ApplyMapShadowProfileOverride(const level_info_t* levelInfo)
 	{
@@ -302,6 +311,7 @@ void CollectLights(FLevelLocals* Level, const DVector3& viewPos, int viewPortalG
 {
 	IShadowMap* sm = &screen->mShadowMap;
 	int lightindex = 0;
+	int lightsGatedByQuality = 0;
 	// Respect both the manual gl_shadowmap_maxlights and the dynamic runtime budget.
 	int shadowLightLimit = std::min(int(gl_shadowmap_maxlights), gShadowRuntimeBudgetCap);
 
@@ -319,6 +329,13 @@ void CollectLights(FLevelLocals* Level, const DVector3& viewPos, int viewPortalG
 	{
 		IShadowMap::LightsProcessed++;
 		light->mShadowmapIndex = 1024; // Default to 'no shadowmap' index
+
+		const int minShadowQuality = ResolveShadowMinQuality(light->shadowMinQuality);
+		if (minShadowQuality > 0 && int(gl_shadowmap_quality) < minShadowQuality)
+		{
+			lightsGatedByQuality++;
+			continue;
+		}
 
 		// HCDE fallback path: treat active dynamic lights as shadow candidates
 		// when force-all-lights is enabled, unless the light explicitly opts out.
@@ -364,6 +381,7 @@ void CollectLights(FLevelLocals* Level, const DVector3& viewPos, int viewPortalG
 	{
 		IShadowMap::LightsBudgetedOut = 0;
 	}
+	gShadowLightsGatedByQuality = lightsGatedByQuality;
 
 	// Update the number of active rows to process in the shadowmap shader.
 	sm->SetActiveLightRows(lightindex);
@@ -409,6 +427,30 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			CollectLights(camera->Level, viewPos, viewPortalGroup);
 		});
 		screen->UpdateShadowMap();
+
+		// Optional one-line diagnostics while the shadowmap pass is active.
+		// Useful for validating candidate selection and per-light quality gating.
+		if (hcde_shadow_debuggate && mainview && toscreen && camera != nullptr && camera->Level != nullptr)
+		{
+			static uint64_t nextActiveLogMs = 0;
+			const uint64_t nowMs = I_msTime();
+			if (nowMs >= nextActiveLogMs)
+			{
+				nextActiveLogMs = nowMs + 1500;
+				Printf("HCDE shadow active: quality=%d processed=%d eligible=%d shadowmapped=%d dropped=%d rows=%d cap=%d/%d adaptive=%s\n",
+					int(gl_shadowmap_quality),
+					IShadowMap::LightsProcessed,
+					IShadowMap::LightsEligible,
+					IShadowMap::LightsShadowmapped,
+					IShadowMap::LightsBudgetedOut,
+					IShadowMap::LightRowsUpdated,
+					IShadowMap::BudgetRuntimeCap,
+					IShadowMap::BudgetHardCap,
+					IShadowMap::BudgetAdaptiveEnabled ? "on" : "off");
+				Printf("HCDE shadow gate detail: quality_gated=%d\n",
+					gShadowLightsGatedByQuality);
+			}
+		}
 	}
 	else
 	{

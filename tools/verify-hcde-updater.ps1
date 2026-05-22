@@ -72,6 +72,61 @@ function Get-PayloadRoot {
     return $payloadRoot
 }
 
+function Wait-ForFileUnlock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$TimeoutSeconds = 45
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $deadlineUtc = (Get-Date).ToUniversalTime().AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    while ($true) {
+        $stream = $null
+        try {
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            return
+        }
+        catch {
+            if ((Get-Date).ToUniversalTime() -ge $deadlineUtc) {
+                throw "Timed out waiting for file lock release: $Path ($($_.Exception.Message))"
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        finally {
+            if ($stream) {
+                $stream.Dispose()
+            }
+        }
+    }
+}
+
+function Copy-TreeWithRetries {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePattern,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [int]$MaxAttempts = 35
+    )
+
+    $attemptLimit = [Math]::Max(1, $MaxAttempts)
+    for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+        try {
+            Copy-Item -Path $SourcePattern -Destination $Destination -Recurse -Force
+            return
+        }
+        catch {
+            if ($attempt -ge $attemptLimit) {
+                throw "$Phase failed after $attempt attempts: $($_.Exception.Message)"
+            }
+            $delay = [Math]::Min(1500, 200 + ($attempt * 50))
+            Start-Sleep -Milliseconds $delay
+        }
+    }
+}
+
 function Invoke-HcdeUpdaterSimulation {
     param(
         [string]$InstallDir,
@@ -117,6 +172,10 @@ function Invoke-HcdeUpdaterSimulation {
     ) | Out-File -LiteralPath $lockFile -Encoding utf8 -Force
 
     try {
+        foreach ($name in @("hcde.exe", "hcdeserv.exe", "hcdelaunch.exe")) {
+            Wait-ForFileUnlock -Path (Join-Path $resolvedInstallDir $name) -TimeoutSeconds 45
+        }
+
         $backupItems = @(Get-ChildItem -LiteralPath $resolvedInstallDir -Force | Where-Object { $_.Name -ne "backups" })
         if ($backupItems.Count -gt 0) {
             Compress-Archive -Path ($backupItems.FullName) -DestinationPath $backupZip -Force
@@ -132,7 +191,7 @@ function Invoke-HcdeUpdaterSimulation {
             throw "Update archive did not contain hcde.exe at payload root: $payloadRoot"
         }
 
-        Copy-Item -Path (Join-Path $payloadRoot "*") -Destination $resolvedInstallDir -Recurse -Force
+        Copy-TreeWithRetries -SourcePattern (Join-Path $payloadRoot "*") -Destination $resolvedInstallDir -Phase "Payload copy"
         "Payload copied from: $payloadRoot" | Add-Content -LiteralPath $updateLog -Encoding utf8
         $status = "success"
         $statusMessage = "Update applied successfully."
@@ -148,7 +207,7 @@ function Invoke-HcdeUpdaterSimulation {
                 Expand-Archive -LiteralPath $backupZip -DestinationPath $rollbackExtractPath -Force
                 $rollbackItems = @(Get-ChildItem -LiteralPath $rollbackExtractPath -Force)
                 if ($rollbackItems.Count -gt 0) {
-                    Copy-Item -Path (Join-Path $rollbackExtractPath "*") -Destination $resolvedInstallDir -Recurse -Force
+                    Copy-TreeWithRetries -SourcePattern (Join-Path $rollbackExtractPath "*") -Destination $resolvedInstallDir -Phase "Rollback copy"
                     $rollbackSucceeded = $true
                     $statusMessage = "$statusMessage (rollback restored from backup)"
                 } else {
@@ -250,6 +309,28 @@ try {
     Assert-True ($resultSuccess.Status -eq "success") "success simulation did not report success"
     Assert-True (Test-Path -LiteralPath (Join-Path $install "new-marker.txt")) "success simulation did not copy payload"
     Write-Host "Updater success path (backup+replace): PASS" -ForegroundColor Green
+
+    "old build lock retry" | Set-Content -LiteralPath (Join-Path $install "hcde.exe") -Encoding ASCII
+    $lockJob = Start-Job -ScriptBlock {
+        param([string]$Path)
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try {
+            Start-Sleep -Seconds 3
+        }
+        finally {
+            $stream.Dispose()
+        }
+    } -ArgumentList (Join-Path $install "hcde.exe")
+    try {
+        $resultLockRetry = Invoke-HcdeUpdaterSimulation -InstallDir $install -ZipPath $validZip -VersionTag "v-verify-lock-retry" -LockStaleMinutes $StaleLockMinutes
+        Assert-True ($resultLockRetry.Status -eq "success") "transient file-lock simulation did not recover"
+        Write-Host "Updater transient file-lock retry path: PASS" -ForegroundColor Green
+    }
+    finally {
+        Wait-Job -Job $lockJob -ErrorAction SilentlyContinue | Out-Null
+        Receive-Job -Job $lockJob -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $lockJob -Force -ErrorAction SilentlyContinue
+    }
 
     "old build again" | Set-Content -LiteralPath (Join-Path $install "hcde.exe") -Encoding ASCII
     "stable marker" | Set-Content -LiteralPath (Join-Path $install "stable-marker.txt") -Encoding ASCII

@@ -1318,6 +1318,12 @@ void MapLoader::LoadThings (MapData * map)
 		mti[i].Alpha = -1;
 		mti[i].Health = 1;
 		mti[i].FloatbobPhase = -1;
+		mti[i].LightNoShadowMapDefined = false;
+		mti[i].LightDontLightActorsDefined = false;
+		mti[i].LightDontLightMapDefined = false;
+		mti[i].LightSoftShadowRadius = -1.0;
+		mti[i].LightLinearity = -1.0;
+		mti[i].LightShadowMinQuality = -1;
 
 		mti[i].pos.X = LittleShort(mt->x);
 		mti[i].pos.Y = LittleShort(mt->y);
@@ -1411,6 +1417,12 @@ void MapLoader::LoadThings2 (MapData * map)
 		mti[i].Health = 1;
 		mti[i].FloatbobPhase = -1;
 		mti[i].friendlyseeblocks = -1;
+		mti[i].LightNoShadowMapDefined = false;
+		mti[i].LightDontLightActorsDefined = false;
+		mti[i].LightDontLightMapDefined = false;
+		mti[i].LightSoftShadowRadius = -1.0;
+		mti[i].LightLinearity = -1.0;
+		mti[i].LightShadowMinQuality = -1;
 	}
 }
 

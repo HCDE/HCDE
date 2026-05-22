@@ -147,6 +147,6 @@ void AddLightToList(FDynLightData &dld, int group, FDynamicLight * light, bool f
 	data[11] = lightType;
 	data[12] = spotInnerAngle;
 	data[13] = spotOuterAngle;
-	data[14] = 0.0f; // unused
-	data[15] = 0.0f; // unused
+	data[14] = light->linearity;		// per-light linearly override, negative = unset
+	data[15] = light->softShadowRadius;	// per-light soft shadow radius override, negative = unset
 }

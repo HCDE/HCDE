@@ -69,6 +69,9 @@ class HcdeCompatPatcherTests(unittest.TestCase):
             self.assertIn("zscript", result.surfaces)
             self.assertTrue(any(check.id == "zscript-present" for check in result.checks))
             self.assertTrue((out / "report.md").exists())
+            self.assertTrue((out / "hcde_engine_change_report.md").exists())
+            engine_report = (out / "hcde_engine_change_report.md").read_text(encoding="utf-8")
+            self.assertIn("zscript-present", engine_report)
             self.assertTrue((out / "static" / "decorate.txt").exists())
 
     def test_zip_scan_detects_eternity_surfaces(self) -> None:
@@ -313,6 +316,52 @@ class HcdeCompatPatcherTests(unittest.TestCase):
             validation = (out / "edge_validation.md").read_text(encoding="utf-8")
             self.assertIn("DDF Definition Conflicts", validation)
             self.assertIn("missing.ddf", validation)
+
+    def test_auto_attempt_writes_local_fixed_pk3_for_safe_transforms(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod = root / "AutoAttempt.pk3"
+            with zipfile.ZipFile(mod, "w") as zf:
+                zf.writestr("Patches/desktop.ini", "[LocalizedFileNames]\n")
+                zf.writestr(
+                    "MAPINFO",
+                    "map MAP01 \"Entry\"\n{\n"
+                    "  intertext =\n"
+                    "  \"Line one\",\n"
+                    "}\n",
+                )
+
+            result = patcher.scan_mod(mod)
+            out = patcher.write_candidate(result, root / "out", source_path=mod, auto_attempt=True)
+
+            auto_dir = out / "auto_patch_attempt"
+            fixed_archive = auto_dir / f"{result.slug}.hcde-autoattempt.pk3"
+            self.assertTrue(fixed_archive.exists())
+            self.assertTrue((auto_dir / "autopatch_report.json").exists())
+
+            with zipfile.ZipFile(fixed_archive, "r") as zf:
+                names = {name.replace("\\", "/") for name in zf.namelist()}
+                self.assertIn("hcde_compat/non_asset/Patches/desktop.ini", names)
+                mapinfo_text = zf.read("MAPINFO").decode("utf-8")
+                self.assertIn("\"Line one\";", mapinfo_text)
+
+            report = json.loads((auto_dir / "autopatch_report.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(report["counts"]["relocated_entries"], 1)
+            self.assertGreaterEqual(report["counts"]["mapinfo_line_fixes"], 1)
+
+    def test_auto_attempt_keeps_unhandled_checks_in_engine_report(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod = root / "ZscriptOnly.pk3"
+            with zipfile.ZipFile(mod, "w") as zf:
+                zf.writestr("zscript/main.zs", "class Example : Actor {}\n")
+
+            result = patcher.scan_mod(mod)
+            out = patcher.write_candidate(result, root / "out", source_path=mod, auto_attempt=True)
+
+            engine_report = (out / "hcde_engine_change_report.md").read_text(encoding="utf-8")
+            self.assertIn("zscript-present", engine_report)
+            self.assertIn("ZScript is present", engine_report)
 
 
 if __name__ == "__main__":

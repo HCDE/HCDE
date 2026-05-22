@@ -13,12 +13,24 @@ class HCDEPinkValleyCarnageCompat : EventHandler replaces Carnage
 {
 	private clearscope PlayerPawn GetPrimaryPlayerMo()
 	{
-		if (!playeringame[0])
+		// Dedicated-join sessions can make player 0 invalid while the active human
+		// client is in another slot. Pick the first live pawn instead of assuming
+		// slot zero exists.
+		for (int i = 0; i < MAXPLAYERS; i++)
 		{
-			return null;
+			if (!playeringame[i])
+			{
+				continue;
+			}
+
+			let pawn = players[i].mo;
+			if (pawn != null)
+			{
+				return pawn;
+			}
 		}
 
-		return players[0].mo;
+		return null;
 	}
 
 	override void WorldThingDied(WorldEvent e)
@@ -61,14 +73,124 @@ class HCDEPinkValleyHerramientasCompat : EventHandler replaces HERRAMIENTAS
 	private int RecoverCooldownTicks;
 	private bool StartupValidated;
 
-	private clearscope PlayerPawn GetPrimaryPlayerMo()
+	private bool IsMononoMap()
 	{
-		if (!playeringame[0])
+		if (level == null)
 		{
-			return null;
+			return false;
 		}
 
-		return players[0].mo;
+		if (
+			level.MapName.CompareNoCase("MONONO") == 0 ||
+			level.MapName.CompareNoCase("I_WANT_MY_MONONO") == 0 ||
+			level.LevelName.CompareNoCase("WHERES MONONO?") == 0
+		)
+		{
+			return true;
+		}
+
+		// Some handoff paths expose map identity through LevelInfo fields first.
+		if (
+			level.info.MapName.CompareNoCase("MONONO") == 0 ||
+			level.info.MapName.CompareNoCase("I_WANT_MY_MONONO") == 0 ||
+			level.info.LevelName.CompareNoCase("WHERES MONONO?") == 0 ||
+			level.info.MapLabel.CompareNoCase("MONONO") == 0
+		)
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	private void RestorePlayableState(PlayerPawn primary)
+	{
+		if (primary.Speed < 0.40)
+		{
+			primary.Speed = 0.40;
+		}
+
+		primary.reactiontime = 0;
+
+		if (primary.player != null)
+		{
+			primary.player.cheats &= ~(CF_FROZEN | CF_TOTALLYFROZEN);
+		}
+	}
+
+	private bool NeedsStartupRecovery(PlayerPawn primary)
+	{
+		bool inHardOob =
+			(primary.Pos.X > MononoOobWorldLimit || primary.Pos.X < -MononoOobWorldLimit) ||
+			(primary.Pos.Y > MononoOobWorldLimit || primary.Pos.Y < -MononoOobWorldLimit);
+
+		if (inHardOob)
+		{
+			return true;
+		}
+
+		bool outsideSpawnLane =
+			(primary.Pos.X < (MononoSafeSpawn.X - MononoSafeMaxDist)) ||
+			(primary.Pos.X > (MononoSafeSpawn.X + MononoSafeMaxDist)) ||
+			(primary.Pos.Y < (MononoSafeSpawn.Y - MononoSafeMaxDist)) ||
+			(primary.Pos.Y > (MononoSafeSpawn.Y + MononoSafeMaxDist));
+
+		if (outsideSpawnLane)
+		{
+			return true;
+		}
+
+		if (primary.Speed < 0.05)
+		{
+			return true;
+		}
+
+		return primary.player != null && (primary.player.cheats & (CF_FROZEN | CF_TOTALLYFROZEN)) != 0;
+	}
+
+	private void RecoverToPlayableSpawn(PlayerPawn primary)
+	{
+		vector3 spawnPos = MononoSafeSpawn;
+		double spawnAngle = 180.0;
+
+		if (primary.player != null)
+		{
+			let pnum = level.PlayerNum(primary.player);
+			if (pnum >= 0)
+			{
+				let [pickedPos, pickedAngle] = level.PickPlayerStart(pnum, PPS_NOBLOCKINGCHECK);
+				if (pickedPos.X != 0.0 || pickedPos.Y != 0.0 || pickedPos.Z != 0.0)
+				{
+					spawnPos = pickedPos;
+					spawnAngle = pickedAngle;
+				}
+			}
+		}
+
+		let moved = primary.Teleport(spawnPos, spawnAngle, TF_FORCED | TF_NOFOG);
+		if (!moved)
+		{
+			primary.SetOrigin((spawnPos.X, spawnPos.Y, spawnPos.Z), false);
+		}
+	}
+
+	private clearscope PlayerPawn GetPrimaryPlayerMo()
+	{
+		for (int i = 0; i < MAXPLAYERS; i++)
+		{
+			if (!playeringame[i])
+			{
+				continue;
+			}
+
+			let pawn = players[i].mo;
+			if (pawn != null)
+			{
+				return pawn;
+			}
+		}
+
+		return null;
 	}
 
 	override void WorldLoaded(WorldEvent e)
@@ -84,7 +206,7 @@ class HCDEPinkValleyHerramientasCompat : EventHandler replaces HERRAMIENTAS
 
 	override void WorldTick()
 	{
-		if (level == null || level.MapName != "MONONO")
+		if (!IsMononoMap())
 		{
 			return;
 		}
@@ -101,30 +223,29 @@ class HCDEPinkValleyHerramientasCompat : EventHandler replaces HERRAMIENTAS
 		if (!StartupValidated)
 		{
 			StartupTicks++;
-			if (StartupTicks >= 4)
+			RestorePlayableState(primary);
+
+			if (StartupTicks >= 4 && NeedsStartupRecovery(primary))
 			{
-				let startupMoved = primary.Teleport(MononoSafeSpawn, 180.0, TF_FORCED | TF_NOFOG);
-				if (!startupMoved)
-				{
-					primary.SetOrigin((MononoSafeSpawn.X, MononoSafeSpawn.Y, primary.Pos.Z), false);
-				}
-
-				if (primary.Speed < 0.40)
-				{
-					primary.Speed = 0.40;
-				}
-
-				StartupValidated = true;
+				RecoverToPlayableSpawn(primary);
+				RestorePlayableState(primary);
 				RecoverCooldownTicks = 0;
 				TrapTicks = 0;
+			}
+
+			// Keep the guard active for a short grace window to absorb delayed
+			// script-side speed/freeze changes on network joins.
+			if (StartupTicks >= 70 || !NeedsStartupRecovery(primary))
+			{
+				StartupValidated = true;
 			}
 		}
 
 		// A_NEW_DAY can leave speed clamped to 0 at level exit. Keep a short MONONO
 		// startup window that reasserts playable speed.
-		if (StartupTicks < 700 && primary.Speed < 0.25)
+		if (StartupTicks < 700)
 		{
-			primary.Speed = 0.40;
+			RestorePlayableState(primary);
 		}
 
 		// Runtime compatibility guard: if the player is shoved into far out-of-
@@ -151,10 +272,7 @@ class HCDEPinkValleyHerramientasCompat : EventHandler replaces HERRAMIENTAS
 			return;
 		}
 
-		if (primary.Speed < 0.10)
-		{
-			primary.Speed = 0.30;
-		}
+		RestorePlayableState(primary);
 
 		TrapTicks++;
 		if (TrapTicks < 35)
@@ -162,16 +280,8 @@ class HCDEPinkValleyHerramientasCompat : EventHandler replaces HERRAMIENTAS
 			return;
 		}
 
-		let recovered = primary.Teleport(MononoSafeSpawn, 180.0, TF_FORCED | TF_NOFOG);
-		if (!recovered)
-		{
-			primary.SetOrigin((MononoSafeSpawn.X, MononoSafeSpawn.Y, primary.Pos.Z), false);
-		}
-
-		if (primary.Speed < 0.40)
-		{
-			primary.Speed = 0.40;
-		}
+		RecoverToPlayableSpawn(primary);
+		RestorePlayableState(primary);
 
 		RecoverCooldownTicks = 35;
 		TrapTicks = 0;

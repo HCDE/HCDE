@@ -141,7 +141,9 @@ SKY1 = SKY1, 0
 
 MAP PRUEBAS "PICO PALQUE LEE"
 {
-NEXT = MAP01
+// Keep this diagnostic map inside the Pink Valley map cycle. Falling back to
+// MAP01 here can jump into IWAD progression and mix unrelated map resources.
+NEXT = A_NEW_DAY
 SKY1 = SKY1, 0
 NoIntermission
 }

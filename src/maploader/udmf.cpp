@@ -506,6 +506,12 @@ public:
 		th->Alpha = -1;
 		th->Health = 1;
 		th->FloatbobPhase = -1;
+		th->LightNoShadowMapDefined = false;
+		th->LightDontLightActorsDefined = false;
+		th->LightDontLightMapDefined = false;
+		th->LightSoftShadowRadius = -1.0;
+		th->LightLinearity = -1.0;
+		th->LightShadowMinQuality = -1;
 		sc.MustGetToken('{');
 		while (!sc.CheckToken('}'))
 		{
@@ -780,11 +786,38 @@ public:
 				break;
 
 			case NAME_light_softshadowradius:
+				CHECK_N(Zd | Zdt)
+				th->LightSoftShadowRadius = CheckFloat(key);
+				break;
+
 			case NAME_light_linearity:
+				CHECK_N(Zd | Zdt)
+				th->LightLinearity = CheckFloat(key);
+				break;
+
 			case NAME_light_noshadowmap:
+				CHECK_N(Zd | Zdt)
+				th->LightNoShadowMapDefined = true;
+				th->LightNoShadowMap = !!CheckBool(key);
+				break;
+
 			case NAME_light_dontlightactors:
+				CHECK_N(Zd | Zdt)
+				th->LightDontLightActorsDefined = true;
+				th->LightDontLightActors = !!CheckBool(key);
+				break;
+
 			case NAME_light_dontlightmap:
+				CHECK_N(Zd | Zdt)
+				th->LightDontLightMapDefined = true;
+				th->LightDontLightMap = !!CheckBool(key);
+				break;
+
 			case NAME_light_shadowminquality:
+				CHECK_N(Zd | Zdt)
+				th->LightShadowMinQuality = CheckInt(key);
+				break;
+
 			case NAME_lm_suncolor:
 			case NAME_lm_sunintensity:
 			case NAME_lm_sampledist:

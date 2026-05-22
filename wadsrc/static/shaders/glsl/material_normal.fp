@@ -31,6 +31,11 @@ vec3 lightContribution(int i, vec3 normal)
 	if (dotprod < -0.0001) return vec3(0.0);	// light hits from the backside. This can happen with full sector light lists and must be rejected for all cases. Note that this can cause precision issues.
 
 	float attenuation = clamp((lightpos.w - lightdistance) / lightpos.w, 0.0, 1.0);
+	if (lightspot2.z >= 0.0)
+	{
+		float falloffExp = mix(2.0, 1.0, clamp(lightspot2.z, 0.0, 1.0));
+		attenuation = pow(attenuation, falloffExp);
+	}
 
 	if (lightspot1.w == 1.0)
 		attenuation *= spotLightAttenuation(lightpos, lightspot1.xyz, lightspot2.x, lightspot2.y);
@@ -42,7 +47,7 @@ vec3 lightContribution(int i, vec3 normal)
 
 	if (attenuation > 0.0) // Skip shadow map test if possible
 	{
-		attenuation *= shadowAttenuation(lightpos, lightcolor.a);
+		attenuation *= shadowAttenuation(lightpos, lightcolor.a, lightspot2.w);
 		return lightcolor.rgb * attenuation;
 	}
 	else
