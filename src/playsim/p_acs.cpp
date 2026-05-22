@@ -5100,6 +5100,19 @@ static int DoGetCVar(FBaseCVar *cvar, bool is_string)
 	}
 }
 
+static int ResolveACSContextPlayerNum(AActor *activator)
+{
+	if (activator && activator->player)
+	{
+		return int(activator->player - players);
+	}
+	if ((unsigned)consoleplayer < MAXPLAYERS && playeringame[consoleplayer])
+	{
+		return consoleplayer;
+	}
+	return -1;
+}
+
 int DLevelScript::SetUserCVar(int playernum, const char *cvarname, int value, bool is_string)
 {
 	if ((unsigned)playernum >= MAXPLAYERS || !Level->PlayerInGame(playernum))
@@ -5979,7 +5992,7 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, int32_t *args, int &
 
 		case ACSF_GetCVarString:
 			MIN_ARG_COUNT(1);
-			return DoGetCVar(GetCVar(activator && activator->player ? int(activator->player - players) : -1, Level->Behaviors.LookupString(args[0])), true);
+			return DoGetCVar(GetCVar(ResolveACSContextPlayerNum(activator), Level->Behaviors.LookupString(args[0])), true);
 
 		case ACSF_SetCVar:
 			MIN_ARG_COUNT(2);
@@ -8979,6 +8992,14 @@ scriptwait:
 					case 1:		// fade out
 						{
 							float fadeTime = (optstart < sp) ? ACSToFloat(Stack[optstart]) : 0.5f;
+							if (holdTime <= 0.f && fadeTime <= 0.f)
+							{
+								// Compatibility: Skulltag/Zandronum mods often refresh this every tic.
+								// Ensure it survives one frame so the counter is visible.
+								const float minHudDuration = 1.f / TICRATE;
+								holdTime = minHudDuration;
+								fadeTime = minHudDuration;
+							}
 							alpha = (optstart < sp-1) ? ACSToFloat(Stack[optstart+1]) : 1.f;
 							msg = Create<DHUDMessageFadeOut> (activefont, work.GetChars(), x, y, hudwidth, hudheight, color, holdTime, fadeTime);
 						}
@@ -10050,7 +10071,7 @@ scriptwait:
 
 		case PCD_GETCVAR:
 			// This should not use Level->PlayerNum!
-			STACK(1) = DoGetCVar(GetCVar(activator && activator->player? int(activator->player - players) : -1, Level->Behaviors.LookupString(STACK(1))), false);
+			STACK(1) = DoGetCVar(GetCVar(ResolveACSContextPlayerNum(activator), Level->Behaviors.LookupString(STACK(1))), false);
 			break;
 
 		case PCD_SETHUDSIZE:

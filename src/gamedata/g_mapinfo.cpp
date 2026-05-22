@@ -304,6 +304,8 @@ void level_info_t::Reset()
 	SndSeq = "";
 	BorderTexture = "";
 	teamdamage = 0.f;
+	InvasionWaveLimit = 0;
+	DuelLimit = 0;
 	hazardcolor = 0xff004200;
 	hazardflash = 0xff00ff00;
 	fogdensity = 0;
@@ -1244,6 +1246,20 @@ DEFINE_MAP_OPTION(par, true)
 	parse.ParseAssign();
 	parse.sc.MustGetNumber();
 	info->partime = parse.sc.Number;
+}
+
+DEFINE_MAP_OPTION(wavelimit, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+	info->InvasionWaveLimit = clamp<int>(parse.sc.Number, 0, 255);
+}
+
+DEFINE_MAP_OPTION(duellimit, true)
+{
+	parse.ParseAssign();
+	parse.sc.MustGetNumber();
+	info->DuelLimit = clamp<int>(parse.sc.Number, 0, 255);
 }
 
 DEFINE_MAP_OPTION(sucktime, true)
@@ -2808,6 +2824,122 @@ void G_ClearMapinfo()
 	ParsedLumps.Clear();
 }
 
+static void HCDE_ParseCMPGNINFPropertyName(FScanner& scanner, FString& property)
+{
+	scanner.MustGetToken(TK_Identifier);
+	property = scanner.String;
+
+	// CMPGNINF also supports indexed keys (e.g. bot[0], botteam[1]).
+	if (scanner.CheckToken('['))
+	{
+		int depth = 1;
+		while (depth > 0)
+		{
+			scanner.MustGetAnyToken();
+			if (scanner.TokenType == '[')
+				++depth;
+			else if (scanner.TokenType == ']')
+				--depth;
+		}
+	}
+
+	scanner.MustGetToken('=');
+}
+
+static void HCDE_SkipCMPGNINFValue(FScanner& scanner)
+{
+	// Most CMPGNINF fields are a single scalar token, but we also accept a
+	// comma-separated list shape for future-proof compatibility.
+	if (!scanner.CheckValue(true))
+	{
+		scanner.MustGetAnyToken();
+	}
+
+	while (scanner.CheckToken(','))
+	{
+		if (!scanner.CheckValue(true))
+		{
+			scanner.MustGetAnyToken();
+		}
+	}
+}
+
+static void HCDE_ParseCMPGNINF()
+{
+	int lump = -1;
+	int lastlump = 0;
+
+	while ((lump = fileSystem.FindLump("CMPGNINF", &lastlump, false)) != -1)
+	{
+		FScanner scanner(lump);
+		const char* sourceName = fileSystem.GetFileFullName(lump);
+
+		while (scanner.GetToken())
+		{
+			scanner.TokenMustBe('{');
+
+			FString mapName;
+			int waveLimit = 0;
+			bool hasWaveLimit = false;
+			int duelLimit = 0;
+			bool hasDuelLimit = false;
+
+			while (!scanner.CheckToken('}'))
+			{
+				FString property;
+				HCDE_ParseCMPGNINFPropertyName(scanner, property);
+
+				if (property.CompareNoCase("mapname") == 0)
+				{
+					if (!scanner.CheckToken(TK_Identifier) && !scanner.CheckToken(TK_StringConst))
+					{
+						scanner.ScriptError("CMPGNINF mapname must be an identifier or quoted string.");
+					}
+					mapName = scanner.String;
+				}
+				else if (property.CompareNoCase("wavelimit") == 0)
+				{
+					scanner.MustGetValue(false);
+					waveLimit = clamp<int>(scanner.Number, 0, 255);
+					hasWaveLimit = true;
+				}
+				else if (property.CompareNoCase("duellimit") == 0)
+				{
+					scanner.MustGetValue(false);
+					duelLimit = clamp<int>(scanner.Number, 0, 255);
+					hasDuelLimit = true;
+				}
+				else
+				{
+					HCDE_SkipCMPGNINFValue(scanner);
+				}
+			}
+
+			if (mapName.IsEmpty() || (!hasWaveLimit && !hasDuelLimit))
+				continue;
+
+			level_info_t* info = FindLevelInfo(mapName.GetChars(), false);
+			if (info == nullptr)
+			{
+				const int levelindex = wadlevelinfos.Reserve(1);
+				info = &wadlevelinfos[levelindex];
+				*info = TheDefaultLevelInfo;
+				info->MapName = mapName;
+				Printf("HCDE: CMPGNINF created map definition for %s from %s.\n", mapName.GetChars(), sourceName);
+			}
+
+			if (hasWaveLimit)
+			{
+				info->InvasionWaveLimit = waveLimit;
+			}
+			if (hasDuelLimit)
+			{
+				info->DuelLimit = duelLimit;
+			}
+		}
+	}
+}
+
 //==========================================================================
 //
 // G_ParseMapInfo
@@ -2950,6 +3082,7 @@ void G_ParseMapInfo(FString basemapinfo)
 		}
 	}
 	CommitUMapinfo(&gamedefaults);	// commit remaining UMPAINFOs.
+	HCDE_ParseCMPGNINF();
 
 	if (AllEpisodes.Size() == 0)
 	{

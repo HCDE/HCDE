@@ -185,6 +185,7 @@ int Net_GetInvasionSpawnPlanBudget();
 int Net_GetInvasionSpawnActiveTag();
 bool Net_IsInvasionSpawnUsingFallback();
 int Net_GetInvasionSpawnFallbackSource();
+int Net_GetCompatDuelLimit();
 int Net_ControlInvasion(int action, const char* reason = nullptr);
 void Net_ResetCommands(bool midTic);
 void Net_SetWaiting();

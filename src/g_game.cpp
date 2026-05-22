@@ -636,11 +636,21 @@ static inline int joyint(double val)
 
 FBaseCVar* G_GetUserCVar(int playernum, const char* cvarname)
 {
-	if ((unsigned)playernum >= MAXPLAYERS || !playeringame[playernum])
+	int resolvedPlayer = playernum;
+	if ((unsigned)resolvedPlayer >= MAXPLAYERS || !playeringame[resolvedPlayer])
 	{
-		return nullptr;
+		// ACS/Open and similar contexts can query user CVARs without an activator.
+		// In that case, match expected behavior by falling back to the local console player.
+		if ((unsigned)consoleplayer < MAXPLAYERS && playeringame[consoleplayer])
+		{
+			resolvedPlayer = consoleplayer;
+		}
+		else
+		{
+			return nullptr;
+		}
 	}
-	FBaseCVar** cvar_p = players[playernum].userinfo.CheckKey(FName(cvarname, true));
+	FBaseCVar** cvar_p = players[resolvedPlayer].userinfo.CheckKey(FName(cvarname, true));
 	FBaseCVar* cvar;
 	if (cvar_p == nullptr || (cvar = *cvar_p) == nullptr || (cvar->GetFlags() & CVAR_IGNORE))
 	{

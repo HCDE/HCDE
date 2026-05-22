@@ -26,6 +26,7 @@
 #include <shellapi.h>
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <conio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -226,6 +227,8 @@ static const ServerGuiSettingDefinition ServerGuiAdvancedSettings[] =
 	{ L"Invasion Intermission", "sv_invasionintermissiontime", ServerGuiSettingKind::Decimal, L"6", 0, 600, false, 8 },
 	{ L"Invasion Result Time", "sv_invasionresulttime", ServerGuiSettingKind::Decimal, L"8", 0, 600, false, 8 },
 	{ L"Invasion Waves", "sv_invasionwaves", ServerGuiSettingKind::Integer, L"8", 1, 255, false, 3 },
+	{ L"Invasion Map Waves", "sv_usemapsettingswavelimit", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
+	{ L"Legacy Wave Limit", "wavelimit", ServerGuiSettingKind::Integer, L"0", 0, 255, false, 3 },
 	{ L"Invasion Base Budget", "sv_invasionbasebudget", ServerGuiSettingKind::Integer, L"24", 1, 4096, false, 4 },
 	{ L"Invasion Budget Step", "sv_invasionbudgetstep", ServerGuiSettingKind::Integer, L"8", 0, 4096, false, 4 },
 	{ L"Invasion Per Player", "sv_invasionperplayer", ServerGuiSettingKind::Integer, L"6", 0, 4096, false, 4 },
@@ -340,6 +343,8 @@ static const char* const ServerGuiPresetInvasionStandard[] =
 	"sv_invasionintermissiontime 6",
 	"sv_invasionresulttime 8",
 	"sv_invasionwaves 8",
+	"sv_usemapsettingswavelimit 1",
+	"wavelimit 0",
 	"sv_invasionbasebudget 24",
 	"sv_invasionbudgetstep 8",
 	"sv_invasionperplayer 6",
@@ -1095,7 +1100,17 @@ LRESULT MainWindow::LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		break;
 
 	case WM_CLOSE:
-		mainwindow.RequestServerConsoleShutdown();
+#ifdef HCDE_DEDICATED_SERVER
+		// Dedicated servers can be launched and managed by external tools.
+		// Treat window-close requests as "hide/minimize console" rather than
+		// immediate shutdown so a stray WM_CLOSE does not abort startup/join.
+		if (I_IsDedicatedServerMode())
+		{
+			mainwindow.PrintStr("HCDE server console: close request ignored; use Stop Server or 'quit' to shut down.\n");
+			ShowWindow(hWnd, SW_MINIMIZE);
+			return 0;
+		}
+#endif
 		DestroyWindow(hWnd);
 		return 0;
 
@@ -1244,6 +1259,10 @@ LRESULT CALLBACK MainWindow::ServerCommandProc(HWND hWnd, UINT msg, WPARAM wPara
 
 void MainWindow::CreateServerConsoleControls()
 {
+	ServerStdIn = GetStdHandle(STD_INPUT_HANDLE);
+	ServerStdInUnavailable = (ServerStdIn == nullptr || ServerStdIn == INVALID_HANDLE_VALUE);
+	ServerStdInBuffer = "";
+
 	ServerBrush = CreateSolidBrush(RGB(18, 22, 24));
 	ServerFont = CreateFontW(
 		-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -1520,15 +1539,147 @@ void MainWindow::PumpServerConsoleMessages()
 	ServerPumpingMessages = false;
 }
 
+void MainWindow::PumpServerConsoleStdIn()
+{
+	if (ServerStdInUnavailable)
+	{
+		return;
+	}
+
+	if (ServerStdIn == nullptr || ServerStdIn == INVALID_HANDLE_VALUE)
+	{
+		ServerStdIn = GetStdHandle(STD_INPUT_HANDLE);
+		if (ServerStdIn == nullptr || ServerStdIn == INVALID_HANDLE_VALUE)
+		{
+			ServerStdInUnavailable = true;
+			return;
+		}
+	}
+
+	auto submitBufferedCommand = [&]()
+	{
+		FString command = ServerStdInBuffer;
+		ServerStdInBuffer = "";
+		command.StripLeftRight();
+		if (command.IsEmpty())
+		{
+			return;
+		}
+
+		RememberServerConsoleCommand(command);
+		SendServerConsoleCommand(command.GetChars());
+	};
+
+	DWORD available = 0;
+	if (PeekNamedPipe(ServerStdIn, nullptr, 0, nullptr, &available, nullptr))
+	{
+		while (available > 0)
+		{
+			char bytes[512] = {};
+			DWORD toRead = available > sizeof(bytes) ? static_cast<DWORD>(sizeof(bytes)) : available;
+			DWORD read = 0;
+			if (!ReadFile(ServerStdIn, bytes, toRead, &read, nullptr))
+			{
+				DWORD error = GetLastError();
+				if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE)
+				{
+					ServerStdInUnavailable = true;
+				}
+				return;
+			}
+			if (read == 0)
+			{
+				ServerStdInUnavailable = true;
+				return;
+			}
+
+			for (DWORD i = 0; i < read; ++i)
+			{
+				const char ch = bytes[i];
+				if (ch == '\r' || ch == '\n')
+				{
+					submitBufferedCommand();
+					continue;
+				}
+				if (ch != '\0')
+				{
+					ServerStdInBuffer += ch;
+					if (ServerStdInBuffer.Len() > 2048)
+					{
+						PrintStr("HCDE server console: stdin command exceeded 2048 bytes and was discarded.\n");
+						ServerStdInBuffer = "";
+					}
+				}
+			}
+
+			if (!PeekNamedPipe(ServerStdIn, nullptr, 0, nullptr, &available, nullptr))
+			{
+				DWORD error = GetLastError();
+				if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE)
+				{
+					ServerStdInUnavailable = true;
+				}
+				return;
+			}
+		}
+		return;
+	}
+
+	// Console stdin (non-pipe) fallback for interactive server sessions.
+	if (GetFileType(ServerStdIn) == FILE_TYPE_CHAR)
+	{
+		while (_kbhit() != 0)
+		{
+			int key = _getch();
+			if (key == 0 || key == 224)
+			{
+				(void)_getch();
+				continue;
+			}
+
+			if (key == '\r' || key == '\n')
+			{
+				submitBufferedCommand();
+				continue;
+			}
+			if (key == '\b')
+			{
+				if (!ServerStdInBuffer.IsEmpty())
+				{
+					ServerStdInBuffer.Truncate(ServerStdInBuffer.Len() - 1);
+				}
+				continue;
+			}
+
+			if (key >= 32 && key < 127)
+			{
+				ServerStdInBuffer += static_cast<char>(key);
+				if (ServerStdInBuffer.Len() > 2048)
+				{
+					PrintStr("HCDE server console: stdin command exceeded 2048 bytes and was discarded.\n");
+					ServerStdInBuffer = "";
+				}
+			}
+		}
+	}
+}
+
 void MainWindow::TickServerConsole()
 {
 	RefreshServerKickList();
 	PumpServerConsoleMessages();
+	PumpServerConsoleStdIn();
+	C_RunDelayedCommands();
 }
 
 void I_PumpDedicatedServerConsoleWindow()
 {
 	mainwindow.TickServerConsole();
+}
+
+void I_PumpDedicatedServerConsoleInput()
+{
+	mainwindow.PumpServerConsoleStdIn();
 }
 
 void MainWindow::SendServerConsoleCommand(const char* command)

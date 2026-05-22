@@ -397,6 +397,12 @@ struct level_info_t
 	FString		SndSeq;
 
 	double		teamdamage;
+	// Legacy Skulltag/CMPGNINF invasion wave limit for this map.
+	// 0 means "not set by map metadata".
+	int			InvasionWaveLimit;
+	// Legacy Skulltag/CMPGNINF deathmatch wave/duel limit for this map.
+	// 0 means "not set by map metadata".
+	int			DuelLimit;
 
 	FMusicMap	MusicMap;
 

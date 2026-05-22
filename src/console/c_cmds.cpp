@@ -328,13 +328,15 @@ CCMD (hxvisit)
 
 CCMD (changemap)
 {
-	if (!players[consoleplayer].mo || !usergame)
+	const bool dedicatedConsole = I_IsDedicatedServerMode();
+	const bool hasConsolePawn = consoleplayer >= 0 && consoleplayer < MAXPLAYERS && players[consoleplayer].mo != nullptr;
+	if (!dedicatedConsole && (!usergame || !hasConsolePawn))
 	{
 		Printf ("Use the map command when not in a game.\n");
 		return;
 	}
 
-	if (netgame && !Net_LocalCanControlSettings())
+	if (netgame && !dedicatedConsole && !Net_LocalCanControlSettings())
 	{
 		Printf ("Only setting controllers can change the map.\n");
 		return;
@@ -362,20 +364,54 @@ CCMD (changemap)
 			{
 				Printf ("No map %s\n", mapname);
 			}
+		else
+		{
+			const int pos = argv.argc() > 2 ? atoi(argv[2]) : 0;
+			FString targetMap = mapname;
+			CheckWarpTransMap(targetMap, true);
+			primaryLevel->flags |= LEVEL_CHANGEMAPCHEAT;
+			if (dedicatedConsole && netgame)
+			{
+				// Dedicated servers can temporarily have no playable clients after a
+				// probe/late-join disconnect. In this state gameplay tics may stall,
+				// so deferred ChangeLevel actions never execute. Reload immediately.
+				int playableClients = 0;
+				for (int client = I_GetFirstPlayableClientSlot(); client < MAXPLAYERS; ++client)
+				{
+					if (playeringame[client])
+						++playableClients;
+				}
+				if (playableClients == 0 || gametic <= 0)
+				{
+					if (pos != 0)
+					{
+						// The immediate restart path can only reload the map itself; start
+						// positions are handled by deferred level changes once tics are live.
+						Printf("Start position %d is ignored while restarting a stalled dedicated server.\n", pos);
+					}
+					G_InitNew(targetMap.GetChars(), false);
+					Net_SetWaiting();
+				}
+				else
+				{
+					primaryLevel->ChangeLevel(targetMap.GetChars(), pos, 0);
+				}
+			}
 			else
 			{
 				if (argv.argc() > 2)
 				{
 					Net_WriteInt8 (DEM_CHANGEMAP2);
-					Net_WriteInt8 (atoi(argv[2]));
+					Net_WriteInt8 (pos);
 				}
 				else
 				{
 					Net_WriteInt8 (DEM_CHANGEMAP);
 				}
-				Net_WriteString (mapname);
+				Net_WriteString (targetMap.GetChars());
 			}
 		}
+	}
 		catch(CRecoverableError &error)
 		{
 			if (error.GetMessage())

@@ -81,6 +81,9 @@ EXTERN_CVAR(Float, timelimit)
 EXTERN_CVAR(Int, sv_gametype)
 CVAR(String, sv_hostname, GAMENAME " server", CVAR_ARCHIVE | CVAR_SERVERINFO)
 CVAR(String, sv_motd, "Welcome to " GAMENAME, CVAR_ARCHIVE | CVAR_SERVERINFO)
+// Dedicated servers are typically launched headless from tooling, so default
+// to auto-starting once at least one playable client is connected.
+CVAR(Bool, sv_dedicated_autostart, true, CVAR_ARCHIVE | CVAR_SERVERINFO)
 CUSTOM_CVAR(Int, sv_maxplayers, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 {
 	if (self < 0)
@@ -314,6 +317,8 @@ static bool SilentNetStartMode = false;
 static bool DedicatedJoinMode = false;
 static bool DedicatedServerStartRequested = false;
 static bool DedicatedServerAbortRequested = false;
+static bool DedicatedLateJoinRetryAttempted = false;
+static bool DedicatedLateJoinRetryPendingSend = false;
 
 bool netgame = false;
 bool multiplayer = false;
@@ -618,6 +623,7 @@ static const char* ServerInvasionStateName(uint8_t invasionState)
 constexpr uint8_t INVSPAWNQF_FALLBACK = 1u << 0;
 constexpr uint8_t INVSPAWNQF_SOURCE_SHIFT = 1u;
 constexpr uint8_t INVSPAWNQF_SOURCE_MASK = 0x0Eu;
+constexpr uint64_t QuerySnapshotCacheIntervalMs = 200u;
 
 static int CountConnectedClients()
 {
@@ -656,8 +662,9 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	const int visibleMaxClients = I_GetVisibleMaxClients();
 	const int advertisedMaxClients = sv_maxplayers > 0 ? clamp<int>(sv_maxplayers, connectedClients, visibleMaxClients) : visibleMaxClients;
 	snapshot.MaxPlayers = uint8_t(clamp<int>(advertisedMaxClients, 0, UINT8_MAX));
-	// Keep this aligned with the serialized player rows (playeringame[]), not
-	// transient socket/connect bookkeeping.
+	// Keep this aligned with serialized player rows. During setup / late-join
+	// sync, also expose connected client slots so launcher query consumers can
+	// observe pending joins.
 	snapshot.PlayerCount = 0u;
 	snapshot.Skill = uint8_t(clamp<int>(gameskill, 0, UINT8_MAX));
 	snapshot.Deathmatch = deathmatch != 0;
@@ -699,16 +706,17 @@ static FServerQuerySnapshot BuildServerQuerySnapshot()
 	const int firstClient = I_GetFirstPlayableClientSlot();
 	for (int i = firstClient; i < MaxClients; ++i)
 	{
-		if (playeringame[i])
-		{
-			FServerQueryPlayer player = {};
-			player.Name = players[i].userinfo.GetName(0u);
-			player.Ping = uint16_t(clamp<unsigned int>(ClientStates[i].AverageLatency, 0u, UINT16_MAX));
-			player.Frags = int16_t(clamp<int>(players[i].fragcount, INT16_MIN, INT16_MAX));
-			player.Kills = int16_t(clamp<int>(players[i].killcount, INT16_MIN, INT16_MAX));
-			player.Deaths = 0;
-			snapshot.Players.Push(player);
-		}
+		const bool connectedSetupSlot = Connected[i].Status != CSTAT_NONE;
+		if (!playeringame[i] && !connectedSetupSlot)
+			continue;
+
+		FServerQueryPlayer player = {};
+		player.Name = players[i].userinfo.GetName(0u);
+		player.Ping = uint16_t(clamp<unsigned int>(ClientStates[i].AverageLatency, 0u, UINT16_MAX));
+		player.Frags = int16_t(clamp<int>(players[i].fragcount, INT16_MIN, INT16_MAX));
+		player.Kills = int16_t(clamp<int>(players[i].killcount, INT16_MIN, INT16_MAX));
+		player.Deaths = 0;
+		snapshot.Players.Push(player);
 	}
 	snapshot.PlayerCount = uint8_t(clamp<size_t>(snapshot.Players.Size(), size_t(0), size_t(UINT8_MAX)));
 
@@ -779,7 +787,7 @@ static const FServerQuerySnapshot& GetCachedServerQuerySnapshot()
 	const uint64_t now = I_msTime();
 
 	std::lock_guard<std::mutex> lock(snapshotMutex);
-	if (now - lastSnapshotTime > 1000 || lastSnapshotTime == 0)
+	if (now - lastSnapshotTime > QuerySnapshotCacheIntervalMs || lastSnapshotTime == 0)
 	{
 		cachedSnapshot = BuildServerQuerySnapshot();
 		lastSnapshotTime = now;
@@ -925,10 +933,11 @@ void Net_SetServerInfo(TArrayView<uint8_t>& stream);
 // Internal setup/connection helpers shared across startup and active-match
 // dedicated late-join admission.
 static int CountConnectedPlayers();
-static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPassword, bool rejectForInProgress, int* connectedPlayers);
+static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPassword, bool rejectForInProgress, bool runtimeJoin, int* connectedPlayers);
 static void RejectConnection(const sockaddr_in& to, ENetConnectType reason);
 static void SendVerificationError(const sockaddr_in& to, const FVerificationError& error);
-static void AddClientConnection(const sockaddr_in& from, int client, const FHCDEConnectInfo& connectInfo);
+static void AddClientConnection(const sockaddr_in& from, int client, const FHCDEConnectInfo& connectInfo, bool runtimeJoin);
+static void DriveRuntimeSetupStateForClient(int client, int connectedPlayers);
 
 static SOCKET CreateUDPSocket()
 {
@@ -1784,7 +1793,7 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 				{
 					const bool admitted = DedicatedServerMode
 						&& I_IsLocalHCDEServiceAuthority()
-						&& TryProcessSetupConnectPacket(fromAddress, strlen(net_password) > 0, false, nullptr);
+						&& TryProcessSetupConnectPacket(fromAddress, strlen(net_password) > 0, false, true, nullptr);
 					if (admitted)
 					{
 						client = FindClient(fromAddress);
@@ -1883,7 +1892,7 @@ static int CountConnectedPlayers()
 	return connected;
 }
 
-static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPassword, bool rejectForInProgress, int* connectedPlayers)
+static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPassword, bool rejectForInProgress, bool runtimeJoin, int* connectedPlayers)
 {
 	if (NetBufferLength < 2u || NetBuffer[0] != NCMD_SETUP || NetBuffer[1] != PRE_CONNECT)
 		return false;
@@ -1974,7 +1983,7 @@ static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPasswo
 		return true;
 	}
 
-	AddClientConnection(from, free, connectInfo);
+	AddClientConnection(from, free, connectInfo, runtimeJoin);
 	const int updatedConnected = currentConnected + 1;
 	if (connectedPlayers != nullptr)
 		*connectedPlayers = updatedConnected;
@@ -2051,7 +2060,7 @@ static void SendVerificationError(const sockaddr_in& to, const FVerificationErro
 	SendPacket(to);
 }
 
-static void AddClientConnection(const sockaddr_in& from, int client, const FHCDEConnectInfo& connectInfo)
+static void AddClientConnection(const sockaddr_in& from, int client, const FHCDEConnectInfo& connectInfo, bool runtimeJoin)
 {
 	Net_ResetClientState(client);
 	Connected[client].Status = CSTAT_CONNECTING;
@@ -2063,22 +2072,26 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	NetworkClients += client;
 	if (connectInfo.Present)
 	{
-		I_NetLog("Client %u connected to server with HCDE service connect v%u flags=0x%02x",
-			client, connectInfo.Version, connectInfo.Flags);
+		I_NetLog("Client %u connected to server with HCDE service connect v%u flags=0x%02x%s",
+			client, connectInfo.Version, connectInfo.Flags, runtimeJoin ? " (runtime join)" : "");
 	}
 	else
 	{
-		I_NetLog("Client %u %s", client, DedicatedServerMode ? "connected to server using legacy setup" : "joined the host");
+		I_NetLog("Client %u %s%s", client, DedicatedServerMode ? "connected to server using legacy setup" : "joined the host",
+			runtimeJoin ? " (runtime join)" : "");
 	}
 	I_NetClientUpdated(client);
 
 	// Make sure any ready clients are marked as needing the new client's info.
-	for (int i = 1; i < MaxClients; ++i)
+	if (!runtimeJoin)
 	{
-		if (Connected[i].Status == CSTAT_READY)
+		for (int i = 1; i < MaxClients; ++i)
 		{
-			Connected[i].Status = CSTAT_WAITING;
-			I_NetClientUpdated(i);
+			if (Connected[i].Status == CSTAT_READY)
+			{
+				Connected[i].Status = CSTAT_WAITING;
+				I_NetClientUpdated(i);
+			}
 		}
 	}
 }
@@ -2142,13 +2155,199 @@ static bool DropClientForHCDETimeout(int client, int* connectedPlayers, const ch
 	return true;
 }
 
+static void DriveRuntimeSetupStateForClient(int client, int connectedPlayers)
+{
+	if (client <= 0 || client >= MaxClients)
+		return;
+
+	auto& con = Connected[client];
+	if (con.Status == CSTAT_NONE)
+		return;
+
+	const size_t addrSize = sizeof(sockaddr_in);
+	if (con.Status == CSTAT_CONNECTING)
+	{
+		BeginSetupPacket(PRE_CONNECT_ACK, con.SessionToken, 5u);
+		NetBuffer[2] = client;
+		NetBuffer[3] = connectedPlayers;
+		NetBuffer[4] = MaxClients;
+		uint8_t ackFlags = DedicatedServerMode ? PRE_CONNECT_ACK_DEDICATED : 0u;
+		if (con.bHCDEConnect)
+			ackFlags |= PRE_CONNECT_ACK_HCDE_SERVICE;
+		if (DedicatedServerMode)
+			ackFlags |= PRE_CONNECT_ACK_SERVER_AUTHORITY;
+		NetBuffer[9] = ackFlags;
+		NetBufferLength = 10u;
+		if ((ackFlags & PRE_CONNECT_ACK_HCDE_SERVICE) != 0)
+		{
+			NetBuffer[NetBufferLength++] = HCDEConnectProtocolVersion;
+			NetBuffer[NetBufferLength++] = HCDE_CONNECT_SERVER_AUTHORITY;
+		}
+		SendPacket(con.Address);
+
+		if (con.bHCDEConnect)
+		{
+			if (BeginReliableHCDEPregameService(HPS_CONSOLE_PLAYER, con, uint8_t(client)))
+			{
+				NetBuffer[HCDEServiceHeaderSize] = uint8_t(client);
+				NetBuffer[HCDEServiceHeaderSize + 1u] = uint8_t(connectedPlayers);
+				NetBuffer[HCDEServiceHeaderSize + 2u] = uint8_t(MaxClients);
+				NetBuffer[HCDEServiceHeaderSize + 3u] = HCDE_CONNECT_SERVER_AUTHORITY;
+				NetBufferLength = HCDEServiceHeaderSize + 4u;
+				CommitReliableHCDEPregameService(con.Address, con, HPS_CONSOLE_PLAYER, uint8_t(client));
+			}
+		}
+
+		if (con.bHCDEConnect)
+			FlushHCDEReliableServices(con.Address, con);
+		return;
+	}
+
+	if (con.Status == CSTAT_WAITING)
+	{
+		bool clientReady = true;
+		if (!ClientGotAck(client, client))
+		{
+			if (con.bHCDEConnect)
+			{
+				if (BeginReliableHCDEPregameService(HPS_USER_INFO_ACK, con, uint8_t(client)))
+				{
+					NetBuffer[HCDEServiceHeaderSize] = uint8_t(client);
+					NetBufferLength = HCDEServiceHeaderSize + 1u;
+					CommitReliableHCDEPregameService(con.Address, con, HPS_USER_INFO_ACK, uint8_t(client));
+				}
+			}
+			else
+			{
+				BeginSetupPacket(PRE_USER_INFO_ACK, con.SessionToken);
+				NetBufferLength = 6u;
+				SendPacket(con.Address);
+			}
+			clientReady = false;
+		}
+
+		if (con.bHCDEConnect && !con.bHasMapLoadInfo)
+		{
+			if (BeginReliableHCDEPregameService(HPS_MAP_LOAD, con, 0u))
+			{
+				TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
+				Net_SetMapLoadInfo(stream);
+				NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
+				CommitReliableHCDEPregameService(con.Address, con, HPS_MAP_LOAD, 0u);
+			}
+			clientReady = false;
+		}
+
+		if (!con.bHasGameInfo)
+		{
+			if (con.bHCDEConnect)
+			{
+				if (BeginReliableHCDEPregameService(HPS_GAME_INFO, con, 0u))
+				{
+					NetBuffer[HCDEServiceHeaderSize] = TicDup;
+					memcpy(&NetBuffer[HCDEServiceHeaderSize + 1u], GameID, 8);
+					NetBufferLength = HCDEServiceHeaderSize + 9u;
+
+					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
+					Net_SetServerInfo(stream);
+					NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
+					CommitReliableHCDEPregameService(con.Address, con, HPS_GAME_INFO, 0u);
+				}
+			}
+			else
+			{
+				BeginSetupPacket(PRE_GAME_INFO, con.SessionToken);
+				NetBuffer[6] = TicDup;
+				memcpy(&NetBuffer[7], GameID, 8);
+				NetBufferLength = 15u;
+
+				TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
+				Net_SetGameInfo(stream);
+				NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
+				SendPacket(con.Address);
+			}
+			clientReady = false;
+		}
+
+		for (int i = 0; i < MaxClients; ++i)
+		{
+			if (i == client || Connected[i].Status == CSTAT_NONE)
+				continue;
+			if (ClientGotAck(client, i) || Connected[i].Status < CSTAT_WAITING)
+				continue;
+
+			if (con.bHCDEConnect)
+			{
+				if (!BeginReliableHCDEPregameService(HPS_PEER_USER_INFO, con, uint8_t(i)))
+				{
+					clientReady = false;
+					continue;
+				}
+				NetBuffer[HCDEServiceHeaderSize] = uint8_t(i);
+				NetBufferLength = HCDEServiceHeaderSize + 1u;
+			}
+			else
+			{
+				BeginSetupPacket(PRE_USER_INFO, con.SessionToken, 3u);
+				NetBuffer[2] = uint8_t(i);
+				WriteBE32(&NetBuffer[3], con.SessionToken);
+				NetBufferLength = 7u;
+			}
+
+			if (i > 0)
+			{
+				memcpy(&NetBuffer[NetBufferLength], &Connected[i].Address, addrSize);
+				NetBufferLength += addrSize;
+			}
+
+			TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
+			Net_SetUserInfo(i, stream);
+			NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
+			if (con.bHCDEConnect)
+				CommitReliableHCDEPregameService(con.Address, con, HPS_PEER_USER_INFO, uint8_t(i));
+			else
+				SendPacket(con.Address);
+			clientReady = false;
+		}
+
+		if (clientReady)
+		{
+			con.Status = CSTAT_READY;
+			I_NetClientUpdated(client);
+			DebugTrace::Markf("net", "runtime late-join setup reached ready slot=%d", client);
+		}
+		if (con.bHCDEConnect)
+			FlushHCDEReliableServices(con.Address, con);
+		return;
+	}
+
+	if (con.Status == CSTAT_READY)
+	{
+		if (con.bHCDEConnect)
+		{
+			if (BeginReliableHCDEPregameService(HPS_START_GAME, con, 0u))
+				CommitReliableHCDEPregameService(con.Address, con, HPS_START_GAME, 0u);
+		}
+		else
+		{
+			NetBuffer[0] = NCMD_SETUP;
+			NetBuffer[1] = PRE_GO;
+			WriteBE32(&NetBuffer[2], con.SessionToken);
+			NetBufferLength = 6u;
+			SendPacket(con.Address);
+		}
+	}
+
+	if (con.bHCDEConnect)
+		FlushHCDEReliableServices(con.Address, con);
+}
+
 void HandleIncomingConnection()
 {
 	if (!I_IsLocalHCDEServiceAuthority() || RemoteClient == -1)
 		return;
 
 	auto& con = Connected[RemoteClient];
-	const size_t addrSize = sizeof(sockaddr_in);
 
 	if (NetBuffer[1] == PRE_USER_INFO && con.Status == CSTAT_CONNECTING)
 	{
@@ -2248,177 +2447,33 @@ void HandleIncomingConnection()
 
 	// Drive the same setup state machine used at startup, but scoped to the
 	// active-match dedicated join path.
-	if (con.Status == CSTAT_CONNECTING)
-	{
-		BeginSetupPacket(PRE_CONNECT_ACK, con.SessionToken, 5u);
-		NetBuffer[2] = RemoteClient;
-		NetBuffer[3] = CountConnectedPlayers();
-		NetBuffer[4] = MaxClients;
-		uint8_t ackFlags = DedicatedServerMode ? PRE_CONNECT_ACK_DEDICATED : 0u;
-		if (con.bHCDEConnect)
-			ackFlags |= PRE_CONNECT_ACK_HCDE_SERVICE;
-		if (DedicatedServerMode)
-			ackFlags |= PRE_CONNECT_ACK_SERVER_AUTHORITY;
-		NetBuffer[9] = ackFlags;
-		NetBufferLength = 10u;
-		if ((ackFlags & PRE_CONNECT_ACK_HCDE_SERVICE) != 0)
-		{
-			NetBuffer[NetBufferLength++] = HCDEConnectProtocolVersion;
-			NetBuffer[NetBufferLength++] = HCDE_CONNECT_SERVER_AUTHORITY;
-		}
-		SendPacket(con.Address);
+	DriveRuntimeSetupStateForClient(RemoteClient, CountConnectedPlayers());
+}
 
-		if (con.bHCDEConnect)
-		{
-			if (BeginReliableHCDEPregameService(HPS_CONSOLE_PLAYER, con, uint8_t(RemoteClient)))
-			{
-				NetBuffer[HCDEServiceHeaderSize] = uint8_t(RemoteClient);
-				NetBuffer[HCDEServiceHeaderSize + 1u] = uint8_t(CountConnectedPlayers());
-				NetBuffer[HCDEServiceHeaderSize + 2u] = uint8_t(MaxClients);
-				NetBuffer[HCDEServiceHeaderSize + 3u] = HCDE_CONNECT_SERVER_AUTHORITY;
-				NetBufferLength = HCDEServiceHeaderSize + 4u;
-				CommitReliableHCDEPregameService(con.Address, con, HPS_CONSOLE_PLAYER, uint8_t(RemoteClient));
-			}
-		}
+void HandleIncomingConnectionMaintenance()
+{
+	if (!I_IsLocalHCDEServiceAuthority())
 		return;
-	}
 
-	if (con.Status == CSTAT_WAITING)
+	// Run runtime setup retries/timeouts out-of-band from packet parsing so an
+	// acknowledgement packet can be processed before timeout enforcement.
+	int connectedPlayers = CountConnectedPlayers();
+	for (int client = 1; client < MaxClients; ++client)
 	{
-		bool clientReady = true;
-		if (!ClientGotAck(RemoteClient, RemoteClient))
-		{
-			if (con.bHCDEConnect)
-			{
-				if (BeginReliableHCDEPregameService(HPS_USER_INFO_ACK, con, uint8_t(RemoteClient)))
-				{
-					NetBuffer[HCDEServiceHeaderSize] = uint8_t(RemoteClient);
-					NetBufferLength = HCDEServiceHeaderSize + 1u;
-					CommitReliableHCDEPregameService(con.Address, con, HPS_USER_INFO_ACK, uint8_t(RemoteClient));
-				}
-			}
-			else
-			{
-				BeginSetupPacket(PRE_USER_INFO_ACK, con.SessionToken);
-				NetBufferLength = 6u;
-				SendPacket(con.Address);
-			}
-			clientReady = false;
-		}
+		auto& con = Connected[client];
+		if (con.Status == CSTAT_NONE || !con.bHCDEConnect)
+			continue;
 
-		if (con.bHCDEConnect && !con.bHasMapLoadInfo)
-		{
-			if (BeginReliableHCDEPregameService(HPS_MAP_LOAD, con, 0u))
-			{
-				TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
-				Net_SetMapLoadInfo(stream);
-				NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
-				CommitReliableHCDEPregameService(con.Address, con, HPS_MAP_LOAD, 0u);
-			}
-			clientReady = false;
-		}
+		const bool runtimeSetupInProgress = con.Status != CSTAT_READY
+			|| !con.bHasStartGameAck
+			|| HasPendingHCDEReliableService(con);
+		if (!runtimeSetupInProgress)
+			continue;
 
-		if (!con.bHasGameInfo)
-		{
-			if (con.bHCDEConnect)
-			{
-				if (BeginReliableHCDEPregameService(HPS_GAME_INFO, con, 0u))
-				{
-					NetBuffer[HCDEServiceHeaderSize] = TicDup;
-					memcpy(&NetBuffer[HCDEServiceHeaderSize + 1u], GameID, 8);
-					NetBufferLength = HCDEServiceHeaderSize + 9u;
+		if (DropClientForHCDETimeout(client, &connectedPlayers, "runtime setup maintenance"))
+			continue;
 
-					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
-					Net_SetServerInfo(stream);
-					NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
-					CommitReliableHCDEPregameService(con.Address, con, HPS_GAME_INFO, 0u);
-				}
-			}
-			else
-			{
-				BeginSetupPacket(PRE_GAME_INFO, con.SessionToken);
-				NetBuffer[6] = TicDup;
-				memcpy(&NetBuffer[7], GameID, 8);
-				NetBufferLength = 15u;
-
-				TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
-				Net_SetGameInfo(stream);
-				NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
-				SendPacket(con.Address);
-			}
-			clientReady = false;
-		}
-
-		for (int i = 0; i < MaxClients; ++i)
-		{
-			if (i == RemoteClient || Connected[i].Status == CSTAT_NONE)
-				continue;
-			if (ClientGotAck(RemoteClient, i) || Connected[i].Status < CSTAT_WAITING)
-				continue;
-
-			if (con.bHCDEConnect)
-			{
-				if (!BeginReliableHCDEPregameService(HPS_PEER_USER_INFO, con, uint8_t(i)))
-				{
-					clientReady = false;
-					continue;
-				}
-				NetBuffer[HCDEServiceHeaderSize] = uint8_t(i);
-				NetBufferLength = HCDEServiceHeaderSize + 1u;
-			}
-			else
-			{
-				BeginSetupPacket(PRE_USER_INFO, con.SessionToken, 3u);
-				NetBuffer[2] = uint8_t(i);
-				WriteBE32(&NetBuffer[3], con.SessionToken);
-				NetBufferLength = 7u;
-			}
-
-			if (i > 0)
-			{
-				memcpy(&NetBuffer[NetBufferLength], &Connected[i].Address, addrSize);
-				NetBufferLength += addrSize;
-			}
-
-			TArrayView<uint8_t> stream = TArrayView(&NetBuffer[NetBufferLength], MAX_MSGLEN - NetBufferLength);
-			Net_SetUserInfo(i, stream);
-			NetBufferLength += stream.Data() - &NetBuffer[NetBufferLength];
-			if (con.bHCDEConnect)
-				CommitReliableHCDEPregameService(con.Address, con, HPS_PEER_USER_INFO, uint8_t(i));
-			else
-				SendPacket(con.Address);
-			clientReady = false;
-		}
-
-		if (clientReady)
-		{
-			con.Status = CSTAT_READY;
-			I_NetClientUpdated(RemoteClient);
-			DebugTrace::Markf("net", "runtime late-join setup reached ready slot=%d", RemoteClient);
-		}
-		return;
-	}
-
-	if (con.Status == CSTAT_READY)
-	{
-		if (con.bHCDEConnect)
-		{
-			if (BeginReliableHCDEPregameService(HPS_START_GAME, con, 0u))
-				CommitReliableHCDEPregameService(con.Address, con, HPS_START_GAME, 0u);
-		}
-		else
-		{
-			NetBuffer[0] = NCMD_SETUP;
-			NetBuffer[1] = PRE_GO;
-			WriteBE32(&NetBuffer[2], con.SessionToken);
-			NetBufferLength = 6u;
-			SendPacket(con.Address);
-		}
-	}
-
-	if (con.bHCDEConnect)
-	{
-		FlushHCDEReliableServices(con.Address, con);
+		DriveRuntimeSetupStateForClient(client, connectedPlayers);
 	}
 }
 
@@ -2427,6 +2482,13 @@ static bool Host_CheckForConnections(void* connected)
 	const bool hasPassword = strlen(net_password) > 0;
 	int* connectedPlayers = (int*)connected;
 	bool forceStarting = I_ShouldStartNetGame();
+	if (DedicatedServerMode && !forceStarting && sv_dedicated_autostart && *connectedPlayers > 1)
+	{
+		DedicatedServerStartRequested = true;
+		forceStarting = true;
+		Printf("NetServer:: Auto-start requested (%d/%d playable clients connected).\n",
+			max(*connectedPlayers - 1, 0), max(MaxClients - 1, 0));
+	}
 	if (DedicatedServerMode && forceStarting && *connectedPlayers <= 1)
 	{
 		DedicatedServerStartRequested = false;
@@ -2489,7 +2551,7 @@ static bool Host_CheckForConnections(void* connected)
 			if (RemoteClient >= 0)
 				continue;
 
-			TryProcessSetupConnectPacket(from, hasPassword, forceStarting, connectedPlayers);
+			TryProcessSetupConnectPacket(from, hasPassword, forceStarting, false, connectedPlayers);
 		}
 		else if (NetBuffer[1] == PRE_USER_INFO)
 		{
@@ -3137,9 +3199,33 @@ static bool Guest_ContactHost(void* unused)
 		}
 		else if (NetBuffer[1] == PRE_IN_PROGRESS)
 		{
+			if (DedicatedJoinMode && DedicatedLateJoinRetryPendingSend)
+			{
+				// Ignore duplicate in-progress replies until the retry connect
+				// packet is actually emitted at the end of this loop tick.
+				DebugTrace::Mark("net", "ignoring PRE_IN_PROGRESS while dedicated late-join retry is pending send");
+				continue;
+			}
+			if (!DedicatedJoinMode && !DedicatedLateJoinRetryAttempted)
+			{
+				// Dedicated late-join fallback: if a server is already mid-match,
+				// retry once with explicit dedicated-join service flags so launchers
+				// that used plain -join can still attach to dedicated runtime sessions.
+				DedicatedLateJoinRetryAttempted = true;
+				DedicatedLateJoinRetryPendingSend = true;
+				DedicatedJoinMode = true;
+				Connected[0].SessionToken = 0u;
+				Connected[0].bHCDEConnect = false;
+				Connected[0].HCDEConnectVersion = 0u;
+				Connected[0].HCDEConnectFlags = 0u;
+				I_NetMessage("Server is mid-match. Retrying dedicated late join...");
+				I_NetLog("Retrying connect with dedicated late-join flags after PRE_IN_PROGRESS");
+				DebugTrace::Mark("net", "guest connect fallback: retrying as dedicated late-join");
+				continue;
+			}
 			if (DedicatedJoinMode)
 			{
-				I_NetError("The dedicated server is already running a match and this build does not yet support late rejoin.");
+				I_NetError("The dedicated server rejected late join. The server may be running an older build.");
 			}
 			else
 			{
@@ -3184,6 +3270,7 @@ static bool Guest_ContactHost(void* unused)
 					continue;
 
 				Connected[0].SessionToken = ReadSessionToken(NetBuffer, 5u);
+				DedicatedLateJoinRetryPendingSend = false;
 				const uint8_t ackFlags = msgSize >= 10 ? NetBuffer[9] : 0u;
 				if ((ackFlags & PRE_CONNECT_ACK_DEDICATED) != 0)
 				{
@@ -3523,6 +3610,11 @@ static bool Guest_ContactHost(void* unused)
 			if (DedicatedJoinMode || SilentNetStartMode)
 				AppendHCDEConnectInfo(BuildLocalHCDEConnectFlags());
 			SendPacket(Connected[0].Address);
+			if (DedicatedLateJoinRetryPendingSend)
+			{
+				DedicatedLateJoinRetryPendingSend = false;
+				DebugTrace::Mark("net", "dedicated late-join retry packet sent");
+			}
 		}
 	}
 	else
@@ -3583,6 +3675,8 @@ static bool JoinGame(int arg)
 	}
 
 	consoleplayer = -1;
+	DedicatedLateJoinRetryAttempted = false;
+	DedicatedLateJoinRetryPendingSend = false;
 	StartNetwork(true);
 	DebugTrace::Markf("net", "join network ready port=%u", static_cast<unsigned>(GamePort));
 
@@ -3624,6 +3718,8 @@ bool I_InitNetwork()
 	HCDE_ServerMode_InitFromArgs();
 	DedicatedServerMode = HCDE_ServerMode_IsDedicatedServer();
 	DedicatedJoinMode = HCDE_ServerMode_IsDedicatedJoin();
+	DedicatedLateJoinRetryAttempted = false;
+	DedicatedLateJoinRetryPendingSend = false;
 	// This controls only the pregame room/status UI. Dedicated join protocol
 	// flags are still emitted through DedicatedJoinMode when the UI is visible.
 	SilentNetStartMode = HCDE_ServerMode_ShouldSuppressRoomUI();

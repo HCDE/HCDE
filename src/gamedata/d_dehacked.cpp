@@ -946,14 +946,16 @@ static void CreateSeekerMissileFunc(FunctionCallEmitter& emitters, int value1, i
 	emitters.AddParameterIntConst(state->GetIntArg(0, 0));
 	emitters.AddParameterIntConst(state->GetIntArg(1, 0));
 	emitters.AddParameterIntConst(state->GetIntArg(2, 0));
-	emitters.AddParameterIntConst(state->GetIntArg(3, 0));
-	emitters.AddParameterIntConst(state->GetIntArg(4, 0));
+	// Keep DEH alias behavior aligned with Actor.A_SeekerMissile defaults.
+	emitters.AddParameterIntConst(state->GetIntArg(3, 50));
+	emitters.AddParameterIntConst(state->GetIntArg(4, 10));
 }
 
 static void CreateTracer2Func(FunctionCallEmitter& emitters, int value1, int value2, MBFParamState* state)
 {
 	state->ValidateArgCount(1, "A_Tracer2");
-	emitters.AddParameterFloatConst(state->GetFloatArg(0, 0));
+	// Match the Actor.A_Tracer2 default so omitted args still steer.
+	emitters.AddParameterFloatConst(state->GetFloatArg(0, 19.6875));
 }
 
 static void CreateJumpIfHealthBelowFunc(FunctionCallEmitter &emitters, int value1, int value2, MBFParamState* state)

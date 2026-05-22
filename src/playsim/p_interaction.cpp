@@ -586,8 +586,10 @@ void AActor::Die (AActor *source, AActor *inflictor, int dmgflags, FName MeansOf
 			}
 
 			// [RH] Implement fraglimit
-			if (deathmatch && fraglimit &&
-				fraglimit <= D_GetFragCount (source->player))
+			const int duelLimit = Net_GetCompatDuelLimit();
+			const int activeFragLimit = (deathmatch && duelLimit > 0) ? duelLimit : fraglimit;
+			if (deathmatch && activeFragLimit &&
+				activeFragLimit <= D_GetFragCount(source->player))
 			{
 				Printf ("%s\n", GStrings.GetString("TXT_FRAGLIMIT"));
 				Level->ExitLevel (0, false);

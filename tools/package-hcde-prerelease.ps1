@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.4.3-hotfix1",
+    [string]$Version = "0.4.4",
     [string]$Configuration = "RelWithDebInfo",
     [string]$OpenALSoftVersion = "1.25.2",
     [string]$SndFileDll = "",
@@ -7,7 +7,7 @@ param(
     [switch]$Build,
     [switch]$IncludeSymbols,
     [switch]$Upload,
-    [string]$Repo = "bokoxthexchocobo/HCDE",
+    [string]$Repo = "HCDE/HCDE",
     [string]$ReleaseTag = "",
     [string]$GhCli = "gh"
 )
@@ -234,8 +234,7 @@ function Upload-ReleaseAssets {
         & $gh release create $Tag `
             --repo $Repository `
             --title "HCDE v$VersionLabel" `
-            --notes-file $ReleaseNotesFile `
-            --draft
+            --notes-file $ReleaseNotesFile
         if ($LASTEXITCODE -ne 0) {
             throw "gh release create failed."
         }
@@ -245,7 +244,7 @@ function Upload-ReleaseAssets {
             --repo $Repository `
             --title "HCDE v$VersionLabel" `
             --notes-file $ReleaseNotesFile `
-            --draft
+            --draft=false
         if ($LASTEXITCODE -ne 0) {
             throw "gh release edit failed."
         }
@@ -360,10 +359,10 @@ Included:
 Bring your own IWAD, such as DOOM2.WAD.
 
 Source code and complete documentation are available from the public HCDE repository:
-https://github.com/bokoxthexchocobo/HCDE
+https://github.com/HCDE/HCDE
 
 The corresponding source for this release is the v$Version tag:
-https://github.com/bokoxthexchocobo/HCDE/tree/v$Version
+https://github.com/HCDE/HCDE/tree/v$Version
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "RELEASE-NOTES.txt") -Encoding UTF8
 
 foreach ($compatFile in $compatFiles) {

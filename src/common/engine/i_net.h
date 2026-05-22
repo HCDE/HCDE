@@ -195,6 +195,7 @@ void I_ClearClient(size_t client);
 void I_NetCmd(ENetCommand cmd);
 void I_NetDone();
 void HandleIncomingConnection();
+void HandleIncomingConnectionMaintenance();
 void CloseNetwork();
 uint16_t I_GetGamePort();
 

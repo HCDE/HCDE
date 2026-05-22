@@ -1,5 +1,5 @@
 param(
-    [string]$Repo = "bokoxthexchocobo/HCDE",
+    [string]$Repo = "HCDE/HCDE",
     [int]$StaleLockMinutes = 120
 )
 

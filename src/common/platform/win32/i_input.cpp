@@ -583,6 +583,15 @@ void I_GetWindowEvent()
 #endif
 		DispatchMessage (&mess);
 	}
+
+#ifdef HCDE_DEDICATED_SERVER
+	if (HCDE_ServerMode_IsDedicatedServer())
+	{
+		// Keep dedicated stdin command intake alive during active gameplay as
+		// well as during startup loops.
+		I_PumpDedicatedServerConsoleInput();
+	}
+#endif
 }
 
 void I_GetEvent ()

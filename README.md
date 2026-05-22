@@ -37,6 +37,7 @@ HCDE keeps the master protocol boundary explicit:
 - `tools/hcdemaster/` - standalone master server source
 - `docs/HCDE_MASTER_PROTOCOL.md` - master protocol contract (human-readable)
 - `docs/HCDE_DOOM_CONNECTOR_LAUNCH.md` - launcher/server launch contract
+- [docs/Cvars.md](docs/Cvars.md) - full list of all cvars and defaults
 - `wadsrc*` - packaged game resources and compat content
 - `docs/licenses/` - license reference docs
 
@@ -78,7 +79,7 @@ HCDE includes a Windows updater flow in the launcher `About` tab.
 Scope:
 
 - Windows x64 runtime package updates
-- Source: latest GitHub release from `bokoxthexchocobo/HCDE`
+- Source: latest GitHub release from `HCDE/HCDE`
 - Install model: in-place update with automatic backup and rollback path
 
 Launcher workflow:
@@ -98,7 +99,7 @@ UI controls:
 
 Release/API behavior:
 
-- checks `https://api.github.com/repos/bokoxthexchocobo/HCDE/releases/latest`
+- checks `https://api.github.com/repos/HCDE/HCDE/releases/latest`
 - compares latest tag against local `VERSIONSTR`
 - prefers runtime zips matching `HCDE-<version>-windows-x64.zip`
 - de-prioritizes non-runtime zips (`symbols`, `pdb`, `debug`, `source`, `src`)

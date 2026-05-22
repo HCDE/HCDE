@@ -55,6 +55,7 @@ public:
 
 #ifdef HCDE_DEDICATED_SERVER
 	void TickServerConsole();
+	void PumpServerConsoleStdIn();
 	void SetServerConsoleStatus(const char* status);
 #endif
 
@@ -127,7 +128,15 @@ private:
 	HFONT ServerFont = 0;
 	HBRUSH ServerBrush = 0;
 	bool ServerPumpingMessages = false;
+	HANDLE ServerStdIn = INVALID_HANDLE_VALUE;
+	bool ServerStdInUnavailable = false;
+	FString ServerStdInBuffer;
 #endif
 };
 
 extern MainWindow mainwindow;
+
+#ifdef HCDE_DEDICATED_SERVER
+// Poll dedicated server stdin for scripted console commands.
+void I_PumpDedicatedServerConsoleInput();
+#endif

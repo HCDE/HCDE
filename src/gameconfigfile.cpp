@@ -799,6 +799,39 @@ void FGameConfigFile::DoGameSetup (const char *gamename)
 			}
 		}
 	}
+
+	// HCDE UI baseline migration (LastRun < 232): ensure the requested defaults
+	// are applied once for existing installs after game-scoped CVars are loaded.
+	if (SetSection("LastRun"))
+	{
+		const char *lastver = GetValueForKey("Version");
+		if (lastver != NULL && atof(lastver) < 232)
+		{
+			FBaseCVar *var = FindCVar("uiscale", NULL);
+			if (var != NULL)
+			{
+				UCVarValue v{};
+				v.Int = 1;
+				var->SetGenericRep(v, CVAR_Int);
+			}
+
+			var = FindCVar("screenblocks", NULL);
+			if (var != NULL)
+			{
+				UCVarValue v{};
+				v.Int = 12;
+				var->SetGenericRep(v, CVAR_Int);
+			}
+
+			var = FindCVar("m_cleanscale", NULL);
+			if (var != NULL)
+			{
+				UCVarValue v{};
+				v.Bool = true;
+				var->SetGenericRep(v, CVAR_Bool);
+			}
+		}
+	}
 }
 
 // Moved from DoGameSetup so that it can happen after wads are loaded

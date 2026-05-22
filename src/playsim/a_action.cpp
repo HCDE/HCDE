@@ -31,6 +31,45 @@
 
 EXTERN_CVAR(Int, sv_corpsequeuesize)
 
+// Centralized corpse-queue enforcement used by both explicit A_QueueCorpse
+// states and generic A_NoBlocking deaths.
+static void HCDE_QueueCorpse(AActor* corpse)
+{
+	if (corpse == nullptr || corpse->Level == nullptr)
+	{
+		return;
+	}
+
+	auto& corpsequeue = corpse->Level->CorpseQueue;
+
+	// De-duplicate in case multiple state paths try to queue the same corpse.
+	auto index = corpsequeue.FindEx([=](auto& element) { return element == corpse; });
+	if (index < corpsequeue.Size())
+	{
+		corpsequeue.Delete(index);
+	}
+
+	// Zero or negative means "do not retain corpses" for this queue.
+	if (sv_corpsequeuesize <= 0)
+	{
+		corpse->Destroy();
+		return;
+	}
+
+	while (corpsequeue.Size() >= (unsigned)sv_corpsequeuesize)
+	{
+		AActor* oldCorpse = corpsequeue[0];
+		if (oldCorpse && oldCorpse != corpse)
+		{
+			oldCorpse->Destroy();
+		}
+		corpsequeue.Delete(0);
+	}
+
+	corpsequeue.Push(MakeObjPtr<AActor*>(corpse));
+	GC::WriteBarrier(corpse);
+}
+
 //----------------------------------------------------------------------------
 //
 // PROC A_NoBlocking
@@ -79,11 +118,19 @@ void A_Unblock(AActor *self, bool drop)
 			}
 		}
 	}
+
+	// Apply corpse queue policy for all non-player corpses that use
+	// A_NoBlocking, not just actors with explicit A_QueueCorpse calls.
+	if ((self->flags & MF_CORPSE) && self->player == nullptr && !self->IsKindOf(NAME_PlayerPawn))
+	{
+		HCDE_QueueCorpse(self);
+	}
 }
 
 //----------------------------------------------------------------------------
 //
-// CorpseQueue Routines (used by Hexen)
+// CorpseQueue routines (historically Hexen-specific, now enforced for
+// generic A_NoBlocking corpses as well).
 //
 //----------------------------------------------------------------------------
 
@@ -92,17 +139,9 @@ DEFINE_ACTION_FUNCTION(AActor, A_QueueCorpse)
 {
 	PARAM_SELF_PROLOGUE(AActor);
 
-	if (sv_corpsequeuesize > 0)
+	if (self->flags & MF_CORPSE)
 	{
-		auto &corpsequeue = self->Level->CorpseQueue;
-		while (corpsequeue.Size() >= (unsigned)sv_corpsequeuesize)
-		{
-			AActor *corpse = corpsequeue[0];
-			if (corpse) corpse->Destroy();
-			corpsequeue.Delete(0);
-		}
-		corpsequeue.Push(MakeObjPtr<AActor*>(self));
-		GC::WriteBarrier(self);
+		HCDE_QueueCorpse(self);
 	}
 	return 0;
 }

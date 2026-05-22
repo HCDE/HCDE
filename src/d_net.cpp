@@ -341,6 +341,11 @@ struct FHCDELivePeerState
 static uint8_t	CurrentRoomID = 0u;	// Ignore commands not from this room (useful when transitioning levels).
 static int		LastGameUpdate = 0;		// Track the last time the game actually ran the world.
 static uint64_t	MutedClients = 0u;		// Ignore messages from these clients.
+static_assert(MAXPLAYERS <= 64, "MAXPLAYERS must remain <=64 while using fixed-sized late-join bitmask state.");
+static uint64_t LateJoinSyncPending = 0u; // Clients admitted during an active match but not yet live-synced.
+static int LateJoinSyncTargetSequence[MAXPLAYERS] = {};
+static int LateJoinSyncTargetConsistency[MAXPLAYERS] = {};
+static int LateJoinSyncStartTic[MAXPLAYERS] = {};
 static uint64_t	LastHCDELiveControlMS = 0u;
 static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
 
@@ -379,6 +384,7 @@ static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to
 static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
 static EInvasionState InvasionState = INVS_DISABLED; // Authoritative game phase.
 static int InvasionStateTics = 0;                  // Time remaining in current phase (if applicable).
+static int InvasionNoParticipantTics = 0;          // Grace window for dedicated server reconnects with no participants.
 static EInvasionState InvasionAnnouncementState = INVS_DISABLED; // Local last-seen state for HUD/console announcement dedupe.
 static int InvasionAnnouncementWave = 0;              // Local last-seen wave for announcement transitions.
 static int InvasionAnnouncementLastCountdownSecond = -1; // Last second announced for "Prepare for invasion".
@@ -3397,6 +3403,23 @@ CUSTOM_CVAR(Int, sv_invasionwaves, 8, CVAR_SERVERINFO | CVAR_NOSAVE)
 	else if (self > 255)
 		self = 255;
 }
+CUSTOM_CVAR_NAMED(Int, wavelimit_compat, wavelimit, 0, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 255)
+		self = 255;
+}
+CUSTOM_CVAR_NAMED(Int, duellimit_compat, duellimit, 0, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 255)
+		self = 255;
+}
+CUSTOM_CVAR(Bool, sv_usemapsettingswavelimit, true, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+}
 CUSTOM_CVAR(Int, sv_invasionbasebudget, 24, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
 	if (self < 1)
@@ -4247,6 +4270,7 @@ static void Net_ResetInvasionState(const char* reason)
 	Net_ResetInvasionAnnouncements();
 	InvasionReplicatedActiveMonsterCount = 0;
 	InvasionWipeGraceTics = 0;
+	InvasionNoParticipantTics = 0;
 	if (Net_IsInvasionModeEnabled())
 		Net_SetInvasionState(INVS_WAITING, 0, reason != nullptr ? reason : "reset");
 	else
@@ -4301,9 +4325,55 @@ static bool Net_IsInvasionBossWave(int wave)
 	return sv_invasionbosswaveevery > 0 && wave > 0 && (wave % sv_invasionbosswaveevery) == 0;
 }
 
+static bool HCDE_CanOverrideCmpgninfLimits()
+{
+	return !HCDE_ServerMode_IsDedicatedServer() && !netgame;
+}
+
+static int Net_ResolveInvasionMaxWaves()
+{
+	int resolved = clamp<int>(sv_invasionwaves, 1, 255);
+	const bool canOverrideCmpgninfLimits = HCDE_CanOverrideCmpgninfLimits();
+	const bool hasMapLimit = primaryLevel != nullptr && primaryLevel->info != nullptr && primaryLevel->info->InvasionWaveLimit > 0;
+	const bool useMapMetadata = sv_usemapsettingswavelimit && hasMapLimit;
+
+	// Classic Skulltag/Zandronum online compatibility:
+	// if enabled, prefer per-map metadata (CMPGNINF/MAPINFO wavelimit) when present.
+	// Offline sessions are allowed to override it for skirmish/debug workflows.
+	if (useMapMetadata && !canOverrideCmpgninfLimits)
+	{
+		resolved = clamp<int>(primaryLevel->info->InvasionWaveLimit, 1, 255);
+	}
+
+	// Explicit override for mods/scripts that still drive legacy wavelimit.
+	// Online maps with enforced map limits keep that limit unless override mode is active.
+	const int legacyLimit = clamp<int>(wavelimit_compat, 0, 255);
+	if (legacyLimit > 0 && (canOverrideCmpgninfLimits || !useMapMetadata))
+	{
+		resolved = legacyLimit;
+	}
+
+	return resolved;
+}
+
+int Net_GetCompatDuelLimit()
+{
+	const bool canOverrideCmpgninfLimits = HCDE_CanOverrideCmpgninfLimits();
+	const bool hasMapLimit = primaryLevel != nullptr && primaryLevel->info != nullptr && primaryLevel->info->DuelLimit > 0;
+
+	// Skulltag/CMPGNINF compatibility: in online sessions map metadata
+	// settings (duellimit) win unless an offline override mode is active.
+	if (hasMapLimit && !canOverrideCmpgninfLimits)
+	{
+		return clamp<int>(primaryLevel->info->DuelLimit, 1, 255);
+	}
+
+	return clamp<int>(duellimit_compat, 0, 255);
+}
+
 static void Net_StartInvasionWave(const char* reason)
 {
-	InvasionWaveDirector.MaxWaves = clamp<int>(sv_invasionwaves, 1, 255);
+	InvasionWaveDirector.MaxWaves = Net_ResolveInvasionMaxWaves();
 	if (InvasionWaveDirector.Wave >= InvasionWaveDirector.MaxWaves)
 	{
 		Net_SetInvasionState(INVS_VICTORY, Net_InvasionSecondsToTics(sv_invasionresulttime),
@@ -4387,6 +4457,7 @@ static void Net_TickInvasionState()
 			Net_DestroyTrackedInvasionMonsters("mode-disabled");
 			InvasionWaveDirector.Reset();
 			InvasionSpawnDirectory.Reset();
+			InvasionNoParticipantTics = 0;
 			Net_SetInvasionState(INVS_DISABLED, 0, "mode-disabled");
 		}
 		return;
@@ -4397,6 +4468,7 @@ static void Net_TickInvasionState()
 	{
 		InvasionWaveDirector.Reset();
 		InvasionSpawnDirectory.Reset();
+		InvasionNoParticipantTics = 0;
 		Net_SetInvasionState(INVS_WAITING, 0, "mode-enabled");
 	}
 
@@ -4406,6 +4478,29 @@ static void Net_TickInvasionState()
 		// Countdown ownership stays with the existing cutscene-ready flow.
 		InvasionStateTics = max(CutsceneCountdown, 0);
 		return;
+	}
+
+	// Dedicated servers can temporarily have no active participants between
+	// probe joins and real players. Keep the current invasion wave metadata
+	// stable for a short reconnect window before forcing a safe reset.
+	if (I_IsDedicatedServerMode()
+		&& Net_IsInvasionRoundActiveState(InvasionState)
+		&& Net_CountInvasionParticipants() <= 0)
+	{
+		InvasionWipeGraceTics = 0;
+		if (InvasionNoParticipantTics <= 0)
+		{
+			InvasionNoParticipantTics = TICRATE * 30;
+		}
+		else if (--InvasionNoParticipantTics <= 0)
+		{
+			Net_ResetInvasionState("no-participants-timeout");
+			return;
+		}
+	}
+	else
+	{
+		InvasionNoParticipantTics = 0;
 	}
 
 	if (InvasionStateTics > 0)
@@ -4419,8 +4514,7 @@ static void Net_TickInvasionState()
 		const int participants = Net_CountInvasionParticipants();
 		if (participants <= 0)
 		{
-			// Dedicated servers can temporarily have no real participants.
-			// Keep mode enabled but reset any active wave state.
+			// No active participants remain; reset any active wave state.
 			Net_ResetInvasionState("no-participants");
 			return;
 		}
@@ -4543,6 +4637,9 @@ void Net_ClearBuffers()
 		for (int j = 0; j < BACKUPTICS; ++j)
 			state.Tics[j].Data.SetData(nullptr, 0);
 
+		LateJoinSyncTargetSequence[i] = -1;
+		LateJoinSyncTargetConsistency[i] = -1;
+		LateJoinSyncStartTic[i] = -1;
 		HCDELivePeers[i].Clear();
 	}
 
@@ -4557,6 +4654,7 @@ void Net_ClearBuffers()
 
 	LagState = LAG_NONE;
 	MutedClients = 0u;
+	LateJoinSyncPending = 0u;
 	CurrentRoomID = 0u;
 	NetworkClients.Clear();
 	netgame = multiplayer = false;
@@ -4587,14 +4685,22 @@ void Net_ClearBuffers()
 	NetworkClients += 0;
 }
 
+static bool Net_IsLateJoinSyncPending(int client);
+
 static bool Net_IsCutsceneReadyParticipant(int player)
 {
-	return player >= 0 && player < MAXPLAYERS && playeringame[player] && !I_IsServerReservedSlot(player);
+	return player >= 0 && player < MAXPLAYERS
+		&& playeringame[player]
+		&& !I_IsServerReservedSlot(player)
+		&& !Net_IsLateJoinSyncPending(player);
 }
 
 static bool Net_IsGameplayConsistencyParticipant(int player)
 {
-	return player >= 0 && player < MAXPLAYERS && playeringame[player] && !I_IsServerReservedSlot(player);
+	return player >= 0 && player < MAXPLAYERS
+		&& playeringame[player]
+		&& !I_IsServerReservedSlot(player)
+		&& !Net_IsLateJoinSyncPending(player);
 }
 
 static bool Net_IsTicGateClient(int player)
@@ -4608,7 +4714,49 @@ static bool Net_IsTicGateClient(int player)
 	if (I_IsServerReservedSlot(player))
 		return false;
 
+	// Runtime late-join clients need a warmup window so the authority can keep
+	// running while they bootstrap from live snapshots.
+	if ((LateJoinSyncPending & ((uint64_t)1u << player)) != 0u)
+		return false;
+
 	return true;
+}
+
+static bool Net_IsLateJoinSyncPending(int client)
+{
+	return client >= 0 && client < MAXPLAYERS
+		&& (LateJoinSyncPending & ((uint64_t)1u << client)) != 0u;
+}
+
+static void Net_SetLateJoinSyncPending(int client, int targetSequence, int targetConsistency, const char* reason)
+{
+	if (client < 0 || client >= MAXPLAYERS)
+		return;
+
+	LateJoinSyncPending |= (uint64_t)1u << client;
+	LateJoinSyncTargetSequence[client] = max<int>(targetSequence, -1);
+	LateJoinSyncTargetConsistency[client] = max<int>(targetConsistency, -1);
+	LateJoinSyncStartTic[client] = EnterTic;
+	DebugTrace::Markf("net", "late-join sync pending client=%d room=%u gametic=%d clienttic=%d target-seq=%d target-con=%d reason=%s",
+		client, unsigned(CurrentRoomID), gametic, ClientTic, LateJoinSyncTargetSequence[client], LateJoinSyncTargetConsistency[client],
+		reason != nullptr ? reason : "unknown");
+}
+
+static void Net_ClearLateJoinSyncPending(int client, const char* reason)
+{
+	if (client < 0 || client >= MAXPLAYERS)
+		return;
+
+	if ((LateJoinSyncPending & ((uint64_t)1u << client)) == 0u)
+		return;
+
+	LateJoinSyncPending &= ~((uint64_t)1u << client);
+	DebugTrace::Markf("net", "late-join sync complete client=%d room=%u gametic=%d clienttic=%d target-seq=%d target-con=%d reason=%s",
+		client, unsigned(CurrentRoomID), gametic, ClientTic, LateJoinSyncTargetSequence[client], LateJoinSyncTargetConsistency[client],
+		reason != nullptr ? reason : "unknown");
+	LateJoinSyncTargetSequence[client] = -1;
+	LateJoinSyncTargetConsistency[client] = -1;
+	LateJoinSyncStartTic[client] = -1;
 }
 
 static int Net_GetCutsceneReadyHost()
@@ -4821,6 +4969,13 @@ void Net_ResetCommands(bool midTic)
 	// A room/map change invalidates old waiting state. Leaving it set can stop
 	// the first command for the next map from being generated.
 	Net_ClearStaleWaitingFlags();
+	LateJoinSyncPending = 0u;
+	for (int i = 0; i < MAXPLAYERS; ++i)
+	{
+		LateJoinSyncTargetSequence[i] = -1;
+		LateJoinSyncTargetConsistency[i] = -1;
+		LateJoinSyncStartTic[i] = -1;
+	}
 	LastTicGateStallTrace = 0;
 	SkipCommandTimer = SkipCommandAmount = CommandsAhead = 0;
 	StabilityBuffer = PrevAvailableDiff = 0;
@@ -5060,15 +5215,61 @@ static void ClientConnecting(int client)
 	if (!NetworkClients.InGame(client) || I_IsHCDEServiceAuthoritySlot(client))
 		return;
 
-	// Stage 1 late-join admission: mark the connecting client as waiting so
-	// gameplay side can keep authority-gated transitions stable while setup
-	// packets are exchanged in i_net.
+	auto& state = ClientStates[client];
+	const int currentSequence = max<int>(ClientTic / max<int>(TicDup, 1), 0);
+	const int currentConsistency = max<int>(CurrentConsistency, 0);
+	const int replayWindow = max<int>(MAXSENDTICS / 2, 1);
+	if (Net_IsLateJoinSyncPending(client))
+	{
+		// Keep replay pressure active while this client is still catching up.
+		state.Flags |= CF_RETRANSMIT;
+		return;
+	}
+
+	// Stage 2 late-join sync: seed a bounded replay window and hold this client
+	// in a non-gating warmup state until first live gameplay packets arrive.
+	state.Flags |= CF_RETRANSMIT;
+	state.ResendSequenceFrom = min<int>(state.ResendSequenceFrom >= 0 ? state.ResendSequenceFrom : currentSequence,
+		max<int>(currentSequence - replayWindow, 0));
+	state.ResendConsistencyFrom = min<int>(state.ResendConsistencyFrom >= 0 ? state.ResendConsistencyFrom : currentConsistency,
+		max<int>(currentConsistency - replayWindow, 0));
+
+	// A newly admitted runtime client is now an active participant.
+	if (!I_IsServerReservedSlot(client))
+	{
+		playeringame[client] = true;
+		if (players[client].playerstate == PST_GONE || players[client].playerstate == PST_DEAD)
+			players[client].playerstate = PST_ENTER;
+	}
+
+	Net_SetLateJoinSyncPending(client, max<int>(currentSequence - 1, 0), max<int>(currentConsistency - 1, 0), "runtime-connect");
 	if (!players[client].waiting)
 	{
 		players[client].waiting = true;
 		Net_ResetAuthorityWaitWatchdog("late-join-connect");
-		DebugTrace::Markf("net", "late-join setup active client=%d room=%u gametic=%d clienttic=%d",
-			client, unsigned(CurrentRoomID), gametic, ClientTic);
+		DebugTrace::Markf("net", "late-join setup active client=%d room=%u gametic=%d clienttic=%d replay-seq-from=%d replay-consistency-from=%d",
+			client, unsigned(CurrentRoomID), gametic, ClientTic, state.ResendSequenceFrom, state.ResendConsistencyFrom);
+	}
+}
+
+static void Net_EnsureRuntimeClientSlot(int client, int sourceClient)
+{
+	if (client < 0 || client >= MAXPLAYERS)
+		return;
+
+	const bool wasKnown = NetworkClients.InGame(client);
+	if (!wasKnown)
+	{
+		NetworkClients += client;
+		DebugTrace::Markf("net", "runtime client slot activated client=%d source=%d room=%u gametic=%d clienttic=%d",
+			client, sourceClient, unsigned(CurrentRoomID), gametic, ClientTic);
+	}
+
+	const bool reserved = I_IsServerReservedSlot(client);
+	playeringame[client] = !reserved;
+	if (!reserved && (players[client].playerstate == PST_GONE || players[client].playerstate == PST_DEAD))
+	{
+		players[client].playerstate = PST_ENTER;
 	}
 }
 
@@ -5122,6 +5323,10 @@ static void DisconnectClient(int clientNum)
 		state.CurrentSequence, state.SequenceAck, CurrentConsistency, state.CurrentNetConsistency);
 
 	NetworkClients -= clientNum;
+	LateJoinSyncPending &= ~((uint64_t)1u << clientNum);
+	LateJoinSyncTargetSequence[clientNum] = -1;
+	LateJoinSyncTargetConsistency[clientNum] = -1;
+	LateJoinSyncStartTic[clientNum] = -1;
 	const uint64_t mask = ~((uint64_t)1u << clientNum);
 	MutedClients &= mask;
 	CutsceneReady &= mask;
@@ -5219,7 +5424,7 @@ static uint64_t LevelStartPlayableMask()
 	uint64_t mask = 0u;
 	for (auto pNum : NetworkClients)
 	{
-		if (!I_IsHCDEServiceAuthoritySlot(pNum))
+		if (!I_IsHCDEServiceAuthoritySlot(pNum) && !Net_IsLateJoinSyncPending(pNum))
 			mask |= (uint64_t)1u << pNum;
 	}
 	return mask;
@@ -5398,11 +5603,58 @@ static void GetPackets()
 			clientState.Flags |= CF_RETRANSMIT;
 		}
 
+		// Command packets must include room id, sequence ack, and consistency ack.
+		// Treat undersized packets as missing/corrupt and request retransmit.
+		if (NetBufferLength < 10u)
+		{
+			clientState.Flags |= CF_MISSING_SEQ;
+			continue;
+		}
+
+		const int consistencyAck = (NetBuffer[6] << 24) | (NetBuffer[7] << 16) | (NetBuffer[8] << 8) | NetBuffer[9];
 		const bool validID = NetBuffer[1] == CurrentRoomID;
 		if (validID)
 		{
 			clientState.Flags |= CF_UPDATED;
 			clientState.SequenceAck = (NetBuffer[2] << 24) | (NetBuffer[3] << 16) | (NetBuffer[4] << 8) | NetBuffer[5];
+			if (I_IsLocalHCDEServiceAuthority() && Net_IsLateJoinSyncPending(clientNum))
+			{
+				const int targetSeq = LateJoinSyncTargetSequence[clientNum];
+				const int targetCon = LateJoinSyncTargetConsistency[clientNum];
+				const bool seqReady = targetSeq < 0 || clientState.SequenceAck >= targetSeq;
+				const bool conReady = targetCon < 0 || consistencyAck >= targetCon;
+				constexpr int LateJoinPromotionTimeoutTics = MAXSENDTICS * 12;
+				const bool timedOut = LateJoinSyncStartTic[clientNum] >= 0
+					&& EnterTic - LateJoinSyncStartTic[clientNum] >= LateJoinPromotionTimeoutTics;
+
+				if (!seqReady)
+				{
+					const int resendFrom = max<int>(clientState.SequenceAck + 1, 0);
+					if (clientState.ResendSequenceFrom < 0 || clientState.ResendSequenceFrom > resendFrom)
+						clientState.ResendSequenceFrom = resendFrom;
+					clientState.Flags |= CF_RETRANSMIT_SEQ;
+				}
+				if (!conReady)
+				{
+					const int resendFrom = max<int>(consistencyAck + 1, 0);
+					if (clientState.ResendConsistencyFrom < 0 || clientState.ResendConsistencyFrom > resendFrom)
+						clientState.ResendConsistencyFrom = resendFrom;
+					clientState.Flags |= CF_RETRANSMIT_CON;
+				}
+
+				if (seqReady && conReady)
+				{
+					players[clientNum].waiting = false;
+					Net_ClearLateJoinSyncPending(clientNum, "acks-caught-up");
+				}
+				else if (timedOut)
+				{
+					DebugTrace::Warningf("net", "late-join sync promotion timed out client=%d seq=%d/%d con=%d/%d room=%u",
+						clientNum, clientState.SequenceAck, targetSeq, consistencyAck, targetCon, unsigned(CurrentRoomID));
+					players[clientNum].waiting = false;
+					Net_ClearLateJoinSyncPending(clientNum, "promotion-timeout");
+				}
+			}
 			if (!I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(clientNum))
 			{
 				const bool wasWaiting = players[clientNum].waiting;
@@ -5423,8 +5675,6 @@ static void GetPackets()
 				clientNum, unsigned(NetBuffer[1]), unsigned(CurrentRoomID), gametic, ClientTic);
 			continue;
 		}
-
-		const int consistencyAck = (NetBuffer[6] << 24) | (NetBuffer[7] << 16) | (NetBuffer[8] << 8) | NetBuffer[9];
 
 		int curByte = 10;
 		auto hasBytes = [&](int count) -> bool
@@ -5528,6 +5778,10 @@ static void GetPackets()
 					pNum, MAXPLAYERS, clientNum, unsigned(CurrentRoomID));
 				break;
 			}
+			// Only trust authority packets to activate runtime player slots.
+			// Non-authority peers should never be able to invent live players.
+			if (I_IsHCDEServiceAuthoritySlot(clientNum))
+				Net_EnsureRuntimeClientSlot(pNum, clientNum);
 			auto& pState = ClientStates[pNum];
 
 			// This gets sent over per-player so latencies are correctly displayed.
@@ -5948,6 +6202,8 @@ static bool Net_UpdateStatus()
 			{
 				if (I_IsHCDEServiceAuthoritySlot(client))
 					continue;
+				if (Net_IsLateJoinSyncPending(client))
+					continue;
 
 				if (ClientStates[client].CurrentSequence < curTic)
 				{
@@ -5979,6 +6235,8 @@ static bool Net_UpdateStatus()
 
 	for (auto client : NetworkClients)
 	{
+		if (Net_IsLateJoinSyncPending(client))
+			continue;
 		if (players[client].waiting)
 			return false;
 	}
@@ -6055,6 +6313,7 @@ static bool Net_UpdateStatus()
 void NetUpdate(int tics)
 {
 	GetPackets();
+	HandleIncomingConnectionMaintenance();
 	if (tics <= 0)
 		return;
 
@@ -6266,6 +6525,7 @@ void NetUpdate(int tics)
 			if (I_IsHCDEServiceAuthoritySlot(client))
 				continue;
 
+			const bool lateJoinPending = Net_IsLateJoinSyncPending(client);
 			if (ClientStates[client].Flags & CF_QUIT)
 			{
 				quitNums[quitters++] = client;
@@ -6273,7 +6533,7 @@ void NetUpdate(int tics)
 			else
 			{
 				++players;
-				if (ClientStates[client].CurrentSequence < lowestSeq)
+				if (!lateJoinPending && ClientStates[client].CurrentSequence < lowestSeq)
 					lowestSeq = ClientStates[client].CurrentSequence;
 			}
 		}
@@ -8884,6 +9144,9 @@ CCMD(invasion_standard)
 	sv_invasionintermissiontime = 6.0f;
 	sv_invasionresulttime = 8.0f;
 	sv_invasionwaves = 8;
+	wavelimit_compat = 0;
+	duellimit_compat = 0;
+	sv_usemapsettingswavelimit = true;
 	sv_invasionbasebudget = 24;
 	sv_invasionbudgetstep = 8;
 	sv_invasionperplayer = 6;
@@ -8894,8 +9157,9 @@ CCMD(invasion_standard)
 	sv_invasionspotusemaptags = true;
 	sv_invasionspotfallback = true;
 
-	Printf("Applied Invasion Standard preset (sv_gametype=4, waves=%d, budget=%d+%d/wave, per-player=%d)\n",
-		int(sv_invasionwaves), int(sv_invasionbasebudget), int(sv_invasionbudgetstep), int(sv_invasionperplayer));
+	Printf("Applied Invasion Standard preset (sv_gametype=4, waves=%d map-wavelimit=%d use-map-settings=%d budget=%d+%d/wave, per-player=%d)\n",
+		int(sv_invasionwaves), int(wavelimit_compat), sv_usemapsettingswavelimit ? 1 : 0,
+		int(sv_invasionbasebudget), int(sv_invasionbudgetstep), int(sv_invasionperplayer));
 }
 
 // Print a concise runtime + configuration summary for remote admin/debug use.
@@ -8911,7 +9175,14 @@ CCMD(invasion_status)
 		Net_GetInvasionWaveCleared(),
 		Net_GetInvasionActiveMonsterCount(),
 		Net_IsInvasionBossWave() ? 1 : 0);
-	Printf("Invasion settings: count=%.2f spawn=%.2f cleanup=%.2f inter=%.2f result=%.2f interval=%.2f burst=%d waves=%d base=%d step=%d perplayer=%d boss-every=%d boss-bonus=%d map-tags=%d fallback=%d\n",
+	const int mapWaveLimit = (primaryLevel != nullptr && primaryLevel->info != nullptr)
+		? clamp<int>(primaryLevel->info->InvasionWaveLimit, 0, 255)
+		: 0;
+	const int mapDuelLimit = (primaryLevel != nullptr && primaryLevel->info != nullptr)
+		? clamp<int>(primaryLevel->info->DuelLimit, 0, 255)
+		: 0;
+	const bool canOverrideCmpgninfLimits = HCDE_CanOverrideCmpgninfLimits();
+	Printf("Invasion settings: count=%.2f spawn=%.2f cleanup=%.2f inter=%.2f result=%.2f interval=%.2f burst=%d waves=%d legacy-wavelimit=%d use-map-wavelimit=%d map-wavelimit=%d resolved-wavelimit=%d map-duellimit=%d legacy-duellimit=%d allow-offline-overrides=%d base=%d step=%d perplayer=%d boss-every=%d boss-bonus=%d map-tags=%d fallback=%d\n",
 		double(sv_invasioncountdowntime),
 		double(sv_invasionspawntime),
 		double(sv_invasioncleanuptime),
@@ -8920,6 +9191,13 @@ CCMD(invasion_status)
 		double(sv_invasionspawninterval),
 		int(sv_invasionspawnburst),
 		int(sv_invasionwaves),
+		int(wavelimit_compat),
+		sv_usemapsettingswavelimit ? 1 : 0,
+		mapWaveLimit,
+		Net_ResolveInvasionMaxWaves(),
+		mapDuelLimit,
+		clamp<int>(duellimit_compat, 0, 255),
+		canOverrideCmpgninfLimits ? 1 : 0,
 		int(sv_invasionbasebudget),
 		int(sv_invasionbudgetstep),
 		int(sv_invasionperplayer),

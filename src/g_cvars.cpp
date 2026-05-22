@@ -73,17 +73,19 @@ CUSTOM_CVAR (Bool, gl_lights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOIN
 
 CUSTOM_CVAR(Int, sv_corpsequeuesize, 64, CVAR_ARCHIVE|CVAR_SERVERINFO|CVAR_NOINITCALL)
 {
-	if (self > 0)
+	if (self < 0)
 	{
-		for (auto Level : AllLevels())
+		self = 0;
+	}
+
+	for (auto Level : AllLevels())
+	{
+		auto &corpsequeue = Level->CorpseQueue;
+		while (corpsequeue.Size() > (unsigned)self)
 		{
-			auto &corpsequeue = Level->CorpseQueue;
-			while (corpsequeue.Size() > (unsigned)self)
-			{
-				AActor *corpse = corpsequeue[0];
-				if (corpse) corpse->Destroy();
-				corpsequeue.Delete(0);
-			}
+			AActor *corpse = corpsequeue[0];
+			if (corpse) corpse->Destroy();
+			corpsequeue.Delete(0);
 		}
 	}
 }

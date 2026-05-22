@@ -129,7 +129,7 @@ CUSTOM_CVAR(Int, vid_preferbackend, BACKEND_DEFAULT, CVAR_ARCHIVE | CVAR_GLOBALC
 	else notice = true;
 }
 
-CUSTOM_CVAR(Int, uiscale, 0, CVAR_ARCHIVE | CVAR_NOINITCALL)
+CUSTOM_CVAR(Int, uiscale, 1, CVAR_ARCHIVE | CVAR_NOINITCALL)
 {
 	if (self < 0)
 	{

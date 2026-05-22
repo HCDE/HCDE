@@ -521,7 +521,7 @@ static bool ValidateUpdateUrl(const FString& sourceUrl, FString& normalizedUrl, 
 
 // Robust version number parser. Extracts all numeric components from a string,
 // ignoring leading 'v' or other non-digit separators.
-// Example: "v0.4.3-hotfix1" -> {0, 4, 3, 1}
+// Example: "v0.4.4" -> {0, 4, 4, 0}
 static bool ParseVersionNumbers(const FString& version, std::vector<int>& outParts)
 {
 	const std::string input = version.GetChars();
@@ -576,7 +576,7 @@ static UpdateCheckResult CheckForLauncherUpdate()
 	const std::string script = R"PS(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$api = 'https://api.github.com/repos/bokoxthexchocobo/HCDE/releases/latest'
+$api = 'https://api.github.com/repos/HCDE/HCDE/releases/latest'
 $headers = @{ 'User-Agent' = 'HCDE-Updater' }
 $release = Invoke-RestMethod -Uri $api -Headers $headers
 $tag = [string]$release.tag_name
