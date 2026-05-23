@@ -15,6 +15,9 @@
 #include "findfile.h"
 #include "printf.h"
 
+// Keep compatibility resources discoverable even when users install them from the
+// optional compat zip in separate folders, instead of the bundled base package.
+
 struct HCDEModCompatEntry
 {
 	const char* Label;
@@ -59,6 +62,41 @@ static const char* const PinkValleyPatterns[] =
 	nullptr
 };
 
+static const char* const Armageddon2Patterns[] =
+{
+	"armageddon2*",
+	"Armageddon2*",
+	nullptr
+};
+
+static const char* const BeheadedKamikaziPatterns[] =
+{
+	"armageddon2*",
+	"Armageddon2*",
+	"BeheadedKamikazi*",
+	"beheadedkamikazi*",
+	nullptr
+};
+
+static const char* const SkulltagContentPatterns[] =
+{
+	"armageddon2*",
+	"Armageddon2*",
+	"skulltag_content*",
+	"skulltagcontent*",
+	nullptr
+};
+
+static const char* const SkulltagFlamePatchPatterns[] =
+{
+	"armageddon2*",
+	"Armageddon2*",
+	"skulltag_content*",
+	"skulltagcontent*",
+	"skulltag_flame_patches*",
+	nullptr
+};
+
 static const char* const MonstersAndAddonsPatterns[] =
 {
 	"Monstersandaddons*.pk3",
@@ -68,6 +106,130 @@ static const char* const MonstersAndAddonsPatterns[] =
 
 static unsigned int ActiveCompatFlags = 0u;
 static const char* ActiveStartupMapOverride = nullptr;
+
+static const char* const HCDEModCompatSearchFolders[] =
+{
+	"",
+	"compat",
+	"compat-mods",
+	"compatibility",
+	"mods",
+	"mod_compat",
+	nullptr
+};
+
+static FString HCDE_ModCompat_NormalizedProgDir()
+{
+	FString base = progdir;
+	FixPathSeperator(base);
+	if (base.IsNotEmpty() && (base.Back() == '/' || base.Back() == '\\'))
+	{
+		base.DeleteLastCharacter();
+	}
+	return base;
+}
+
+static FString HCDE_ModCompat_ParentDir(const FString& path)
+{
+	FString parent = path;
+	if (parent.IsEmpty())
+	{
+		return parent;
+	}
+	if (parent.Back() == '/' || parent.Back() == '\\')
+	{
+		parent.DeleteLastCharacter();
+	}
+
+	ptrdiff_t slash = parent.LastIndexOfAny("/\\");
+	if (slash < 0)
+	{
+		return parent;
+	}
+
+	return parent.Left(static_cast<size_t>(slash + 1));
+}
+
+static const char* HCDE_ModCompat_ResolveCompatFile(const char* resourceFile, FConfigFile* config)
+{
+	if (resourceFile == nullptr || resourceFile[0] == '\0')
+	{
+		return nullptr;
+	}
+
+	const char* found = BaseFileSearch(resourceFile, nullptr, true, config);
+	if (found != nullptr)
+	{
+		return found;
+	}
+
+	static FString fallback;
+	fallback = "";
+
+	const FString normalizedProgDir = HCDE_ModCompat_NormalizedProgDir();
+	const FString parentProgDir = HCDE_ModCompat_ParentDir(normalizedProgDir);
+
+	const char* const additionalRoots[] =
+	{
+		normalizedProgDir.GetChars(),
+		parentProgDir.GetChars(),
+		"",
+		nullptr
+	};
+
+	for (size_t i = 0; additionalRoots[i] != nullptr; ++i)
+	{
+		const char* root = additionalRoots[i];
+		if (root == nullptr)
+		{
+			continue;
+		}
+
+		for (size_t j = 0; HCDEModCompatSearchFolders[j] != nullptr; ++j)
+		{
+			FString basePath = root;
+			if (basePath.IsNotEmpty() && basePath.Back() != '/' && basePath.Back() != '\\')
+			{
+				basePath << '/';
+			}
+
+			const char* folder = HCDEModCompatSearchFolders[j];
+			if (*folder != '\0')
+			{
+				basePath << folder;
+				basePath << '/';
+			}
+
+			FString candidate = basePath;
+			candidate << resourceFile;
+			if (DirEntryExists(candidate.GetChars()))
+			{
+				fallback = std::move(candidate);
+				Printf("HCDE: compatibility resource '%s' resolved from fallback path '%s'.\n", resourceFile, fallback.GetChars());
+				return fallback.GetChars();
+			}
+		}
+	}
+
+	if (!parentProgDir.IsEmpty())
+	{
+		FString recursiveSearchRoot = parentProgDir;
+		if (recursiveSearchRoot.Back() == '/' || recursiveSearchRoot.Back() == '\\')
+		{
+			recursiveSearchRoot.DeleteLastCharacter();
+		}
+
+		FString recursiveMatch = RecursiveFileExists(recursiveSearchRoot, resourceFile);
+		if (recursiveMatch.IsNotEmpty())
+		{
+			fallback = std::move(recursiveMatch);
+			Printf("HCDE: compatibility resource '%s' resolved from recursive search in '%s'.\n", resourceFile, fallback.GetChars());
+			return fallback.GetChars();
+		}
+	}
+
+	return nullptr;
+}
 
 static const HCDEModCompatEntry ModCompatEntries[] =
 {
@@ -98,6 +260,34 @@ static const HCDEModCompatEntry ModCompatEntries[] =
 		"A_NEW_DAY",
 		PinkValleyPatterns,
 		HCDE_MODCOMPAT_MAPINFO_SKY_SPEED_NO_COMMA
+	},
+	{
+		"Armageddon2 compatibility",
+		"hcde_mod_compat_armageddon2_test.pk3",
+		nullptr,
+		Armageddon2Patterns,
+		0u
+	},
+	{
+		"Beheaded Kamikazi monster pack",
+		"BeheadedKamikazi.pk3",
+		nullptr,
+		BeheadedKamikaziPatterns,
+		0u
+	},
+	{
+		"Skulltag content resources",
+		"skulltag_content-4.0.pk3",
+		nullptr,
+		SkulltagContentPatterns,
+		0u
+	},
+	{
+		"Skulltag flame patch sprites",
+		"skulltag_flame_patches.pk3",
+		nullptr,
+		SkulltagFlamePatchPatterns,
+		0u
 	},
 	{
 		"Monsters and Addons settings controller script compatibility",
@@ -228,7 +418,7 @@ void HCDE_ModCompat_AppendFiles(std::vector<FileSys::ResourceName>& pwads, FConf
 			continue;
 		}
 
-		const char* compatFile = BaseFileSearch(entry.ResourceFile, nullptr, true, config);
+		const char* compatFile = HCDE_ModCompat_ResolveCompatFile(entry.ResourceFile, config);
 		if (compatFile == nullptr)
 		{
 			Printf("HCDE: mod compatibility '%s' matched, but '%s' was not found.\n", entry.Label, entry.ResourceFile);

@@ -28,6 +28,7 @@
 #include "d_player.h"
 #include "doommenu.h"
 #include "g_game.h"
+#include "g_cvars.h"
 #include "g_level.h"
 #include "gameconfigfile.h"
 #include "gamestate.h"
@@ -777,8 +778,7 @@ static void M_ApplyHCDEShadowProfile(int profile, bool announce)
 		break;
 	}
 
-	r_dynlights = true;
-	gl_lights = true;
+	SyncDynamicLightsState(true);
 	gl_light_sprites = true;
 	gl_light_particles = true;
 	gl_light_shadowmap = useLightShadows;

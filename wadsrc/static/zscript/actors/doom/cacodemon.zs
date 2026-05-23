@@ -91,6 +91,9 @@ class CacodemonBall : Actor
 		Damage 5;
 		Projectile;
 		+RANDOMIZE
+		+SEEKERMISSILE
+		+CANTSEEK
+		+DONTSEEKINVISIBLE
 		+ZDOOMTRANS
 		RenderStyle "Add";
 		Alpha 1;
@@ -100,7 +103,9 @@ class CacodemonBall : Actor
 	States
 	{
 	Spawn:
-		BAL2 AB 4 BRIGHT;
+		// Keep the old monster-fireball wobble, but let it home in like the
+		// classic old-school seeker projectiles the user wants.
+		BAL2 AB 4 BRIGHT A_SeekerMissile(9999, 9999, SMF_LOOK, 255, 10);
 		Loop;
 	Death:
 		BAL2 CDE 6 BRIGHT;

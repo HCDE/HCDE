@@ -1,0 +1,20 @@
+// HCDE Armageddon2 compatibility aliases.
+//
+// These are plain DECORATE invasion-spot stubs so HCDE can recognize the
+// mod's custom invasion actors even when the original archive is loaded in a
+// stricter compatibility environment.
+//
+// Source archive fingerprint:
+// Armageddon2v63.wad
+// SHA-256: a2cf2e525f32ca1a85a03f7151b44fe6a2f5ff925b64b29debe4f84db9fd0c85
+
+// DoomEdNum mappings for this mod now live in MAPINFO so the parser can
+// register them without tripping the DECORATE loader.
+
+// The original archive references BoneAmmo as a Disciple drop item. HCDE keeps
+// a tiny ammo stand-in here, while the actual KamikaziGuy monster comes from
+// the separate BeheadedKamikazi compatibility pack.
+
+actor BoneAmmo : Clip
+{
+}

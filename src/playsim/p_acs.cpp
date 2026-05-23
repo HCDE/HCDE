@@ -851,6 +851,8 @@ static BoundsCheckingArray<FWorldGlobalArray, NUM_WORLDVARS> ACS_WorldArrays;
 // ACS variables with global scope
 BoundsCheckingArray<int32_t, NUM_GLOBALVARS> ACS_GlobalVars;
 BoundsCheckingArray<FWorldGlobalArray, NUM_GLOBALVARS> ACS_GlobalArrays;
+FString ACS_DebugScriptName;
+int ACS_DebugPCode = -1;
 
 //----------------------------------------------------------------------------
 //
@@ -1780,6 +1782,31 @@ static int UseInventory (FLevelLocals *Level, AActor *activator, const char *typ
 		ret = DoUseInv (activator, info);
 	}
 	return ret;
+}
+
+static int HCDE_ACSPlayerToInternalPlayer(int playernum)
+{
+	if (playernum < 0)
+		return playernum;
+	return I_ToInternalClientSlot(playernum);
+}
+
+static int HCDE_InternalPlayerToACSPlayer(int playernum)
+{
+	if (playernum < 0)
+		return playernum;
+	return I_ToVisibleClientSlot(playernum);
+}
+
+static bool HCDE_ResolveACSPlayer(FLevelLocals *Level, int playernum, int *internalPlayer = nullptr)
+{
+	const int resolved = HCDE_ACSPlayerToInternalPlayer(playernum);
+	if (internalPlayer != nullptr)
+		*internalPlayer = resolved;
+	return resolved >= 0
+		&& resolved < MAXPLAYERS
+		&& !I_IsServerReservedSlot(resolved)
+		&& Level->PlayerInGame(resolved);
 }
 
 //============================================================================
@@ -3749,7 +3776,7 @@ int DLevelScript::CountPlayers ()
 	unsigned int count = 0, i;
 
 	for (i = 0; i < MAXPLAYERS; i++)
-		if (Level->PlayerInGame(i))
+		if (!I_IsServerReservedSlot(i) && Level->PlayerInGame(i))
 			count++;
 
 	return count;
@@ -4600,31 +4627,7 @@ int DLevelScript::GetPlayerInput(int playernum, int inputnum)
 	}
 	else
 	{
-		// Aliens Eradication hardcodes player 0 for its skip/use prompt. In
-		// HCDE dedicated games slot 0 is the server authority, so map it to
-		// the first real player only while that mod compatibility is active.
-		if (I_IsHCDEServiceAuthoritySlot(playernum)
-			&& I_IsServerReservedSlot(playernum)
-			&& HCDE_ModCompat_IsActive(HCDE_MODCOMPAT_ALIENS_PLAYER0_INPUT))
-		{
-			int firstPlayable = I_GetFirstPlayableClientSlot();
-			if (firstPlayable >= 0 && firstPlayable < MAXPLAYERS && Level->PlayerInGame(firstPlayable))
-			{
-				playernum = firstPlayable;
-			}
-			else
-			{
-				for (int i = 0; i < MAXPLAYERS; ++i)
-				{
-					if (i != playernum && !I_IsServerReservedSlot(i) && Level->PlayerInGame(i))
-					{
-						playernum = i;
-						break;
-					}
-				}
-			}
-		}
-		if (playernum >= MAXPLAYERS || !Level->PlayerInGame(playernum))
+		if (!HCDE_ResolveACSPlayer(Level, playernum, &playernum))
 		{
 			return 0;
 		}
@@ -5115,7 +5118,7 @@ static int ResolveACSContextPlayerNum(AActor *activator)
 
 int DLevelScript::SetUserCVar(int playernum, const char *cvarname, int value, bool is_string)
 {
-	if ((unsigned)playernum >= MAXPLAYERS || !Level->PlayerInGame(playernum))
+	if (!HCDE_ResolveACSPlayer(Level, playernum, &playernum))
 	{
 		return 0;
 	}
@@ -5161,7 +5164,7 @@ int DLevelScript::SetCVar(AActor *activator, const char *cvarname, int value, bo
 		}
 		auto pnum = Level->PlayerNum(activator->player);
 		if (pnum < 0) return 0;
-		return SetUserCVar(pnum, cvarname, value, is_string);
+		return SetUserCVar(HCDE_InternalPlayerToACSPlayer(pnum), cvarname, value, is_string);
 	}
 	DoSetCVar(cvar, value, is_string);
 	return 1;
@@ -5589,26 +5592,28 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, int32_t *args, int &
 		case ACSF_GetAirSupply:
 			MIN_ARG_COUNT(1);
 		{
-			if (args[0] < 0 || args[0] >= MAXPLAYERS || !Level->PlayerInGame(args[0]))
+			int playernum = 0;
+			if (!HCDE_ResolveACSPlayer(Level, args[0], &playernum))
 			{
 				return 0;
 			}
 			else
 			{
-				return Level->Players[args[0]]->air_finished - Level->maptime;
+				return Level->Players[playernum]->air_finished - Level->maptime;
 			}
 		}
 
 		case ACSF_SetAirSupply:
 			MIN_ARG_COUNT(2);
 		{
-			if (args[0] < 0 || args[0] >= MAXPLAYERS || !Level->PlayerInGame(args[0]))
+			int playernum = 0;
+			if (!HCDE_ResolveACSPlayer(Level, args[0], &playernum))
 			{
 				return 0;
 			}
 			else
 			{
-				Level->Players[args[0]]->air_finished = args[1] + Level->maptime;
+				Level->Players[playernum]->air_finished = args[1] + Level->maptime;
 				return 1;
 			}
 		}
@@ -5625,14 +5630,15 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, int32_t *args, int &
 		case ACSF_GetArmorType:
 			MIN_ARG_COUNT(2);
 		{
-			if (args[1] < 0 || args[1] >= MAXPLAYERS || !Level->PlayerInGame(args[1]))
+			int playernum = 0;
+			if (!HCDE_ResolveACSPlayer(Level, args[1], &playernum))
 			{
 				return 0;
 			}
 			else
 			{
 				FName p(Level->Behaviors.LookupString(args[0]));
-				auto armor = Level->Players[args[1]]->mo->FindInventory(NAME_BasicArmor, true);
+				auto armor = Level->Players[playernum]->mo->FindInventory(NAME_BasicArmor, true);
 				if (armor && armor->NameVar(NAME_ArmorType) == p) return armor->IntVar(NAME_Amount);
 			}
 			return 0;
@@ -6004,11 +6010,21 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, int32_t *args, int &
 
 		case ACSF_GetUserCVar:
 			MIN_ARG_COUNT(2);
-			return DoGetCVar(G_GetUserCVar(args[0], Level->Behaviors.LookupString(args[1])), false);
+		{
+			int playernum = 0;
+			if (!HCDE_ResolveACSPlayer(Level, args[0], &playernum))
+				return 0;
+			return DoGetCVar(G_GetUserCVar(playernum, Level->Behaviors.LookupString(args[1])), false);
+		}
 
 		case ACSF_GetUserCVarString:
 			MIN_ARG_COUNT(2);
-			return DoGetCVar(G_GetUserCVar(args[0], Level->Behaviors.LookupString(args[1])), true);
+		{
+			int playernum = 0;
+			if (!HCDE_ResolveACSPlayer(Level, args[0], &playernum))
+				return 0;
+			return DoGetCVar(G_GetUserCVar(playernum, Level->Behaviors.LookupString(args[1])), true);
+		}
 
 		case ACSF_SetUserCVar:
 			MIN_ARG_COUNT(3);
@@ -7167,6 +7183,8 @@ int DLevelScript::RunScript()
 
 	while (state == SCRIPT_Running)
 	{
+		ACS_DebugScriptName = ScriptPresentation(script);
+
 		if ( ptr && !(ptr->Flags & SCRIPTF_Busy) && (++runaway > 2000000) )
 		{
 			Printf ("Runaway %s terminated\n", ScriptPresentation(script).GetChars());
@@ -7186,6 +7204,8 @@ int DLevelScript::RunScript()
 		{
 			pcd = NEXTWORD;
 		}
+
+		ACS_DebugPCode = pcd;
 
 		switch (pcd)
 		{
@@ -7273,43 +7293,90 @@ int DLevelScript::RunScript()
 			break;
 
 		case PCD_LSPEC1:
-			P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
-									STACK(1) & specialargmask, 0, 0, 0, 0);
-			sp -= 1;
+			if (sp >= 1)
+			{
+				P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
+										STACK(1) & specialargmask, 0, 0, 0, 0);
+				sp -= 1;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSPEC1 in %s\n", ScriptPresentation(script).GetChars());
+				sp = 0;
+			}
 			break;
 
 		case PCD_LSPEC2:
-			P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
-									STACK(2) & specialargmask,
-									STACK(1) & specialargmask, 0, 0, 0);
-			sp -= 2;
+			if (sp >= 2)
+			{
+				P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
+										STACK(2) & specialargmask,
+										STACK(1) & specialargmask, 0, 0, 0);
+				sp -= 2;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSPEC2 in %s\n", ScriptPresentation(script).GetChars());
+				sp = 0;
+			}
 			break;
 
 		case PCD_LSPEC3:
-			P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
-									STACK(3) & specialargmask,
-									STACK(2) & specialargmask,
-									STACK(1) & specialargmask, 0, 0);
-			sp -= 3;
+			if (sp >= 3)
+			{
+				P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
+										STACK(3) & specialargmask,
+										STACK(2) & specialargmask,
+										STACK(1) & specialargmask, 0, 0);
+				sp -= 3;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSPEC3 in %s\n", ScriptPresentation(script).GetChars());
+				sp = 0;
+			}
 			break;
 
 		case PCD_LSPEC4:
-			P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
-									STACK(4) & specialargmask,
-									STACK(3) & specialargmask,
-									STACK(2) & specialargmask,
-									STACK(1) & specialargmask, 0);
-			sp -= 4;
+			if (sp >= 4)
+			{
+				P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
+										STACK(4) & specialargmask,
+										STACK(3) & specialargmask,
+										STACK(2) & specialargmask,
+										STACK(1) & specialargmask, 0);
+				sp -= 4;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSPEC4 in %s\n", ScriptPresentation(script).GetChars());
+				sp = 0;
+			}
 			break;
 
 		case PCD_LSPEC5:
-			P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
-									STACK(5) & specialargmask,
-									STACK(4) & specialargmask,
-									STACK(3) & specialargmask,
-									STACK(2) & specialargmask,
-									STACK(1) & specialargmask);
-			sp -= 5;
+			if (sp >= 5)
+			{
+				P_ExecuteSpecial(Level, NEXTBYTE, activationline, activator, backSide,
+										STACK(5) & specialargmask,
+										STACK(4) & specialargmask,
+										STACK(3) & specialargmask,
+										STACK(2) & specialargmask,
+										STACK(1) & specialargmask);
+				sp -= 5;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSPEC5 in %s\n", ScriptPresentation(script).GetChars());
+				sp = 0;
+			}
+			break;
+
+		// Skulltag repurposed the old unused LSPEC6 opcodes for native invasion
+		// state queries. Many invasion maps were compiled against those opcodes,
+		// so treating them as line-special calls corrupts the ACS stack.
+		case PCD_LSPEC6:
+			PushToStack(Net_GetInvasionWave());
 			break;
 
 		case PCD_LSPEC5RESULT:
@@ -7385,6 +7452,10 @@ int DLevelScript::RunScript()
 								uallong(pc[3]) & specialargmask,
 								uallong(pc[4]) & specialargmask);
 			pc += 5;
+			break;
+
+		case PCD_LSPEC6DIRECT:
+			PushToStack(Net_GetClassicInvasionState());
 			break;
 
 		// Parameters for PCD_LSPEC?DIRECTB are by definition bytes so never need and-ing.
@@ -7536,18 +7607,42 @@ int DLevelScript::RunScript()
 			break;
 
 		case PCD_ADD:
-			STACK(2) = STACK(2) + STACK(1);
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = STACK(2) + STACK(1);
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_ADD in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_SUBTRACT:
-			STACK(2) = STACK(2) - STACK(1);
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = STACK(2) - STACK(1);
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_SUBTRACT in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_MULTIPLY:
-			STACK(2) = STACK(2) * STACK(1);
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = STACK(2) * STACK(1);
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_MULTIPLY in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_DIVIDE:
@@ -7575,33 +7670,81 @@ int DLevelScript::RunScript()
 			break;
 
 		case PCD_EQ:
-			STACK(2) = (STACK(2) == STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) == STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_EQ in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_NE:
-			STACK(2) = (STACK(2) != STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) != STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_NE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_LT:
-			STACK(2) = (STACK(2) < STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) < STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_LT in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_GT:
-			STACK(2) = (STACK(2) > STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) > STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_GT in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_LE:
-			STACK(2) = (STACK(2) <= STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) <= STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_LE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_GE:
-			STACK(2) = (STACK(2) >= STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) >= STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_GE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_ASSIGNSCRIPTVAR:
@@ -8550,28 +8693,68 @@ int DLevelScript::RunScript()
 			break;
 
 		case PCD_ANDLOGICAL:
-			STACK(2) = (STACK(2) && STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) && STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_ANDLOGICAL in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_ORLOGICAL:
-			STACK(2) = (STACK(2) || STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) || STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_ORLOGICAL in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_ANDBITWISE:
-			STACK(2) = (STACK(2) & STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) & STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_ANDBITWISE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_ORBITWISE:
-			STACK(2) = (STACK(2) | STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) | STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_ORBITWISE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_EORBITWISE:
-			STACK(2) = (STACK(2) ^ STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) ^ STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_EORBITWISE in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_NEGATELOGICAL:
@@ -8586,13 +8769,29 @@ int DLevelScript::RunScript()
 			break;
 
 		case PCD_LSHIFT:
-			STACK(2) = (STACK(2) << STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) << STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_LSHIFT in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_RSHIFT:
-			STACK(2) = (STACK(2) >> STACK(1));
-			sp--;
+			if (sp >= 2)
+			{
+				STACK(2) = (STACK(2) >> STACK(1));
+				sp--;
+			}
+			else
+			{
+				Printf("Malformed PCD_RSHIFT in %s\n", ScriptPresentation(script).GetChars());
+				state = SCRIPT_PleaseRemove;
+			}
 			break;
 
 		case PCD_UNARYMINUS:
@@ -8799,9 +8998,9 @@ scriptwait:
 						player = activator->player;
 					}
 				}
-				else if (Level->PlayerInGame(STACK(1)-1))
+				else if (HCDE_ResolveACSPlayer(Level, STACK(1)-1, &temp))
 				{
-					player = Level->Players[STACK(1)-1];
+					player = Level->Players[temp];
 				}
 				else
 				{
@@ -8964,6 +9163,18 @@ scriptwait:
 				}
 				if (Level->isPrimaryLevel() && (pcd == PCD_ENDHUDMESSAGEBOLD || screen == NULL || Level->isConsolePlayer(screen)))
 				{
+					// The HUD message opcode expects six mandatory operands before any
+					// optional fade/alpha parameters. Older or malformed ACS payloads
+					// can omit one of those operands, which would otherwise index
+					// below the active stack window and trip the VM bounds guard.
+					if (optstart < 6)
+					{
+						Printf("Malformed HUD message parameters in %s\n", ScriptPresentation(script).GetChars());
+						STRINGBUILDER_FINISH(work);
+						sp = 0;
+						break;
+					}
+
 					int type = Stack[optstart-6];
 					int id = Stack[optstart-5];
 					EColorRange color;
@@ -9987,29 +10198,29 @@ scriptwait:
 			}
 			else
 			{
-				PushToStack (Level->PlayerNum(activator->player));
+				PushToStack (HCDE_InternalPlayerToACSPlayer(Level->PlayerNum(activator->player)));
 			}
 			break;
 
 		case PCD_PLAYERINGAME:
-			if (STACK(1) < 0 || STACK(1) >= MAXPLAYERS)
+			if (!HCDE_ResolveACSPlayer(Level, STACK(1)))
 			{
 				STACK(1) = false;
 			}
 			else
 			{
-				STACK(1) = Level->PlayerInGame(STACK(1));
+				STACK(1) = true;
 			}
 			break;
 
 		case PCD_PLAYERISBOT:
-			if (STACK(1) < 0 || STACK(1) >= MAXPLAYERS || !Level->PlayerInGame(STACK(1)))
+			if (!HCDE_ResolveACSPlayer(Level, STACK(1), &temp))
 			{
 				STACK(1) = false;
 			}
 			else
 			{
-				STACK(1) = (Level->Players[STACK(1)]->Bot != nullptr);
+				STACK(1) = (Level->Players[temp]->Bot != nullptr);
 			}
 			break;
 
@@ -10204,24 +10415,24 @@ scriptwait:
 			break;
 
 		case PCD_PLAYERCLASS:		// [GRB]
-			if (STACK(1) < 0 || STACK(1) >= MAXPLAYERS || !Level->PlayerInGame(STACK(1)))
+			if (!HCDE_ResolveACSPlayer(Level, STACK(1), &temp))
 			{
 				STACK(1) = -1;
 			}
 			else
 			{
-				STACK(1) = Level->Players[STACK(1)]->CurrentPlayerClass;
+				STACK(1) = Level->Players[temp]->CurrentPlayerClass;
 			}
 			break;
 
 		case PCD_GETPLAYERINFO:		// [GRB]
-			if (STACK(2) < 0 || STACK(2) >= MAXPLAYERS || !Level->PlayerInGame(STACK(2)))
+			if (!HCDE_ResolveACSPlayer(Level, STACK(2), &temp))
 			{
 				STACK(2) = -1;
 			}
 			else
 			{
-				player_t *pl = Level->Players[STACK(2)];
+				player_t *pl = Level->Players[temp];
 				userinfo_t *userinfo = &pl->userinfo;
 				switch (STACK(1))
 				{

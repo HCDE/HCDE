@@ -28,6 +28,9 @@
 
 uint64_t I_msTime();
 struct particle_t;
+struct FMapThing;
+struct FLevelLocals;
+class PClassActor;
 class FString;
 
 enum EChatType
@@ -172,6 +175,7 @@ void Net_AdvanceCutscene();
 EInvasionState Net_GetInvasionState();
 const char* Net_GetInvasionStateName();
 int Net_GetInvasionStateTics();
+int Net_GetClassicInvasionState();
 int Net_GetInvasionWave();
 int Net_GetInvasionMaxWaves();
 int Net_GetInvasionWaveBudget();
@@ -187,6 +191,8 @@ bool Net_IsInvasionSpawnUsingFallback();
 int Net_GetInvasionSpawnFallbackSource();
 int Net_GetCompatDuelLimit();
 int Net_ControlInvasion(int action, const char* reason = nullptr);
+void Net_BeginInvasionSpawnRegistration(FLevelLocals* level);
+bool Net_RegisterInvasionSpawnSpotFromMapThing(FLevelLocals* level, const FMapThing* mapThing, PClassActor* spotClass);
 void Net_ResetCommands(bool midTic);
 void Net_SetWaiting();
 bool Net_LocalCanControlSettings();

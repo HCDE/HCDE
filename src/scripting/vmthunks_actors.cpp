@@ -50,6 +50,7 @@
 #include "p_enemy.h"
 #include "gi.h"
 #include "shadowinlines.h"
+#include "i_net.h"
 
 DVector2 AM_GetPosition();
 int Net_GetLatency(int *ld, int *ad);
@@ -643,7 +644,7 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, RestoreDamage, RestoreDamage)
 
 static int PlayerNumber(AActor *self)
 {
-	return self->player ? self->Level->PlayerNum(self->player) : 0;
+	return self->player ? I_ToVisibleClientSlot(self->Level->PlayerNum(self->player)) : 0;
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(AActor, PlayerNumber, PlayerNumber)

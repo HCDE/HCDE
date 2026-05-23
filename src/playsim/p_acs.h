@@ -35,6 +35,8 @@
 class FFont;
 struct line_t;
 class FSerializer;
+extern FString ACS_DebugScriptName;
+extern int ACS_DebugPCode;
 
 
 enum
@@ -60,7 +62,8 @@ struct BoundsCheckingArray
 	{
 		if (index >= N)
 		{
-			I_Error("Out of bounds memory access in ACS VM");
+			I_Error("Out of bounds memory access in ACS VM (script=%s pcode=%d index=%u size=%u)",
+				ACS_DebugScriptName.GetChars(), ACS_DebugPCode, index, N);
 		}
 
 		return buffer[index];
@@ -178,7 +181,8 @@ public:
 	{
 		if (index >= count)
 		{
-			I_Error("Out of bounds access to local variables in ACS VM");
+			I_Error("Out of bounds access to local variables in ACS VM (script=%s pcode=%d index=%zu size=%zu)",
+				ACS_DebugScriptName.GetChars(), ACS_DebugPCode, index, count);
 		}
 
 		return memory[index];

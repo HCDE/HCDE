@@ -61,6 +61,8 @@ CVARD(Int, i_display_new_release, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "Show chang
 EXTERN_FARG(iwad);
 EXTERN_FARG(host);
 EXTERN_FARG(join);
+EXTERN_FARG(dedicatedjoin);
+EXTERN_FARG(joindedicated);
 
 bool foundprio = false; // global to prevent iwad box from appearing
 
@@ -886,7 +888,7 @@ int FIWadManager::IdentifyVersion (std::vector<FileSys::ResourceName>&wadfiles, 
 	{
 		// For net games all wads must be explicitly named to make it easier for the host to know
 		// exactly what's being loaded.
-		if (i_loadsupportwad && !Args->CheckParm(FArg_join) && !Args->CheckParm(FArg_host))
+		if (i_loadsupportwad && !Args->CheckParm(FArg_join) && !Args->CheckParm(FArg_dedicatedjoin) && !Args->CheckParm(FArg_joindedicated) && !Args->CheckParm(FArg_host))
 		{
 			FString supportWAD = IWADPathFileSearch(info.SupportWAD);
 

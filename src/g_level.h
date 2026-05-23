@@ -31,6 +31,7 @@ using FileSys::FCompressedBuffer;
 extern bool savegamerestore;
 
 void G_InitNew (const char *mapname, bool bTitleLevel);
+void G_DoMapWarp();
 
 // Can be called by the startup code or M_Responder.
 // A normal game starts at map 1,

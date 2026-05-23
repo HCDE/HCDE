@@ -1,0 +1,10 @@
+// HCDE Armageddon2 texture compatibility.
+//
+// Armageddon 2 expects the old Skulltag sky name "stsky9". HCDE ships the
+// underlying art assets elsewhere, so this alias keeps the map from falling
+// back to the missing-texture checker during startup.
+
+Texture STSKY9, 256, 128
+{
+	Patch SKY1, 0, 0
+}

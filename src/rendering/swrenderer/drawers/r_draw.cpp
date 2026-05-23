@@ -43,8 +43,14 @@
 #include "r_thread.h"
 #include "swrenderer/scene/r_light.h"
 #include "playsim/a_dynlight.h"
+#include "g_cvars.h"
 
-CVAR(Bool, r_dynlights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+// Keep the software toggle in lockstep with the shared light menu state.
+CUSTOM_CVAR(Bool, r_dynlights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	SyncDynamicLightsState(self);
+}
+
 CVAR(Bool, r_fuzzscale, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
 namespace swrenderer

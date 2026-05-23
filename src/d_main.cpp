@@ -334,6 +334,8 @@ FARG(debug, "", "", "",
 
 EXTERN_FARG(join);
 EXTERN_FARG(host);
+EXTERN_FARG(dedicatedjoin);
+EXTERN_FARG(joindedicated);
 
 extern const char * const BACKEND;
 
@@ -2326,8 +2328,10 @@ static void AddAutoloadFiles(const char *autoname, std::vector<FileSys::Resource
 		}
 	}
 
+	const bool joiningNetworkGame = Args->CheckParm(FArg_join) || Args->CheckParm(FArg_dedicatedjoin) || Args->CheckParm(FArg_joindedicated);
+
 	// Disable autoloading in netgames as we don't want people who are hosting/joining loading up random files.
-	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !Args->CheckParm(FArg_join) && !HCDE_ServerMode_IsDedicatedServer())
+	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm(FArg_noautoload) && !disableautoload && !Args->CheckParm(FArg_host) && !joiningNetworkGame && !HCDE_ServerMode_IsDedicatedServer())
 	{
 		FString file;
 
@@ -2384,6 +2388,9 @@ static void CheckCmdLine()
 	int flags3 = dmflags3;
 	int p;
 	const char *v;
+	const bool joiningNetworkGame = Args->CheckParm(FArg_join) || Args->CheckParm(FArg_dedicatedjoin) || Args->CheckParm(FArg_joindedicated);
+	const bool launchingServer = Args->CheckParm(FArg_host) || joiningNetworkGame || HCDE_ServerMode_IsDedicatedServer();
+	const bool explicitMultiplayerMode = Args->CheckParm(FArg_altdeath) || Args->CheckParm(FArg_deathmatch) || Args->CheckParm(FArg_coop);
 
 	if (!batchrun) Printf ("Checking cmd-line parameters...\n");
 	if (Args->CheckParm (FArg_nomonsters))	flags |= DF_NO_MONSTERS;
@@ -2410,6 +2417,14 @@ static void CheckCmdLine()
 		// Hexen already has a bunch of custom coop items so let it handle it.
 		if (gameinfo.gametype != GAME_Hexen)
 			flags3 |= DF3_LOCAL_ITEMS;
+	}
+	else if (!launchingServer && !explicitMultiplayerMode)
+	{
+		// Local startup should not inherit an archived server mode from a previous
+		// session. If no multiplayer mode was requested on the command line, force
+		// the live game mode back to single-player defaults.
+		deathmatch = 0;
+		teamplay = 0;
 	}
 
 	dmflags = flags;
@@ -3710,7 +3725,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	int per_shader_progress = 0;//screen->GetShaderCount()? (max_progress / 10 / screen->GetShaderCount()) : 0;
 
 	bool norun = Args->CheckParm(FArg_norun);
-	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_host) || dedicatedserver || norun;
+	bool nostartscreen = batchrun || restart || Args->CheckParm(FArg_join) || Args->CheckParm(FArg_dedicatedjoin) || Args->CheckParm(FArg_joindedicated) || Args->CheckParm(FArg_host) || dedicatedserver || norun;
 	bool videoInitialized = false;
 	bool firstShaderCompiled = false;
 

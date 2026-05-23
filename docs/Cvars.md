@@ -117,8 +117,8 @@ These are the invasion controls defined in source.
 
 ### `sv_invasionspotusemaptags`
 
-- Description: Use map-tagged invasion spot routing when available.
-- Default: `1`
+- Description: Restrict native invasion spots by map thing TID/tag. Keep disabled for Skulltag/Zandronum map compatibility; the spot arguments already control wave timing.
+- Default: `0`
 - Valid range/shape: `bool`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 

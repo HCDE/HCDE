@@ -1,0 +1,3 @@
+// Intentionally left as a comment-only stub.
+// Armageddon2 compatibility aliases are defined in DECORATE so HCDE can
+// compile them with the built-in DECORATE actor parser.

@@ -14,6 +14,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$ModCompatPackages = @(
+    [pscustomobject]@{
+        FileName = "hcde_mod_compat_combined.pk3"
+        Label = "Combined Brutal Doom / The Island compatibility"
+        Source = "wadsrc_mod_compat/combined"
+        Notes = "Sound aliases and gameplay-safe DECORATE shims shared by older split patches."
+    },
+    [pscustomobject]@{
+        FileName = "hcde_mod_compat_pink_valley_eng.pk3"
+        Label = "Pink Valley English compatibility"
+        Source = "wadsrc_mod_compat/pink_valley_eng"
+        Notes = "Map transition, event handler, and metadata compatibility for Pink Valley."
+    },
+    [pscustomobject]@{
+        FileName = "hcde_mod_compat_armageddon2_test.pk3"
+        Label = "Armageddon2 invasion compatibility"
+        Source = "wadsrc_mod_compat/armageddon2_test"
+        Notes = "Skulltag invasion spot mappings and resource aliases for Armageddon2 testing."
+    }
+)
+
 # Local-first release policy: this script always creates Windows x64 release
 # packages under build\releases and writes SHA-256 checksums there. GitHub is
 # only used when -Upload is explicitly supplied.
@@ -64,6 +85,18 @@ function Write-ReleaseChecksums {
     }
     Set-Content -LiteralPath $OutputPath -Encoding ASCII -Value $lines
     Write-Host "Checksums: $OutputPath"
+}
+
+function Format-ByteSize {
+    param([long]$Bytes)
+
+    if ($Bytes -ge 1MB) {
+        return "{0:N2} MB" -f ($Bytes / 1MB)
+    }
+    if ($Bytes -ge 1KB) {
+        return "{0:N2} KB" -f ($Bytes / 1KB)
+    }
+    return "$Bytes bytes"
 }
 
 function Resolve-OpenALSoftRuntime {
@@ -172,16 +205,11 @@ function Get-ModCompatRuntimeFiles {
         [string]$BuildConfigDir
     )
 
-    $requiredCompatNames = @(
-        "hcde_mod_compat_combined.pk3",
-        "hcde_mod_compat_pink_valley_eng.pk3"
-    )
-
     $compatFiles = @()
-    foreach ($compatName in $requiredCompatNames) {
+    foreach ($compatPackage in $ModCompatPackages) {
         $candidatePaths = @(
-            (Join-Path $BuildConfigDir $compatName),
-            (Join-Path $BuildRoot $compatName)
+            (Join-Path $BuildConfigDir $compatPackage.FileName),
+            (Join-Path $BuildRoot $compatPackage.FileName)
         )
 
         $resolved = $candidatePaths |
@@ -189,13 +217,74 @@ function Get-ModCompatRuntimeFiles {
             Select-Object -First 1
 
         if (-not $resolved) {
-            throw "Required HCDE mod compatibility PK3 '$compatName' was not found. Build the compat targets before packaging."
+            throw "Required HCDE mod compatibility PK3 '$($compatPackage.FileName)' was not found. Build the compat targets before packaging."
         }
 
-        $compatFiles += Get-Item -LiteralPath $resolved
+        $compatFiles += [pscustomobject]@{
+            File = Get-Item -LiteralPath $resolved
+            Definition = $compatPackage
+        }
     }
 
     return $compatFiles
+}
+
+function Write-ModCompatManifest {
+    param(
+        [Parameter(Mandatory)][string]$OutputDir,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][object[]]$CompatFiles
+    )
+
+    $totalBytes = 0L
+    foreach ($compatFile in $CompatFiles) {
+        $totalBytes += [long]$compatFile.File.Length
+    }
+
+    $averageBytes = 0L
+    if ($CompatFiles.Count -gt 0) {
+        $averageBytes = [long]($totalBytes / $CompatFiles.Count)
+    }
+
+    $readme = @"
+HCDE $Version compat add-ons
+
+This package contains optional HCDE-owned compatibility resources. These files
+are not part of the core engine runtime package and can be loaded as extras
+alongside the mods they target.
+
+Patch count: $($CompatFiles.Count)
+Total patch size: $(Format-ByteSize $totalBytes)
+Average patch size: $(Format-ByteSize $averageBytes)
+
+See PATCHES.md for the full organized manifest.
+"@
+    Set-Content -LiteralPath (Join-Path $OutputDir "README.txt") -Encoding UTF8 -Value $readme
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add("# HCDE $Version Compatibility Patch Manifest")
+    $lines.Add("")
+    $lines.Add("These optional PK3 files are HCDE-owned compatibility shims. Keep third-party mod data out of this package unless licensing has been reviewed.")
+    $lines.Add("")
+    $lines.Add("| Patch | Purpose | Source | Size | SHA-256 |")
+    $lines.Add("| --- | --- | --- | ---: | --- |")
+
+    foreach ($compatFile in $CompatFiles) {
+        $hash = (Get-FileHash -LiteralPath $compatFile.File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $label = $compatFile.Definition.Label.Replace("|", "\|")
+        $source = $compatFile.Definition.Source.Replace("|", "\|")
+        $size = Format-ByteSize ([long]$compatFile.File.Length)
+        $lines.Add("| ``$($compatFile.File.Name)`` | $label | ``$source`` | $size | ``$hash`` |")
+    }
+
+    $lines.Add("")
+    $lines.Add("## Notes")
+    $lines.Add("")
+    foreach ($compatFile in $CompatFiles) {
+        $lines.Add("- ``$($compatFile.File.Name)``: $($compatFile.Definition.Notes)")
+    }
+
+    Set-Content -LiteralPath (Join-Path $OutputDir "PATCHES.md") -Encoding UTF8 -Value $lines
 }
 
 function Upload-ReleaseAssets {
@@ -366,20 +455,10 @@ https://github.com/HCDE/HCDE/tree/v$Version
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "RELEASE-NOTES.txt") -Encoding UTF8
 
 foreach ($compatFile in $compatFiles) {
-    Copy-Item -LiteralPath $compatFile.FullName -Destination $compatStageDir -Force
+    Copy-Item -LiteralPath $compatFile.File.FullName -Destination $compatStageDir -Force
 }
 
-@"
-HCDE $Version compat add-ons
-
-This package contains optional HCDE-owned compatibility resources.
-These files are not part of the core engine runtime package and can be loaded
-as extras alongside mods they target.
-
-Included:
-- hcde_mod_compat_combined.pk3
-- hcde_mod_compat_pink_valley_eng.pk3
-"@ | Set-Content -LiteralPath (Join-Path $compatStageDir "README.txt") -Encoding UTF8
+Write-ModCompatManifest -OutputDir $compatStageDir -Version $Version -CompatFiles $compatFiles
 
 if (Test-Path -LiteralPath $packageZip) {
     Remove-Item -LiteralPath $packageZip -Force

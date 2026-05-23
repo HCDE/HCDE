@@ -2019,6 +2019,12 @@ def build_checks(
             )
         )
 
+    invasion_cvar_hits = find_line_hits(
+        texts,
+        r"\bsv_invasion(?:basebudget|budgetstep|cleanuptime|countdowntime|intermissiontime|resulttime|waves|"
+        r"perplayer|spawnburst|spawninterval|spotfallback|spotusemaptags|bosswaveevery|bossbonus|spawntime)\b",
+    )
+    invasion_spot_hits = find_line_hits(texts, r"\bCustomMonsterInvasionSpot\b")
     input_hits = find_line_hits(texts, r"\b(GetPlayerInput|PlayerNumber|ConsolePlayerNumber|Button_|BT_)\b")
     if input_hits:
         checks.append(
@@ -2028,6 +2034,18 @@ def build_checks(
                 title="Player input / player index assumptions detected",
                 detail="Dedicated servers may expose player-0 assumptions. Review whether this mod needs an HCDE engine-side compat flag or ACS/ZScript-facing behavior adjustment.",
                 hits=input_hits[:40],
+            )
+        )
+
+    if invasion_cvar_hits or invasion_spot_hits:
+        checks.append(
+            CompatibilityCheck(
+                id="invasion-mode-indicators",
+                severity="manual",
+                title="Invasion-mode indicators detected",
+                detail="Compat scan found mod symbols that likely indicate invasion gameplay intent. "
+                       "Treat this as invasion-mode-capable and confirm runtime behavior in networked tests.",
+                hits=(invasion_cvar_hits[:40] + invasion_spot_hits[:40])[:40],
             )
         )
 
@@ -2094,6 +2112,8 @@ AUTO_MAPINFO_FIX_CHECK_ID = "mapinfo-unterminated-text-list"
 AUTO_RELOCATE_PREFIX = "hcde_compat/non_asset"
 
 HCDE_ENGINE_CHANGE_HINTS = {
+    "invasion-mode-indicators": "If this mod is intended as invasion-style gameplay, test with sv_gametype=4 and verify "
+                                "map metadata/spawn behavior. Add compatibility glue if required rather than assuming defaults.",
     "zscript-present": "Review HCDE's ZScript VM/runtime compatibility surface and add an engine or compat-layer gate for unsupported APIs.",
     "decorate-railattack": "Review dedicated-server rail attack handling and fallback logic in gameplay/network paths.",
     "player-input-assumptions": "Review player index/input behavior for dedicated server mode and ACS/ZScript helpers.",

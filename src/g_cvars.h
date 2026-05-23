@@ -28,3 +28,7 @@
 
 EXTERN_CVAR(Bool, r_dynlights)
 EXTERN_CVAR(Bool, gl_lights)
+
+// Keeps the software and hardware dynamic-light toggles in sync so the menu
+// controls always affect the active renderer.
+void SyncDynamicLightsState(bool enabled);

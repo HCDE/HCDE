@@ -236,7 +236,7 @@ static const ServerGuiSettingDefinition ServerGuiAdvancedSettings[] =
 	{ L"Invasion Spawn Burst", "sv_invasionspawnburst", ServerGuiSettingKind::Integer, L"3", 1, 128, false, 3 },
 	{ L"Invasion Boss Every", "sv_invasionbosswaveevery", ServerGuiSettingKind::Integer, L"5", 0, 255, false, 3 },
 	{ L"Invasion Boss Bonus", "sv_invasionbossbonus", ServerGuiSettingKind::Integer, L"20", 0, 4096, false, 4 },
-	{ L"Invasion Tagged Spots", "sv_invasionspotusemaptags", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
+	{ L"Invasion Tagged Spots", "sv_invasionspotusemaptags", ServerGuiSettingKind::Choice, L"0", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
 	{ L"Invasion Spot Fallback", "sv_invasionspotfallback", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
 	{ L"Tally Policy", "sv_alwaystally", ServerGuiSettingKind::Choice, L"0", 0, 2, false, 1, ServerGuiTallyChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiTallyChoices) },
 	{ L"Apply DM Flags Always", "alwaysapplydmflags", ServerGuiSettingKind::Choice, L"0", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
@@ -352,7 +352,7 @@ static const char* const ServerGuiPresetInvasionStandard[] =
 	"sv_invasionspawnburst 3",
 	"sv_invasionbosswaveevery 5",
 	"sv_invasionbossbonus 20",
-	"sv_invasionspotusemaptags 1",
+	"sv_invasionspotusemaptags 0",
 	"sv_invasionspotfallback 1"
 };
 

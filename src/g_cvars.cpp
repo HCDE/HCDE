@@ -23,6 +23,7 @@
 */
 
 #include "c_cvars.h"
+#include "g_cvars.h"
 #include "g_levellocals.h"
 #include "g_game.h"
 #include "gstrings.h"
@@ -33,6 +34,32 @@
 #include "i_interface.h"
 
 void I_UpdateWindowTitle();
+
+// Guard against the software and hardware dynamic-light toggles bouncing
+// each other through the shared sync helper.
+static bool syncingDynamicLights = false;
+
+void SyncDynamicLightsState(bool enabled)
+{
+	if (syncingDynamicLights)
+	{
+		return;
+	}
+
+	const bool wasSyncing = syncingDynamicLights;
+	syncingDynamicLights = true;
+
+	if (r_dynlights != enabled)
+	{
+		r_dynlights = enabled;
+	}
+	if (gl_lights != enabled)
+	{
+		gl_lights = enabled;
+	}
+
+	syncingDynamicLights = wasSyncing;
+}
 
 CVAR (Bool, cl_spreaddecals, true, CVAR_ARCHIVE)
 CVAR(Bool, var_pushers, true, CVAR_SERVERINFO);
@@ -64,6 +91,8 @@ CUSTOM_CVAR (Int, turnspeedsprintslow, 320, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
 CUSTOM_CVAR (Bool, gl_lights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
+	SyncDynamicLightsState(self);
+
 	for (auto Level : AllLevels())
 	{
 		if (self) Level->RecreateAllAttachedLights();

@@ -93,6 +93,9 @@ class ArachnotronPlasma : Actor
 		Damage 5;
 		Projectile;
 		+RANDOMIZE
+		+SEEKERMISSILE
+		+CANTSEEK
+		+DONTSEEKINVISIBLE
 		+ZDOOMTRANS
 		RenderStyle "Add";
 		Alpha 0.75;
@@ -102,7 +105,9 @@ class ArachnotronPlasma : Actor
 	States
 	{
 	Spawn:
-		APLS AB 5 BRIGHT;
+		// Keep the old monster-fireball wobble, but let it home in like the
+		// classic old-school seeker projectiles the user wants.
+		APLS AB 5 BRIGHT A_SeekerMissile(9999, 9999, SMF_LOOK, 255, 10);
 		Loop;
 	Death:
 		APBX ABCDE 5 BRIGHT;

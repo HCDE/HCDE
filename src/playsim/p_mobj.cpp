@@ -6754,6 +6754,12 @@ AActor *FLevelLocals::SpawnMapThing (FMapThing *mthing, int position)
 		// Handle decorate replacements explicitly here
 		// to check for missing frames in the replacement object.
 	i = mentry->Type->GetReplacement(this);
+	if (Net_RegisterInvasionSpawnSpotFromMapThing(this, mthing, i))
+	{
+		// Skulltag-style invasion spots are spawn metadata. Keeping them as
+		// live actors can leave visible markers and block the monster spawn.
+		return nullptr;
+	}
 
 		const AActor *defaults = GetDefaultByType (i);
 		if (defaults->SpawnState == NULL ||
@@ -7026,6 +7032,11 @@ CVAR(Bool, dumpspawnedthings, false, 0)
 
 AActor *FLevelLocals::SpawnMapThing(int index, FMapThing *mt, int position)
 {
+	if (index == 0)
+	{
+		Net_BeginInvasionSpawnRegistration(this);
+	}
+
 	AActor *spawned = SpawnMapThing(mt, position);
 	if (dumpspawnedthings)
 	{

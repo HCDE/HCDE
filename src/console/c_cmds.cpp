@@ -390,7 +390,9 @@ CCMD (changemap)
 						Printf("Start position %d is ignored while restarting a stalled dedicated server.\n", pos);
 					}
 					G_InitNew(targetMap.GetChars(), false);
-					Net_SetWaiting();
+					// Finish the restart with the same room/reset handling used by the normal
+					// map-warp path so stale authority state does not bleed into the next map.
+					G_DoMapWarp();
 				}
 				else
 				{
