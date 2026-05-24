@@ -7,7 +7,7 @@ param(
     [switch]$Build,
     [switch]$IncludeSymbols,
     [switch]$Upload,
-    [string]$Repo = "HCDE/HCDE",
+    [string]$Repo = "bokoxthexchocobo/HCDE",
     [string]$ReleaseTag = "",
     [string]$GhCli = "gh"
 )
@@ -448,10 +448,10 @@ Included:
 Bring your own IWAD, such as DOOM2.WAD.
 
 Source code and complete documentation are available from the public HCDE repository:
-https://github.com/HCDE/HCDE
+https://github.com/bokoxthexchocobo/HCDE
 
 The corresponding source for this release is the v$Version tag:
-https://github.com/HCDE/HCDE/tree/v$Version
+https://github.com/bokoxthexchocobo/HCDE/tree/v$Version
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "RELEASE-NOTES.txt") -Encoding UTF8
 
 foreach ($compatFile in $compatFiles) {

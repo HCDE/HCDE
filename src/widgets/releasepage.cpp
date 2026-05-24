@@ -124,7 +124,7 @@ static FString FetchGitHubChangelog()
 	const std::string script = R"PS(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$api = 'https://api.github.com/repos/HCDE/HCDE/releases?per_page=8'
+$api = 'https://api.github.com/repos/bokoxthexchocobo/HCDE/releases?per_page=8'
 $headers = @{ 'User-Agent' = 'HCDE-Changelog' }
 $sb = New-Object System.Text.StringBuilder
 try {

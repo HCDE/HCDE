@@ -576,7 +576,7 @@ static UpdateCheckResult CheckForLauncherUpdate()
 	const std::string script = R"PS(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$api = 'https://api.github.com/repos/HCDE/HCDE/releases/latest'
+$api = 'https://api.github.com/repos/bokoxthexchocobo/HCDE/releases/latest'
 $headers = @{ 'User-Agent' = 'HCDE-Updater' }
 $release = Invoke-RestMethod -Uri $api -Headers $headers
 $tag = [string]$release.tag_name

@@ -95,7 +95,7 @@
 #define GAMENAMELOWERCASE "hcde"
 #define APPID "org.zdoom.HCDE"
 #define QUERYIWADDEFAULT true
-#define BUGS_URL "https://github.com/HCDE/HCDE/issues"
+#define BUGS_URL "https://github.com/bokoxthexchocobo/HCDE/issues"
 // For QUERYIWADDEFAULT: Set to 'true' to always show dialog box on startup by default, 'false' to disable.
 // Should set to 'false' for standalone games, and set to 'true' for regular source port forks that are meant to run any game.
 

@@ -79,7 +79,7 @@ HCDE includes a Windows updater flow in the launcher `About` tab.
 Scope:
 
 - Windows x64 runtime package updates
-- Source: latest GitHub release from `HCDE/HCDE`
+- Source: latest GitHub release from `bokoxthexchocobo/HCDE`
 - Install model: in-place update with automatic backup and rollback path
 
 Launcher workflow:
@@ -99,7 +99,7 @@ UI controls:
 
 Release/API behavior:
 
-- checks `https://api.github.com/repos/HCDE/HCDE/releases/latest`
+- checks `https://api.github.com/repos/bokoxthexchocobo/HCDE/releases/latest`
 - compares latest tag against local `VERSIONSTR`
 - prefers runtime zips matching `HCDE-<version>-windows-x64.zip`
 - de-prioritizes non-runtime zips (`symbols`, `pdb`, `debug`, `source`, `src`)

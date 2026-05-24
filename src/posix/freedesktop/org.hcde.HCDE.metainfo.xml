@@ -12,14 +12,14 @@
 	</developer>
 	<summary>Game engine for Classic Doom</summary>
 
-	<url type="bugtracker">https://github.com/HCDE/HCDE/issues</url>
+	<url type="bugtracker">https://github.com/bokoxthexchocobo/HCDE/issues</url>
 	<url type="contact">https://dsc.gg/zdoom</url>
-	<url type="contribute">https://github.com/HCDE/HCDE/blob/trunk/CONTRIBUTING.md</url>
-	<url type="faq">https://github.com/HCDE/HCDE/wiki/Getting-Started</url>
+	<url type="contribute">https://github.com/bokoxthexchocobo/HCDE/blob/trunk/CONTRIBUTING.md</url>
+	<url type="faq">https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started</url>
 	<url type="help">https://zdoom.org/wiki/Main_Page</url>
 	<url type="homepage">https://zdoom.org/index</url>
 	<url type="translate">https://hosted.weblate.org/engage/hcde</url>
-	<url type="vcs-browser">https://github.com/HCDE/HCDE</url>
+	<url type="vcs-browser">https://github.com/bokoxthexchocobo/HCDE</url>
 
 	<description>
 		<p>HCDE is a source port for the modern era, supporting current hardware and operating systems and sporting a vast array of user options. Make Doom your own again!</p>
@@ -52,19 +52,19 @@
 
 	<screenshots>
 		<screenshot type="default">
-			<image>https://cdn.jsdelivr.net/gh/HCDE/HCDE@trunk/src/posix/freedesktop/screenshot_doom.png</image>
+			<image>https://cdn.jsdelivr.net/gh/bokoxthexchocobo/HCDE@trunk/src/posix/freedesktop/screenshot_doom.png</image>
 			<caption>Doom screenshot</caption>
 		</screenshot>
 		<screenshot>
-			<image>https://cdn.jsdelivr.net/gh/HCDE/HCDE@trunk/src/posix/freedesktop/screenshot_strife.png</image>
+			<image>https://cdn.jsdelivr.net/gh/bokoxthexchocobo/HCDE@trunk/src/posix/freedesktop/screenshot_strife.png</image>
 			<caption>Strife screenshot</caption>
 		</screenshot>
 		<screenshot>
-			<image>https://cdn.jsdelivr.net/gh/HCDE/HCDE@trunk/src/posix/freedesktop/screenshot_heretic.png</image>
+			<image>https://cdn.jsdelivr.net/gh/bokoxthexchocobo/HCDE@trunk/src/posix/freedesktop/screenshot_heretic.png</image>
 			<caption>Heretic screenshot</caption>
 		</screenshot>
 		<screenshot>
-			<image>https://cdn.jsdelivr.net/gh/HCDE/HCDE@trunk/src/posix/freedesktop/screenshot_hexen.png</image>
+			<image>https://cdn.jsdelivr.net/gh/bokoxthexchocobo/HCDE@trunk/src/posix/freedesktop/screenshot_hexen.png</image>
 			<caption>Hexen screenshot</caption>
 		</screenshot>
 	</screenshots>
@@ -226,4 +226,3 @@
 	</releases>
 
 </component>
-
