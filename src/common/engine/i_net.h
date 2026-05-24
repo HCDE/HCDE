@@ -133,6 +133,41 @@ struct FServerQuerySnapshot
 	TArray<FServerQueryPlayer> Players = {};
 };
 
+struct FHCDEPregameServiceProfile
+{
+	uint64_t PacketReceived = 0u;
+	uint64_t PacketTooShort = 0u;
+	uint64_t PacketMissingPayload = 0u;
+	uint64_t PacketBadCrc = 0u;
+	uint64_t PacketCompressedMalformed = 0u;
+	uint64_t PacketCompressedDecompressFailure = 0u;
+	uint64_t PacketOversized = 0u;
+	uint64_t ServicePacketsTooShort = 0u;
+	uint64_t ServiceTokenMismatch = 0u;
+	uint64_t ServiceAckOutOfRange = 0u;
+	uint64_t ServiceSeqZero = 0u;
+	uint64_t ServiceSeqReplayOrDuplicate = 0u;
+	uint64_t ServiceQueueReused = 0u;
+	uint64_t ServiceQueueFullAdd = 0u;
+	uint64_t ServiceQueueFullCommit = 0u;
+	uint64_t ServiceQueueMalformed = 0u;
+	uint64_t ServiceQueueSent = 0u;
+	uint64_t ServiceQueueRetransmit = 0u;
+	uint64_t ServiceQueueAcked = 0u;
+	uint64_t ServiceTimeoutDrops = 0u;
+	// Malformed pregame traffic quarantine is used to slow down repeated
+	// replay, token-mismatch, and truncated-packet spam before it burns CPU.
+	uint64_t ServiceMalformedStrikes = 0u;
+	uint64_t ServiceMalformedQuarantineActivations = 0u;
+	uint64_t ServiceMalformedQuarantineDrops = 0u;
+	uint64_t ServiceUnsupported = 0u;
+
+	void Clear()
+	{
+		*this = {};
+	}
+};
+
 struct FClientStack : public TArray<int>
 {
 	inline bool InGame(int i) const { return Find(i) < Size(); }
@@ -194,6 +229,9 @@ bool I_QueryServerInfo(const char* addrName, FServerQuerySnapshot& snapshot, FSt
 void I_ClearClient(size_t client);
 void I_NetCmd(ENetCommand cmd);
 void I_NetDone();
+const FHCDEPregameServiceProfile& I_GetHCDEPregameServiceProfile();
+void I_ResetHCDEPregameServiceProfile();
+int I_CountHCDEPregameServiceQuarantines();
 void HandleIncomingConnection();
 void HandleIncomingConnectionMaintenance();
 void CloseNetwork();

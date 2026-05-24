@@ -14,8 +14,7 @@ Optional checks can also run:
 from __future__ import annotations
 
 import argparse
-import os
-import queue
+import json
 import random
 import re
 import socket
@@ -285,8 +284,10 @@ class ServerProcess:
         self.cwd = cwd
         self.process: Optional[subprocess.Popen[str]] = None
         self.log_lines: list[str] = []
-        self._log_queue: queue.Queue[str] = queue.Queue()
         self._log_thread: Optional[threading.Thread] = None
+
+    def log_count(self) -> int:
+        return len(self.log_lines)
 
     def start(self) -> None:
         self.process = subprocess.Popen(
@@ -309,7 +310,6 @@ class ServerProcess:
         for line in self.process.stdout:
             clean = line.rstrip("\r\n")
             self.log_lines.append(clean)
-            self._log_queue.put(clean)
 
     def send_command(self, command: str) -> None:
         if self.process is None or self.process.stdin is None:
@@ -326,16 +326,17 @@ class ServerProcess:
             detail = f"\n--- server log tail ---\n{tail}\n-----------------------" if tail else " (no log output captured)"
             raise Stage9Error(f"{context}: server exited early with code {code}{detail}")
 
-    def wait_for_log_substring(self, text: str, timeout_s: float) -> bool:
+    def wait_for_log_substring(self, text: str, timeout_s: float, start_index: int = 0) -> bool:
         deadline = time.monotonic() + timeout_s
+        start_index = max(0, start_index)
+        scan_index = start_index
         while time.monotonic() < deadline:
-            while True:
-                try:
-                    line = self._log_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if text in line:
-                    return True
+            lines = self.log_lines
+            if scan_index < len(lines):
+                for line in lines[scan_index:]:
+                    if text in line:
+                        return True
+                scan_index = len(lines)
             time.sleep(0.05)
         return False
 
@@ -349,6 +350,15 @@ class ServerProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5)
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+        if self._log_thread is not None and self._log_thread.is_alive():
+            self._log_thread.join(timeout=2.0)
+        self._log_thread = None
+        self.process = None
+        self.log_lines = []
 
 
 def mode_expected_name(mode: int) -> str:
@@ -360,6 +370,32 @@ def mode_expected_name(mode: int) -> str:
         4: "Invasion",
     }
     return names.get(mode, str(mode))
+
+
+def safe_trace_label(text: str) -> str:
+    """Create a filesystem-safe label for trace files."""
+    clean = []
+    for char in text:
+        if char.isalnum() or char in ("-", "_"):
+            clean.append(char)
+        else:
+            clean.append("_")
+    return "".join(clean).strip("_") or "run"
+
+
+def save_debug_trace(args: argparse.Namespace, server: ServerProcess, case: str) -> None:
+    """Persist one debug trace snapshot after a successful case."""
+    if args.trace_save_dir is None:
+        return
+
+    label = safe_trace_label(case)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    trace_path = (args.trace_save_dir / f"stage9_{label}_{timestamp}.trace.txt").resolve()
+    trace_start = server.log_count()
+    server.send_command(f'debugtracesave "{trace_path}" all debug')
+    if not server.wait_for_log_substring("Saved successfully.", timeout_s=5.0, start_index=trace_start):
+        raise Stage9Error(f"{case}: debug trace was not saved to {trace_path}")
+    print(f"[trace] {case}: {trace_path}")
 
 
 def validate_mode_snapshot(mode: int, snapshot: QuerySnapshot) -> None:
@@ -379,8 +415,9 @@ def validate_mode_snapshot(mode: int, snapshot: QuerySnapshot) -> None:
         raise Stage9Error("invasion mode query did not include invasion state name")
 
 
-def run_mode_matrix(args: argparse.Namespace) -> None:
+def run_mode_matrix(args: argparse.Namespace) -> list[dict[str, object]]:
     print("[stage9] validating mode query compatibility matrix...")
+    results: list[dict[str, object]] = []
     for mode in args.modes:
         port = args.base_port + mode
         host_name = f"HCDE Stage9 mode {mode}"
@@ -413,15 +450,41 @@ def run_mode_matrix(args: argparse.Namespace) -> None:
                 server.ensure_running(f"mode {mode} query")
                 raise
             validate_mode_snapshot(mode, snapshot)
+            save_debug_trace(args, server, f"mode_{mode}")
             print(
                 f"[ok] mode={mode} name='{snapshot.game_mode_name}' map={snapshot.map_name} "
                 f"players={snapshot.player_count}/{snapshot.max_players} invasion_state={snapshot.invasion_state_name or snapshot.invasion_state}"
             )
+            results.append(
+                {
+                    "case": f"mode_{mode}",
+                    "mode": mode,
+                    "server_port": port,
+                    "host_name": host_name,
+                    "ok": True,
+                    "query": {
+                        "host_name": snapshot.host_name,
+                        "map_name": snapshot.map_name,
+                        "game_mode": snapshot.game_mode,
+                        "game_mode_name": snapshot.game_mode_name,
+                        "invasion_state": snapshot.invasion_state,
+                        "invasion_state_name": snapshot.invasion_state_name,
+                        "invasion_wave": snapshot.invasion_wave,
+                        "invasion_active_monsters": snapshot.invasion_active_monsters,
+                    },
+                    "players": [
+                        {"name": player.name, "ping": player.ping, "frags": player.frags, "kills": player.kills, "deaths": player.deaths}
+                        for player in snapshot.players
+                    ],
+                }
+            )
         finally:
             server.stop()
 
+    return results
 
-def run_map_transition_case(args: argparse.Namespace) -> None:
+
+def run_map_transition_case(args: argparse.Namespace) -> dict[str, object]:
     print("[stage9] validating dedicated map transition compatibility...")
     port = args.base_port + 40
     server_argv = [
@@ -480,24 +543,32 @@ def run_map_transition_case(args: argparse.Namespace) -> None:
                 finally:
                     stop_probe_client(probe)
 
-            if before.map_name.strip().lower() == "unknown":
-                print("[skip] map transition check skipped: dedicated query map is unknown while session is empty")
-                return
+        if before.map_name.strip().lower() == "unknown":
+            print("[skip] map transition check skipped: dedicated query map is unknown while session is empty")
+            return {"case": "map_transition", "mode": 4, "server_port": port, "ok": False, "skip_reason": "unknown"}
 
         server.send_command(f"changemap {args.transition_map}")
         deadline = time.monotonic() + args.map_transition_timeout
         while time.monotonic() < deadline:
             snap = query_snapshot(args.host, port, timeout_s=args.query_timeout, attempts=3)
             if snap.map_name.upper() == args.transition_map.upper():
+                save_debug_trace(args, server, "map_transition")
                 print(f"[ok] map transition {before.map_name} -> {snap.map_name}")
-                return
+                return {
+                    "case": "map_transition",
+                    "mode": 4,
+                    "server_port": port,
+                    "before_map": before.map_name,
+                    "after_map": snap.map_name,
+                    "ok": True,
+                }
             time.sleep(0.3)
         raise Stage9Error(f"map transition did not reach {args.transition_map} within timeout")
     finally:
         server.stop()
 
 
-def run_invasion_fallback_case(args: argparse.Namespace) -> None:
+def run_invasion_fallback_case(args: argparse.Namespace) -> dict[str, object]:
     print("[stage9] validating invasion fallback compatibility path...")
     port = args.base_port + 50
     server_argv = [
@@ -538,7 +609,7 @@ def run_invasion_fallback_case(args: argparse.Namespace) -> None:
                 stop_probe_client(probe)
             if baseline.map_name.strip().lower() == "unknown" and baseline.player_count == 0:
                 print("[skip] invasion fallback check skipped: dedicated query map is unknown while session is empty")
-                return
+                return {"case": "invasion_fallback", "mode": 4, "server_port": port, "ok": False, "skip_reason": "unknown"}
 
         server.send_command("invasion_nextwave")
         server.send_command("invasion_spots")
@@ -565,11 +636,21 @@ def run_invasion_fallback_case(args: argparse.Namespace) -> None:
                 time.sleep(0.3)
                 continue
             if snap.invasion_wave >= 1 and snap.invasion_spawn_spot_count > 0:
+                save_debug_trace(args, server, "invasion_fallback")
                 print(
                     f"[ok] invasion wave={snap.invasion_wave} spots={snap.invasion_spawn_spot_count} "
                     f"active={snap.invasion_spawn_active_spot_count} spawn_flags={snap.invasion_spawn_flags}"
                 )
-                return
+                return {
+                    "case": "invasion_fallback",
+                    "mode": 4,
+                    "server_port": port,
+                    "ok": True,
+                    "invasion_wave": snap.invasion_wave,
+                    "spawn_spots": snap.invasion_spawn_spot_count,
+                    "active_spots": snap.invasion_spawn_active_spot_count,
+                    "spawn_flags": snap.invasion_spawn_flags,
+                }
             if spots_total_from_log > 0 and snap.map_name.strip().lower() != "unknown":
                 # The query snapshot can lag behind the command log while the
                 # dedicated server is warming up, so accept the logged fallback
@@ -578,7 +659,16 @@ def run_invasion_fallback_case(args: argparse.Namespace) -> None:
                     f"[ok] invasion fallback spots={spots_total_from_log} "
                     f"(query wave={snap.invasion_wave} spots={snap.invasion_spawn_spot_count} state={snap.invasion_state_name or snap.invasion_state})"
                 )
-                return
+                save_debug_trace(args, server, "invasion_fallback")
+                return {
+                    "case": "invasion_fallback",
+                    "mode": 4,
+                    "server_port": port,
+                    "ok": True,
+                    "invasion_wave": snap.invasion_wave,
+                    "spawn_spots_logged": spots_total_from_log,
+                    "invasion_state_name": snap.invasion_state_name,
+                }
             time.sleep(0.3)
         if last_query_error is not None:
             raise Stage9Error(f"invasion fallback query remained unstable: {last_query_error}")
@@ -587,10 +677,10 @@ def run_invasion_fallback_case(args: argparse.Namespace) -> None:
         server.stop()
 
 
-def run_late_join_case(args: argparse.Namespace) -> None:
+def run_late_join_case(args: argparse.Namespace) -> dict[str, object] | None:
     if args.client is None:
         print("[skip] late join validation skipped (no --client path provided)")
-        return
+        return None
 
     print("[stage9] validating late join query compatibility...")
     port = args.base_port + 60
@@ -665,7 +755,17 @@ def run_late_join_case(args: argparse.Namespace) -> None:
         if not saw_join:
             raise Stage9Error("late join validation did not observe player count increase")
 
+        save_debug_trace(args, server, "late_join")
         print("[ok] late join observed in query snapshot")
+        return {
+            "case": "late_join",
+            "mode": 4,
+            "server_port": port,
+            "ok": True,
+            "baseline_players": baseline.player_count,
+            "joined_players": baseline.player_count + 1,
+            "target_wait_tics": args.late_join_wait_tics,
+        }
     finally:
         stop_probe_client(client_proc)
         server.stop()
@@ -717,10 +817,42 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to observe query state changes after launching late-join client",
     )
     parser.add_argument("--modes", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="sv_gametype values to validate")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned cases without launching binaries")
+    parser.add_argument("--label", default="", help="Optional label for summary/traces")
+    parser.add_argument("--trace-save-dir", type=Path, help="Directory for per-case debugtracesave output")
+    parser.add_argument("--summary-dir", type=Path, help="Directory for JSON Stage 9 run summaries")
     return parser.parse_args()
 
 
+def write_summary(args: argparse.Namespace, results: list[dict[str, object]]) -> None:
+    """Persist structured compatibility results as JSON."""
+    if args.summary_dir is None:
+        return
+
+    args.summary_dir.mkdir(parents=True, exist_ok=True)
+    label = safe_trace_label(args.label or "stage9")
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    summary_path = (args.summary_dir / f"stage9_{label}_{timestamp}.json").resolve()
+    payload = {
+        "label": args.label,
+        "modes": args.modes,
+        "query_timeout": args.query_timeout,
+        "query_attempts": args.query_attempts,
+        "map": args.map,
+        "transition_map": args.transition_map,
+        "cases": results,
+    }
+    summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[summary] {summary_path}")
+
+
 def validate_paths(args: argparse.Namespace) -> None:
+    if args.dry_run:
+        if args.trace_save_dir is not None and args.trace_save_dir:
+            args.trace_save_dir.mkdir(parents=True, exist_ok=True)
+        if args.summary_dir is not None:
+            args.summary_dir.mkdir(parents=True, exist_ok=True)
+        return
     if not args.server.is_file():
         raise Stage9Error(f"server binary not found: {args.server}")
     if not args.iwad.is_file():
@@ -737,16 +869,34 @@ def validate_paths(args: argparse.Namespace) -> None:
         args.workdir = args.server.resolve().parent
     if not args.workdir.exists():
         raise Stage9Error(f"workdir does not exist: {args.workdir}")
+    if args.trace_save_dir is not None:
+        args.trace_save_dir.mkdir(parents=True, exist_ok=True)
+    if args.summary_dir is not None:
+        args.summary_dir.mkdir(parents=True, exist_ok=True)
 
 
 def main() -> int:
     args = parse_args()
     try:
         validate_paths(args)
-        run_mode_matrix(args)
-        run_map_transition_case(args)
-        run_invasion_fallback_case(args)
-        run_late_join_case(args)
+        if args.dry_run:
+            print("[stage9] dry run")
+            if args.label:
+                print(f"  label={args.label}")
+            print(f"  base_port={args.base_port} map={args.map} transition_map={args.transition_map}")
+            print(f"  modes={args.modes}")
+            print(f"  cases=mode_matrix map_transition invasion_fallback late_join")
+            return 0
+
+        results: list[dict[str, object]] = []
+        for case in run_mode_matrix(args):
+            results.append(case)
+        results.append(run_map_transition_case(args))
+        results.append(run_invasion_fallback_case(args))
+        late_result = run_late_join_case(args)
+        if late_result is not None:
+            results.append(late_result)
+        write_summary(args, results)
     except Stage9Error as exc:
         print(f"[fail] {exc}")
         return 1

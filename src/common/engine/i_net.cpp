@@ -158,12 +158,24 @@ constexpr size_t MaxTransmitSize = 8000u;
 // tic traffic every frame.
 constexpr size_t MinCompressionSize = 512u;
 constexpr size_t MaxPasswordSize = 256u;
+// HCDE pregame service header layout:
+// [0]     : CRC byte0
+// [1]     : CRC byte1
+// [2]     : CRC byte2
+// [3]     : CRC byte3
+// [4]     : command + session token prefix etc.
+// [5..6]  : reserved for transport/session metadata
+// [7..10] : reliable service sequence number
+// [11..14]: reliable service acknowledgement number
+// [15..]  : service payload
 constexpr size_t HCDEServiceSequenceOffset = 7u;
 constexpr size_t HCDEServiceAckOffset = 11u;
 constexpr size_t HCDEServiceHeaderSize = 15u;
 constexpr size_t MaxHCDEReliableServices = 16u;
 constexpr uint64_t HCDEServiceResendMS = 250u;
 constexpr uint64_t HCDEServiceTimeoutMS = 15000u;
+constexpr uint32_t HCDEServiceMalformedStrikeLimit = 4u;
+constexpr uint64_t HCDEServiceMalformedQuarantineMS = 3000u;
 constexpr uint8_t HCDEConnectProtocolVersion = 1u;
 constexpr uint8_t HCDEConnectMagic[4] = { 'H', 'C', 'D', '3' };
 
@@ -237,13 +249,20 @@ enum EHCDEPregameService : uint8_t
 
 struct FHCDEPendingService
 {
+	// One queued HCDE pregame packet awaiting acknowledgement.
 	bool Active = false;
+	// Service opcode carried in the queued packet.
 	EHCDEPregameService Service = HPS_HEARTBEAT;
+	// Optional per-service identity to de-duplicate retries.
 	uint8_t Key = 0u;
+	// Reliable sequence number assigned at queue time.
 	uint32_t Sequence = 0u;
+	// First/last send timestamps for retry + timeout policy.
 	uint64_t FirstSendTime = 0u;
 	uint64_t LastSendTime = 0u;
+	// Number of attempts sent for this packet since queueing.
 	uint32_t SendCount = 0u;
+	// Serialized packet body (header + payload) as it is transmitted.
 	TArray<uint8_t> Packet = {};
 
 	void Clear()
@@ -284,6 +303,8 @@ struct FConnection
 	uint32_t HCDEServiceRxSeq = 0u;
 	uint32_t HCDEServicePeerAck = 0u;
 	uint32_t HCDEServiceDuplicateCount = 0u;
+	uint32_t HCDEServiceMalformedStrikes = 0u;
+	uint64_t HCDEServiceMalformedUntil = 0u;
 	FHCDEPendingService HCDEReliableServices[MaxHCDEReliableServices] = {};
 
 	void Clear()
@@ -302,6 +323,8 @@ struct FConnection
 		HCDEServiceRxSeq = 0u;
 		HCDEServicePeerAck = 0u;
 		HCDEServiceDuplicateCount = 0u;
+		HCDEServiceMalformedStrikes = 0u;
+		HCDEServiceMalformedUntil = 0u;
 		for (auto& service : HCDEReliableServices)
 			service.Clear();
 	}
@@ -343,6 +366,7 @@ static FConnection	Connected[MAXPLAYERS] = {};
 static uint8_t		TransmitBuffer[MaxTransmitSize] = {};
 static TArray<sockaddr_in> BannedConnections = {};
 static bool bGameStarted = false;
+static FHCDEPregameServiceProfile HCDEPregameServiceProfile = {};
 
 namespace
 {
@@ -441,6 +465,7 @@ static void ClearAckedHCDEReliableServices(FConnection& connection)
 	{
 		if (pending.Active && pending.Sequence <= connection.HCDEServicePeerAck)
 		{
+			++HCDEPregameServiceProfile.ServiceQueueAcked;
 			DebugTrace::Markf("net", "acked reliable service %s key=%u seq=%u", HCDEServiceName(pending.Service), pending.Key, pending.Sequence);
 			pending.Clear();
 		}
@@ -471,29 +496,81 @@ static uint32_t MakeSessionToken(const sockaddr_in& address, int client)
 	return token == 0u ? 1u : token;
 }
 
-static bool CheckSessionToken(const FConnection& connection, uint32_t token, const char* context)
+// Repeated malformed setup/service traffic gets a few strikes before a short
+// quarantine stops it from burning setup CPU.
+static void NoteHCDEServiceMalformedTraffic(FConnection& connection, const char* context, const char* reason)
+{
+	++HCDEPregameServiceProfile.ServiceMalformedStrikes;
+	++connection.HCDEServiceMalformedStrikes;
+	DebugTrace::Markf("net", "%s malformed service traffic reason=%s strikes=%u", context, reason, connection.HCDEServiceMalformedStrikes);
+	if (connection.HCDEServiceMalformedStrikes < HCDEServiceMalformedStrikeLimit)
+		return;
+
+	connection.HCDEServiceMalformedStrikes = 0u;
+	connection.HCDEServiceMalformedUntil = I_msTime() + HCDEServiceMalformedQuarantineMS;
+	++HCDEPregameServiceProfile.ServiceMalformedQuarantineActivations;
+	DebugTrace::Markf("net", "%s service quarantine until=%llu", context, static_cast<unsigned long long>(connection.HCDEServiceMalformedUntil));
+}
+
+// Quarantine window used to keep repeated malformed service traffic from
+// re-entering the expensive setup path every tic.
+static bool HCDEServiceQuarantineActive(const FConnection& connection, uint64_t now)
+{
+	return connection.HCDEServiceMalformedUntil > now;
+}
+
+// Any valid token-bearing packet clears the temporary malformed-traffic backoff.
+static void HCDEServiceClearQuarantine(FConnection& connection)
+{
+	connection.HCDEServiceMalformedStrikes = 0u;
+	connection.HCDEServiceMalformedUntil = 0u;
+}
+
+static bool CheckSessionToken(FConnection& connection, uint32_t token, const char* context)
 {
 	if (connection.SessionToken != token)
 	{
+		++HCDEPregameServiceProfile.ServiceTokenMismatch;
 		DebugTrace::Markf("net", "%s token mismatch expected=%08x got=%08x", context, connection.SessionToken, token);
+		NoteHCDEServiceMalformedTraffic(connection, context, "token-mismatch");
 		return false;
 	}
+	HCDEServiceClearQuarantine(connection);
 	return true;
 }
 
 static bool CheckSetupPacket(size_t client, size_t minimumSize, size_t tokenOffset, const char* context)
 {
-	return NetBufferLength >= minimumSize && CheckSessionToken(Connected[client], ReadBE32(&NetBuffer[tokenOffset]), context);
+	auto& connection = Connected[client];
+	if (NetBufferLength < minimumSize)
+	{
+		++HCDEPregameServiceProfile.ServicePacketsTooShort;
+		NoteHCDEServiceMalformedTraffic(connection, context, "too-short");
+		return false;
+	}
+
+	if (!CheckSessionToken(connection, ReadBE32(&NetBuffer[tokenOffset]), context))
+		return false;
+	return true;
 }
 
 static bool CheckHCDEPregameService(size_t client, size_t minimumSize, const char* context)
 {
-	if (NetBufferLength < minimumSize)
+	auto& connection = Connected[client];
+	if (HCDEServiceQuarantineActive(connection, I_msTime()))
 	{
-		DebugTrace::Markf("net", "%s service packet too short len=%zu minimum=%zu", context, NetBufferLength, minimumSize);
+		++HCDEPregameServiceProfile.ServiceMalformedQuarantineDrops;
+		DebugTrace::Markf("net", "%s service packet dropped during quarantine until=%llu", context, static_cast<unsigned long long>(connection.HCDEServiceMalformedUntil));
 		return false;
 	}
-	auto& connection = Connected[client];
+
+	if (NetBufferLength < minimumSize)
+	{
+		++HCDEPregameServiceProfile.ServicePacketsTooShort;
+		DebugTrace::Markf("net", "%s service packet too short len=%zu minimum=%zu", context, NetBufferLength, minimumSize);
+		NoteHCDEServiceMalformedTraffic(connection, context, "too-short");
+		return false;
+	}
 	if (!CheckSessionToken(connection, ReadBE32(&NetBuffer[3]), context))
 		return false;
 
@@ -501,11 +578,14 @@ static bool CheckHCDEPregameService(size_t client, size_t minimumSize, const cha
 	const uint32_t ack = ReadBE32(&NetBuffer[HCDEServiceAckOffset]);
 	if (seq == 0u)
 	{
+		++HCDEPregameServiceProfile.ServiceSeqZero;
 		DebugTrace::Markf("net", "%s service packet has invalid zero sequence", context);
+		NoteHCDEServiceMalformedTraffic(connection, context, "zero-seq");
 		return false;
 	}
 	if (ack > connection.HCDEServiceTxSeq)
 	{
+		++HCDEPregameServiceProfile.ServiceAckOutOfRange;
 		DebugTrace::Markf("net", "%s service ack beyond sent range ack=%u sent=%u", context, ack, connection.HCDEServiceTxSeq);
 	}
 	else if (ack > connection.HCDEServicePeerAck)
@@ -515,12 +595,15 @@ static bool CheckHCDEPregameService(size_t client, size_t minimumSize, const cha
 	}
 	if (seq <= connection.HCDEServiceRxSeq)
 	{
+		++HCDEPregameServiceProfile.ServiceSeqReplayOrDuplicate;
 		++connection.HCDEServiceDuplicateCount;
 		DebugTrace::Markf("net", "%s duplicate/replayed service seq=%u last=%u count=%u", context, seq, connection.HCDEServiceRxSeq, connection.HCDEServiceDuplicateCount);
+		NoteHCDEServiceMalformedTraffic(connection, context, "replay");
 		return false;
 	}
 
 	connection.HCDEServiceRxSeq = seq;
+	HCDEServiceClearQuarantine(connection);
 	return true;
 }
 
@@ -1637,6 +1720,7 @@ static bool FlushHCDEReliableServices(const sockaddr_in& to, FConnection& connec
 
 	if (pending->Packet.Size() < HCDEServiceHeaderSize)
 	{
+		++HCDEPregameServiceProfile.ServiceQueueMalformed;
 		DebugTrace::Markf("net", "dropping malformed retained service %s key=%u seq=%u len=%u", HCDEServiceName(pending->Service), pending->Key, pending->Sequence, pending->Packet.Size());
 		pending->Clear();
 		return false;
@@ -1649,7 +1733,14 @@ static bool FlushHCDEReliableServices(const sockaddr_in& to, FConnection& connec
 	SendPacket(to);
 
 	if (pending->SendCount == 0u)
+	{
 		pending->FirstSendTime = now;
+		++HCDEPregameServiceProfile.ServiceQueueSent;
+	}
+	else
+	{
+		++HCDEPregameServiceProfile.ServiceQueueRetransmit;
+	}
 	pending->LastSendTime = now;
 	++pending->SendCount;
 	DebugTrace::Markf("net", "sent reliable service %s key=%u seq=%u ack=%u count=%u", HCDEServiceName(pending->Service), pending->Key, pending->Sequence, connection.HCDEServiceRxSeq, pending->SendCount);
@@ -1660,11 +1751,13 @@ static bool BeginReliableHCDEPregameService(EHCDEPregameService service, FConnec
 {
 	if (FindHCDEReliableService(connection, service, key) != nullptr)
 	{
+		++HCDEPregameServiceProfile.ServiceQueueReused;
 		DebugTrace::Markf("net", "reusing pending reliable service %s key=%u", HCDEServiceName(service), key);
 		return false;
 	}
 	if (FindFreeHCDEReliableService(connection) == nullptr)
 	{
+		++HCDEPregameServiceProfile.ServiceQueueFullAdd;
 		DebugTrace::Markf("net", "reliable service queue full while adding %s key=%u", HCDEServiceName(service), key);
 		return false;
 	}
@@ -1678,6 +1771,7 @@ static bool CommitReliableHCDEPregameService(const sockaddr_in& to, FConnection&
 	auto* pending = FindFreeHCDEReliableService(connection);
 	if (pending == nullptr)
 	{
+		++HCDEPregameServiceProfile.ServiceQueueFullCommit;
 		DebugTrace::Markf("net", "reliable service queue full while committing %s key=%u", HCDEServiceName(service), key);
 		return false;
 	}
@@ -1739,75 +1833,110 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 			msgSize = 0;
 		}
 	}
-	else if (msgSize > 0)
-	{
-		if (TryHandleServerQuery(fromAddress, TransmitBuffer, msgSize))
+		else if (msgSize > 0)
 		{
+			++HCDEPregameServiceProfile.PacketReceived;
+			if (TryHandleServerQuery(fromAddress, TransmitBuffer, msgSize))
+			{
 			RemoteClient = -1;
 			NetBufferLength = 0u;
 			if (from != nullptr)
-				*from = fromAddress;
+			*from = fromAddress;
 			return;
 		}
-
-		const uint8_t* dataStart = &TransmitBuffer[4];
-		if (client == -1 && !(*dataStart & NCMD_SETUP))
+		if (msgSize < 5)
 		{
+			++HCDEPregameServiceProfile.PacketTooShort;
+			DebugTrace::Markf("net", "ignored undersized packet from %s:%u len=%d", inet_ntoa(fromAddress.sin_addr), ntohs(fromAddress.sin_port), msgSize);
+			client = -1;
 			msgSize = 0;
 		}
 		else
 		{
-			const uint32_t check = (*dataStart & NCMD_SETUP) ? CalcCRC32(dataStart, msgSize - 4) : AddCRC32(CalcCRC32(dataStart, msgSize - 4), GameID, std::extent_v<decltype(GameID)>);
-			const uint32_t crc = (TransmitBuffer[0] << 24) | (TransmitBuffer[1] << 16) | (TransmitBuffer[2] << 8) | TransmitBuffer[3];
-			if (check != crc)
+			const uint8_t* dataStart = &TransmitBuffer[4];
+			const int payloadSize = msgSize - 4;
+			if (client == -1 && !( *dataStart & NCMD_SETUP))
 			{
-				DPrintf(DMSG_NOTIFY, "Checksum on packet failed: expected %u, got %u", check, crc);
-				client = -1;
 				msgSize = 0;
 			}
 			else
 			{
-				NetBuffer[0] = (*dataStart & ~NCMD_COMPRESSED);
-				if (*dataStart & NCMD_COMPRESSED)
+				const uint32_t check = (*dataStart & NCMD_SETUP) ? CalcCRC32(dataStart, payloadSize) : AddCRC32(CalcCRC32(dataStart, payloadSize), GameID, std::extent_v<decltype(GameID)>);
+				const uint32_t crc = (TransmitBuffer[0] << 24) | (TransmitBuffer[1] << 16) | (TransmitBuffer[2] << 8) | TransmitBuffer[3];
+				if (check != crc)
 				{
-					uLongf size = MAX_MSGLEN - 1;
-					int err = uncompress(NetBuffer + 1, &size, dataStart + 1, msgSize - 5);
-					if (err != Z_OK)
-					{
-						Printf("Net decompression failed (zlib error %s)\n", M_ZLibError(err).GetChars());
-						client = -1;
-						msgSize = 0;
-					}
-					else
-					{
-						msgSize = size + 1;
-					}
+					++HCDEPregameServiceProfile.PacketBadCrc;
+					DPrintf(DMSG_NOTIFY, "Checksum on packet failed: expected %u, got %u", check, crc);
+					client = -1;
+					msgSize = 0;
 				}
 				else
 				{
-					msgSize -= 4;
-					memcpy(NetBuffer + 1, dataStart + 1, msgSize - 1);
-				}
-
-				// During an active dedicated match, allow setup/connect packets to
-				// enter the dedicated late-join admission path instead of rejecting
-				// unknown peers immediately as PRE_IN_PROGRESS.
-				if (client == -1 && bGameStarted)
-				{
-					const bool admitted = DedicatedServerMode
-						&& I_IsLocalHCDEServiceAuthority()
-						&& TryProcessSetupConnectPacket(fromAddress, strlen(net_password) > 0, false, true, nullptr);
-					if (admitted)
+					NetBuffer[0] = (*dataStart & ~NCMD_COMPRESSED);
+					if (*dataStart & NCMD_COMPRESSED)
 					{
-						client = FindClient(fromAddress);
+						if (payloadSize <= 1)
+						{
+							++HCDEPregameServiceProfile.PacketCompressedMalformed;
+							DebugTrace::Markf("net", "ignored malformed compressed packet from %s:%u len=%d", inet_ntoa(fromAddress.sin_addr), ntohs(fromAddress.sin_port), msgSize);
+							client = -1;
+							msgSize = 0;
+						}
+						else
+						{
+							uLongf size = MAX_MSGLEN - 1;
+							const int err = uncompress(NetBuffer + 1, &size, dataStart + 1, msgSize - 5);
+							if (err != Z_OK)
+							{
+								++HCDEPregameServiceProfile.PacketCompressedDecompressFailure;
+								Printf("Net decompression failed (zlib error %s)\n", M_ZLibError(err).GetChars());
+								client = -1;
+								msgSize = 0;
+							}
+							else
+							{
+								msgSize = static_cast<int>(size) + 1;
+							}
+						}
 					}
-					if (client == -1)
+					else
 					{
-						NetBuffer[0] = NCMD_SETUP;
-						NetBuffer[1] = PRE_IN_PROGRESS;
-						NetBufferLength = 2u;
-						SendPacket(fromAddress);
-						msgSize = 0;
+						const size_t copySize = size_t(payloadSize - 1);
+						if (copySize >= MAX_MSGLEN || copySize >= MaxTransmitSize)
+						{
+								++HCDEPregameServiceProfile.PacketOversized;
+								DebugTrace::Markf("net", "ignored oversized uncompressed packet from %s:%u payload=%zu", inet_ntoa(fromAddress.sin_addr), ntohs(fromAddress.sin_port), copySize);
+								client = -1;
+								msgSize = 0;
+							}
+						else
+						{
+							msgSize = payloadSize;
+							if (copySize > 0u)
+								memcpy(NetBuffer + 1, dataStart + 1, copySize);
+						}
+					}
+
+					// During an active dedicated match, allow setup/connect packets to
+					// enter the dedicated late-join admission path instead of rejecting
+					// unknown peers immediately as PRE_IN_PROGRESS.
+					if (client == -1 && bGameStarted)
+					{
+						const bool admitted = DedicatedServerMode
+							&& I_IsLocalHCDEServiceAuthority()
+							&& TryProcessSetupConnectPacket(fromAddress, strlen(net_password) > 0, false, true, nullptr);
+						if (admitted)
+						{
+							client = FindClient(fromAddress);
+						}
+						if (client == -1)
+						{
+							NetBuffer[0] = NCMD_SETUP;
+							NetBuffer[1] = PRE_IN_PROGRESS;
+							NetBufferLength = 2u;
+							SendPacket(fromAddress);
+							msgSize = 0;
+						}
 					}
 				}
 			}
@@ -2155,6 +2284,7 @@ static bool DropClientForHCDETimeout(int client, int* connectedPlayers, const ch
 		--*connectedPlayers;
 		I_NetUpdatePlayers(*connectedPlayers, MaxClients);
 	}
+	++HCDEPregameServiceProfile.ServiceTimeoutDrops;
 	return true;
 }
 
@@ -2443,6 +2573,7 @@ void HandleIncomingConnection()
 			CheckHCDEPregameService(RemoteClient, HCDEServiceHeaderSize, "host runtime service heartbeat");
 			break;
 		default:
+			++HCDEPregameServiceProfile.ServiceUnsupported;
 			DebugTrace::Markf("net", "ignored unsupported runtime HCDE service %u", unsigned(NetBuffer[2]));
 			break;
 		}
@@ -2651,6 +2782,7 @@ static bool Host_CheckForConnections(void* connected)
 				CheckHCDEPregameService(RemoteClient, HCDEServiceHeaderSize, "host service heartbeat");
 				break;
 			default:
+				++HCDEPregameServiceProfile.ServiceUnsupported;
 				DebugTrace::Markf("net", "ignored unsupported host HCDE service %u", unsigned(NetBuffer[2]));
 				break;
 			}
@@ -3495,6 +3627,7 @@ static bool Guest_ContactHost(void* unused)
 				I_NetLog("Received HCDE service start");
 				return true;
 			default:
+				++HCDEPregameServiceProfile.ServiceUnsupported;
 				DebugTrace::Markf("net", "ignored unsupported guest HCDE service %u", unsigned(NetBuffer[2]));
 				break;
 			}
@@ -3903,6 +4036,30 @@ bool I_IsRemoteHCDEServiceAuthority(int client)
 int I_GetHCDELiveAuthoritySlot()
 {
 	return I_GetHCDEServiceAuthoritySlot();
+}
+
+const FHCDEPregameServiceProfile& I_GetHCDEPregameServiceProfile()
+{
+	return HCDEPregameServiceProfile;
+}
+
+void I_ResetHCDEPregameServiceProfile()
+{
+	HCDEPregameServiceProfile.Clear();
+}
+
+int I_CountHCDEPregameServiceQuarantines()
+{
+	// Exposed to diagnostics so soak logs can show when the server is actively
+	// shedding malformed setup/service traffic.
+	const uint64_t now = I_msTime();
+	int quarantined = 0;
+	for (int client = 0; client < MAXPLAYERS; ++client)
+	{
+		if (Connected[client].HCDEServiceMalformedUntil > now)
+			++quarantined;
+	}
+	return quarantined;
 }
 
 bool I_IsLocalHCDELiveAuthority()

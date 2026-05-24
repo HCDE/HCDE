@@ -188,7 +188,7 @@ int DoMain (HINSTANCE hInstance)
 {
 	LONG WinWidth, WinHeight;
 	int height, width, x, y;
-	RECT cRect;
+	RECT cRect{};
 	TIMECAPS tc;
 	DEVMODE displaysettings;
 
@@ -340,11 +340,21 @@ int DoMain (HINSTANCE hInstance)
 		x = y = 0;
 	}
 
-	/* create window */
-	FStringf caption("" GAMENAME " %s " X64 " (%s)", GetVersionString(), GetGitTime());
-	mainwindow.Create(caption, x, y, width, height);
-
-	GetClientRect (mainwindow.GetHandle(), &cRect);
+	bool createWindow = !Args->CheckParm(FArg_server) && !Args->CheckParm(FArg_norun);
+	if (createWindow)
+	{
+		/* create window */
+		FStringf caption("" GAMENAME " %s " X64 " (%s)", GetVersionString(), GetGitTime());
+		mainwindow.Create(caption, x, y, width, height);
+		GetClientRect(mainwindow.GetHandle(), &cRect);
+	}
+	else
+	{
+		// Headless/norun paths keep deterministic fallback sizes for
+		// any code that still relies on WinWidth/WinHeight defaults.
+		cRect.right = width;
+		cRect.bottom = height;
+	}
 
 	WinWidth = cRect.right;
 	WinHeight = cRect.bottom;
@@ -424,7 +434,10 @@ int DoMain (HINSTANCE hInstance)
 				DWORD bytes;
 				HANDLE stdinput = GetStdHandle(STD_INPUT_HANDLE);
 
-				ShowWindow(mainwindow.GetHandle(), SW_HIDE);
+				if (createWindow)
+				{
+					ShowWindow(mainwindow.GetHandle(), SW_HIDE);
+				}
 				if (StdOut != nullptr) WriteFile(StdOut, "Press any key to exit...", 24, &bytes, nullptr);
 				FlushConsoleInputBuffer(stdinput);
 				SetConsoleMode(stdinput, 0);
@@ -432,7 +445,10 @@ int DoMain (HINSTANCE hInstance)
 			}
 			else if (StdOut == nullptr)
 			{
-				mainwindow.ShowErrorPane("");
+				if (createWindow)
+				{
+					mainwindow.ShowErrorPane("");
+				}
 			}
 		}
 	}
