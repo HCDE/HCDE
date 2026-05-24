@@ -34,6 +34,7 @@
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "d_main.h"
+#include "d_net.h"
 #include "d_player.h"
 #include "decallib.h"
 #include "doomdef.h"
@@ -1373,7 +1374,11 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 	if ((thing->ThruBits & tm.thing->ThruBits) && ((thing->flags8 | tm.thing->flags8) & MF8_ALLOWTHRUBITS))
 		return true;
 
-	if (!((thing->flags & (MF_SOLID | MF_SPECIAL | MF_SHOOTABLE)) || thing->flags6 & MF6_TOUCHY))
+	const bool mirrorBlocksPlayer = tm.thing->player != nullptr
+		&& Net_IsInvasionClientMirrorBlockingActor(thing);
+
+	if (!mirrorBlocksPlayer
+		&& !((thing->flags & (MF_SOLID | MF_SPECIAL | MF_SHOOTABLE)) || thing->flags6 & MF6_TOUCHY))
 		return true;	// can't hit thing
 
 	double blockdist = thing->radius + tm.thing->radius;
@@ -1416,7 +1421,7 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 			}
 		}
 
-		if (((tm.FromPMove || tm.thing->player != NULL) && thing->flags&MF_SOLID))
+		if (((tm.FromPMove || tm.thing->player != NULL) && ((thing->flags & MF_SOLID) || mirrorBlocksPlayer)))
 		{
 			DVector3 oldpos = tm.thing->PosRelative(thing);
 			// Both actors already overlap. To prevent them from remaining stuck allow the move if it
@@ -1520,8 +1525,8 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 	// [ED850] Player Prediction ends here. There is nothing else they could/should do.
 	if (tm.thing->player != NULL && (tm.thing->player->cheats & CF_PREDICTING))
 	{
-		solid = (thing->flags & MF_SOLID) &&
-			!(thing->flags & MF_NOCLIP) &&
+		solid = ((thing->flags & MF_SOLID) || mirrorBlocksPlayer) &&
+			(!(thing->flags & MF_NOCLIP) || mirrorBlocksPlayer) &&
 			((tm.thing->flags & MF_SOLID) || (tm.thing->flags6 & MF6_BLOCKEDBYSOLIDACTORS));
 
 		return !solid || unblocking;
@@ -1708,8 +1713,8 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 			}
 		}
 	}
-	solid = (thing->flags & MF_SOLID) &&
-		!(thing->flags & MF_NOCLIP) &&
+	solid = ((thing->flags & MF_SOLID) || mirrorBlocksPlayer) &&
+		(!(thing->flags & MF_NOCLIP) || mirrorBlocksPlayer) &&
 		((tm.thing->flags & MF_SOLID) || (tm.thing->flags6 & MF6_BLOCKEDBYSOLIDACTORS));
 
 	// Check for special pickup

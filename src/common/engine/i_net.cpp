@@ -153,7 +153,10 @@ FARG(password, "", "", "",
 // As per http://support.microsoft.com/kb/q192599/ the standard
 // size for network buffers is 8k.
 constexpr size_t MaxTransmitSize = 8000u;
-constexpr size_t MinCompressionSize = 10u;
+// Small command packets are latency-sensitive and already fit comfortably under
+// common MTUs. Compress larger snapshots, but do not spend zlib work on routine
+// tic traffic every frame.
+constexpr size_t MinCompressionSize = 512u;
 constexpr size_t MaxPasswordSize = 256u;
 constexpr size_t HCDEServiceSequenceOffset = 7u;
 constexpr size_t HCDEServiceAckOffset = 11u;
@@ -1596,7 +1599,7 @@ static void SendPacket(const sockaddr_in& to)
 	if (NetBufferLength >= MinCompressionSize)
 	{
 		*dataStart = NetBuffer[0] | NCMD_COMPRESSED;
-		const int res = compress2(dataStart + 1, &size, NetBuffer + 1, NetBufferLength - 1u, 9);
+		const int res = compress2(dataStart + 1, &size, NetBuffer + 1, NetBufferLength - 1u, Z_BEST_SPEED);
 		if (res != Z_OK)
 			I_Error("Net compression failed (zlib error %d)", res);
 

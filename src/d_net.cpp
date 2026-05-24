@@ -153,6 +153,11 @@ static bool Net_IsInvasionModeEnabled()
 	return sv_gametype == 4;
 }
 
+static bool Net_IsLocalInvasionAuthority()
+{
+	return !netgame || I_IsLocalHCDEServiceAuthority();
+}
+
 static int Net_InvasionSecondsToTics(float seconds)
 {
 	if (seconds <= 0.0f)
@@ -264,8 +269,10 @@ constexpr size_t HCDEServerWorldDeltaFlagsOffset = 5u;
 constexpr size_t HCDEServerWorldDeltaTicOffset = 6u;
 constexpr size_t HCDEServerWorldDeltaCountOffset = 10u;
 constexpr size_t HCDEServerWorldDeltaHeaderSize = 11u;
-constexpr size_t HCDEServerWorldDeltaRecordSize = 60u;
-constexpr uint8_t HCDEServerWorldDeltaProtocolVersion = 1u;
+constexpr size_t HCDEServerWorldDeltaRecordV1Size = 60u;
+constexpr size_t HCDEServerWorldDeltaRecordV2Size = 36u;
+constexpr size_t HCDEServerWorldDeltaRecordSize = HCDEServerWorldDeltaRecordV2Size;
+constexpr uint8_t HCDEServerWorldDeltaProtocolVersion = 2u;
 constexpr uint8_t HCDEServerWorldDeltaMagic[4] = { 'H', 'C', 'D', 'W' };
 constexpr uint8_t HCDEServerWorldDeltaPoseHasActor = 1u << 0;
 constexpr uint8_t HCDEServerWorldDeltaPoseLive = 1u << 1;
@@ -304,6 +311,8 @@ constexpr uint8_t HCDEInvasionSpawnEventsProtocolVersion = 1u;
 constexpr uint8_t HCDEInvasionSpawnEventsMagic[4] = { 'H', 'C', 'I', 'S' };
 constexpr size_t HCDEInvasionSpawnEventReplayLimit = 64u;
 constexpr size_t HCDEInvasionSpawnEventHistoryLimit = 128u;
+constexpr size_t HCDEInvasionSpawnEventPacketLimit = 4u;
+constexpr size_t HCDEInvasionSpawnEventActorDeltaReserveBytes = 900u;
 constexpr size_t HCDEInvasionActorDeltasMagicOffset = 0u;
 constexpr size_t HCDEInvasionActorDeltasVersionOffset = 4u;
 constexpr size_t HCDEInvasionActorDeltasFlagsOffset = 5u;
@@ -311,14 +320,39 @@ constexpr size_t HCDEInvasionActorDeltasCountOffset = 6u;
 constexpr size_t HCDEInvasionActorDeltasReservedOffset = 7u;
 constexpr size_t HCDEInvasionActorDeltasHeaderSize = 8u;
 constexpr size_t HCDEInvasionActorDeltaV1RecordSize = 64u;
-constexpr uint8_t HCDEInvasionActorDeltasProtocolVersion = 2u;
+constexpr uint8_t HCDEInvasionActorDeltasProtocolVersion = 5u;
 constexpr uint8_t HCDEInvasionActorDeltasMagic[4] = { 'H', 'C', 'I', 'A' };
 constexpr uint8_t HCDEInvasionActorDeltasFlagComplete = 1u << 0;
 constexpr uint8_t HCDEInvasionActorDeltaFlagLive = 1u << 0;
+constexpr uint8_t HCDEInvasionActorActionNone = 0u;
+constexpr uint8_t HCDEInvasionActorActionSpawn = 1u;
+constexpr uint8_t HCDEInvasionActorActionSee = 2u;
+constexpr uint8_t HCDEInvasionActorActionMelee = 3u;
+constexpr uint8_t HCDEInvasionActorActionMissile = 4u;
+constexpr uint8_t HCDEInvasionActorActionPain = 5u;
+constexpr uint8_t HCDEInvasionActorActionMax = HCDEInvasionActorActionPain;
+constexpr int HCDEInvasionActorActionHoldTics = TICRATE / 2;
+constexpr uint16_t HCDEInvasionActorDeltaFieldClass = 1u << 0;
+constexpr uint16_t HCDEInvasionActorDeltaFieldFlags = 1u << 1;
+constexpr uint16_t HCDEInvasionActorDeltaFieldAction = 1u << 2;
+constexpr uint16_t HCDEInvasionActorDeltaFieldHealth = 1u << 3;
+constexpr uint16_t HCDEInvasionActorDeltaFieldPos = 1u << 4;
+constexpr uint16_t HCDEInvasionActorDeltaFieldVel = 1u << 5;
+constexpr uint16_t HCDEInvasionActorDeltaFieldAngles = 1u << 6;
+constexpr uint16_t HCDEInvasionActorDeltaFieldAll =
+	HCDEInvasionActorDeltaFieldClass
+	| HCDEInvasionActorDeltaFieldFlags
+	| HCDEInvasionActorDeltaFieldAction
+	| HCDEInvasionActorDeltaFieldHealth
+	| HCDEInvasionActorDeltaFieldPos
+	| HCDEInvasionActorDeltaFieldVel
+	| HCDEInvasionActorDeltaFieldAngles;
+constexpr size_t HCDEInvasionSnapshotPayloadBudgetBytes = 1200u;
 constexpr double HCDEInvasionMirrorVisualFallbackStepPerTic = 8.0;
 constexpr double HCDEInvasionMirrorVisualSpeedMultiplier = 1.10;
 constexpr double HCDEInvasionMirrorVisualMaxStepPerTic = 12.0;
 constexpr double HCDEInvasionMirrorVisualSnapDistance = 384.0;
+constexpr int HCDEInvasionProjectileMirrorMaxAgeTics = TICRATE * 3;
 constexpr double HCDEServerBaselineRepairDistance = 128.0;
 constexpr double HCDEServerReconcileDistance = 20.0;
 constexpr double HCDEServerReconcileHardDistance = 384.0;
@@ -383,6 +417,16 @@ static uint64_t LastHCDELiveSequenceRejectReportMS = 0u;
 static uint64_t LastHCDELiveSnapshotRejectReportMS = 0u;
 static uint64_t LastHCDELiveTicGateReportMS = 0u;
 static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
+
+struct FHCDEPendingLocalHealthRepair
+{
+	bool Valid = false;
+	uint32_t ServerTic = 0u;
+	int Health = 0;
+	bool OnGround = false;
+};
+
+static FHCDEPendingLocalHealthRepair PendingLocalHealthRepair = {};
 
 // Profile for an invasion monster type.
 struct FInvasionMonsterProfile
@@ -517,15 +561,52 @@ struct FInvasionReplicatedSpawnEvent
 
 struct FInvasionReplicatedActorRef
 {
+	struct FSentClientState
+	{
+		bool Valid = false;
+		uint8_t ActorFlags = 0u;
+		uint8_t ActionState = HCDEInvasionActorActionNone;
+		int Health = 0;
+		FString ClassName;
+		DVector3 Pos = {};
+		DVector3 Vel = {};
+		uint32_t Yaw = 0u;
+		uint32_t Pitch = 0u;
+	};
+
 	uint32_t Id = 0u;
 	TObjPtr<AActor*> Actor = MakeObjPtr<AActor*>(nullptr);
 	bool DeathDeltaSent = false;
+	bool IsProjectile = false;
+	bool ForceDeathDelta = false;
+	uint8_t ServerForcedActionState = HCDEInvasionActorActionNone;
+	int ServerForcedActionTic = 0;
 	bool HasVisualTarget = false;
 	DVector3 VisualTargetPos = {};
+	DVector3 VisualTargetVel = {};
 	DAngle VisualTargetYaw = nullAngle;
 	DAngle VisualTargetPitch = nullAngle;
 	int VisualTargetHealth = 0;
 	int VisualTargetTic = 0;
+	int SpawnTic = 0;
+	uint8_t VisualActionState = HCDEInvasionActorActionNone;
+	int VisualActionTic = 0;
+	int LastFullDeltaTic[MAXPLAYERS] = {};
+	FSentClientState LastSent[MAXPLAYERS] = {};
+};
+
+struct FInvasionPendingMirrorSpawn
+{
+	uint32_t Id = 0u;
+	int Wave = 0;
+	FString ClassName;
+	DVector3 Pos = {};
+	DVector3 Vel = {};
+	DAngle Yaw = nullAngle;
+	DAngle Pitch = nullAngle;
+	int Health = 0;
+	bool MarkApplied = false;
+	int QueuedTic = 0;
 };
 
 static FInvasionWaveDirector InvasionWaveDirector = {};
@@ -534,17 +615,25 @@ static TArray<FInvasionSpawnSpotRecord> InvasionRegisteredSpawnSpots = {};
 static FLevelLocals* InvasionRegisteredSpawnSpotLevel = nullptr;
 static TArray<FInvasionReplicatedSpawnEvent> InvasionRecentSpawnEvents = {};
 static TArray<FInvasionReplicatedSpawnEvent> InvasionPendingSpawnEvents = {};
+static TArray<FInvasionPendingMirrorSpawn> InvasionPendingMirrorSpawns = {};
 static TArray<FInvasionReplicatedActorRef> InvasionReplicatedActors = {};
 static uint32_t InvasionNextSpawnEventId = 1u;
 static uint32_t InvasionLastAppliedSpawnEventId = 0u;
+static size_t InvasionActorDeltaSendCursor = 0u;
 static int InvasionMirrorNextVisualDiagnosticTic = 0;
 static int InvasionMirrorVisualTickBudget = 0;
 
 static void Net_RebuildInvasionSpawnSpots(int wave);
 static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, int previousWave);
 static FInvasionReplicatedActorRef* Net_FindInvasionReplicatedActor(uint32_t id);
+static FInvasionReplicatedActorRef* Net_FindInvasionReplicatedActorByActor(const AActor* actor);
 static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor);
 static void Net_DrainPendingInvasionSpawnEvents();
+static void Net_DrainPendingInvasionMirrorSpawns();
+static AActor* Net_SelectInvasionCombatTarget(AActor* actor);
+static int Net_GetInvasionSkillWakeDelayTics();
+static void Net_AwakenInvasionMonster(AActor* actor);
+static bool Net_IsInvasionReplicatedProjectile(const AActor* actor);
 static bool Net_IsInvasionActorCorpseLike(const AActor* actor);
 static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor);
 static void Net_TickInvasionMirrorVisualActors();
@@ -581,7 +670,7 @@ static void Net_ShowInvasionStatusMessage(const char* text)
 
 static void Net_TickInvasionAnnouncements()
 {
-	if (!netgame || demoplayback || !Net_IsInvasionModeEnabled())
+	if (demoplayback || !Net_IsInvasionModeEnabled())
 	{
 		Net_ResetInvasionAnnouncements();
 		return;
@@ -657,6 +746,9 @@ static int	SkipCommandAmount = 0;	// Amount of commands to skip. Try and batch s
 
 static int Net_CountInvasionParticipants();
 static int Net_CountInvasionAliveParticipants();
+static double Net_GetInvasionSkillMonsterSpeedScale();
+static void Net_ApplyInvasionMonsterSkillTuning(AActor* actor);
+static int Net_GetInvasionActiveMonsterCap();
 
 static void Net_SetInvasionState(EInvasionState state, int tics, const char* reason = nullptr)
 {
@@ -1134,6 +1226,19 @@ static bool HCDEAppendDouble(uint8_t* output, size_t outputCapacity, size_t& cur
 	return HCDEAppendBE64(output, outputCapacity, cursor, bits);
 }
 
+static bool HCDEAppendFloat(uint8_t* output, size_t outputCapacity, size_t& cursor, double value)
+{
+	const float compact = static_cast<float>(value);
+	if (isfinite(compact) == 0)
+	{
+		DebugTrace::Markf("net", "HCDE append float failed: cursor=%zu reason=not_finite_value", cursor);
+		return false;
+	}
+	uint32_t bits = 0u;
+	memcpy(&bits, &compact, sizeof(bits));
+	return HCDEAppendBE32(output, outputCapacity, cursor, bits);
+}
+
 static bool HCDEAppendBytes(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t size)
 {
 	if (cursor >= outputCapacity)
@@ -1217,6 +1322,23 @@ static bool HCDEReadDoubleField(const uint8_t* data, size_t dataSize, size_t& cu
 		DebugTrace::Markf("net", "HCDE read double failed: cursor=%zu reason=not_finite_value", cursor);
 		return false;
 	}
+	return true;
+}
+
+static bool HCDEReadFloatField(const uint8_t* data, size_t dataSize, size_t& cursor, double& value)
+{
+	uint32_t bits = 0u;
+	if (!HCDEReadBE32Field(data, dataSize, cursor, bits))
+		return false;
+
+	float compact = 0.f;
+	memcpy(&compact, &bits, sizeof(compact));
+	if (isfinite(compact) == 0)
+	{
+		DebugTrace::Markf("net", "HCDE read float failed: cursor=%zu reason=not_finite_value", cursor);
+		return false;
+	}
+	value = double(compact);
 	return true;
 }
 
@@ -1355,12 +1477,12 @@ static bool HCDEAppendServerWorldDeltas(uint8_t* output, size_t outputCapacity, 
 		if (!HCDEAppendByte(output, outputCapacity, cursor, playerNum)
 			|| !HCDEAppendByte(output, outputCapacity, cursor, flags)
 			|| !HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(clamp<int>(health, INT16_MIN, INT16_MAX)))
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.X)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.Y)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, pos.Z)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.X)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.Y)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, vel.Z)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, pos.X)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, pos.Y)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, pos.Z)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, vel.X)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, vel.Y)
+			|| !HCDEAppendFloat(output, outputCapacity, cursor, vel.Z)
 			|| !HCDEAppendBE32(output, outputCapacity, cursor, yaw)
 			|| !HCDEAppendBE32(output, outputCapacity, cursor, pitch))
 		{
@@ -1368,6 +1490,52 @@ static bool HCDEAppendServerWorldDeltas(uint8_t* output, size_t outputCapacity, 
 		}
 	}
 	return true;
+}
+
+static void HCDEApplyLocalHealthFields(player_t& player, int serverHealth, bool onGround)
+{
+	AActor* mo = player.mo;
+	if (mo == nullptr)
+		return;
+
+	const int previousHealth = max<int>(player.health, mo->health);
+	mo->health = serverHealth;
+	player.health = serverHealth;
+	player.onground = onGround;
+	if (serverHealth < previousHealth)
+		player.damagecount = clamp<int>(player.damagecount + previousHealth - serverHealth, 0, 100);
+}
+
+static void HCDEQueuePredictedLocalHealthRepair(uint32_t serverTic, int serverHealth, bool onGround)
+{
+	if (PendingLocalHealthRepair.Valid && serverTic < PendingLocalHealthRepair.ServerTic)
+		return;
+
+	PendingLocalHealthRepair.Valid = true;
+	PendingLocalHealthRepair.ServerTic = serverTic;
+	PendingLocalHealthRepair.Health = serverHealth;
+	PendingLocalHealthRepair.OnGround = onGround;
+
+	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+		HCDEApplyLocalHealthFields(players[consoleplayer], serverHealth, onGround);
+}
+
+static void HCDEApplyPendingLocalHealthRepair()
+{
+	if (!PendingLocalHealthRepair.Valid)
+		return;
+
+	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+	{
+		HCDEApplyLocalHealthFields(players[consoleplayer],
+			PendingLocalHealthRepair.Health,
+			PendingLocalHealthRepair.OnGround);
+		DebugTrace::Markf("net", "HCDE pending local health repair applied tic=%u health=%d",
+			PendingLocalHealthRepair.ServerTic,
+			PendingLocalHealthRepair.Health);
+	}
+
+	PendingLocalHealthRepair.Valid = false;
 }
 
 static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, size_t bodyBytes, size_t& bodyCursor, uint8_t playerCount, uint64_t snapshotPlayers)
@@ -1381,8 +1549,9 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 	const uint8_t version = body[bodyCursor + HCDEServerWorldDeltaVersionOffset];
 	const uint8_t flags = body[bodyCursor + HCDEServerWorldDeltaFlagsOffset];
 	const uint8_t deltaCount = body[bodyCursor + HCDEServerWorldDeltaCountOffset];
-	if (version != HCDEServerWorldDeltaProtocolVersion || flags != 0u || deltaCount != playerCount)
+	if ((version != 1u && version != HCDEServerWorldDeltaProtocolVersion) || flags != 0u || playerCount > MAXPLAYERS || deltaCount > MAXPLAYERS)
 		return false;
+	const size_t deltaRecordSize = version >= 2u ? HCDEServerWorldDeltaRecordV2Size : HCDEServerWorldDeltaRecordV1Size;
 
 	uint64_t deltaPlayers = 0u;
 	uint32_t serverTic = 0u;
@@ -1390,9 +1559,10 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 	if (!HCDEReadBE32Field(body, bodyBytes, ticCursor, serverTic))
 		return false;
 
+	const bool canMutatePlaysim = HCDEWorldDeltasCanMutatePlaysim();
 	for (uint8_t i = 0u; i < deltaCount; ++i)
 	{
-		if (cursor > bodyBytes || bodyBytes - cursor < HCDEServerWorldDeltaRecordSize)
+		if (cursor > bodyBytes || bodyBytes - cursor < deltaRecordSize)
 			return false;
 
 		uint8_t playerNum = 0u;
@@ -1409,8 +1579,12 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 		}
 		for (double& value : values)
 		{
-			if (!HCDEReadDoubleField(body, bodyBytes, cursor, value))
+			if (version >= 2u
+				? !HCDEReadFloatField(body, bodyBytes, cursor, value)
+				: !HCDEReadDoubleField(body, bodyBytes, cursor, value))
+			{
 				return false;
+			}
 		}
 		if (!HCDEReadBE32Field(body, bodyBytes, cursor, yaw)
 			|| !HCDEReadBE32Field(body, bodyBytes, cursor, pitch))
@@ -1421,7 +1595,7 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 		if (playerNum >= MAXPLAYERS || playerNum >= 64u || (poseFlags & ~(HCDEServerWorldDeltaPoseHasActor | HCDEServerWorldDeltaPoseLive | HCDEServerWorldDeltaPoseOnGround)) != 0u)
 			return false;
 		const uint64_t playerMask = uint64_t(1u) << playerNum;
-		if ((snapshotPlayers & playerMask) == 0u || (deltaPlayers & playerMask) != 0u)
+		if ((deltaPlayers & playerMask) != 0u)
 			return false;
 		deltaPlayers |= playerMask;
 
@@ -1446,19 +1620,25 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 		}
 		const double drift = delta.LengthSquared();
 		const int serverHealth = int(int16_t(healthBits));
-		const bool canMutatePlaysim = HCDEWorldDeltasCanMutatePlaysim();
 		if (playerNum == consoleplayer)
 		{
+			const bool serverReportsOnGround = (poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u;
 			const bool serverReportsLive = (poseFlags & HCDEServerWorldDeltaPoseLive) != 0u && serverHealth > 0;
+			const bool serverReportsDead = serverHealth <= 0;
 			const bool localNeedsRespawnRepair = serverReportsLive
 				&& (player.playerstate != PST_LIVE
 					|| mo->health <= 0
 					|| player.health <= 0
 					|| (mo->flags & MF_CORPSE) != 0);
+			const bool localNeedsDeathRepair = serverReportsDead
+				&& player.playerstate == PST_LIVE
+				&& (mo->health > 0 || player.health > 0)
+				&& (mo->flags & MF_CORPSE) == 0;
 			const bool needsLocalStateRepair = localNeedsRespawnRepair
+				|| localNeedsDeathRepair
 				|| mo->health != serverHealth
 				|| player.health != serverHealth
-				|| player.onground != ((poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u);
+				|| player.onground != serverReportsOnGround;
 			if (!needsLocalStateRepair)
 				continue;
 
@@ -1468,6 +1648,26 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				DebugTrace::Markf("net", "HCDE client local state repair deferred from=%d player=%u drift=%.2f health=%d local-health=%d",
 					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, player.health);
 				continue;
+			}
+
+			if (NetworkEntityManager::IsPredicting()
+				&& !localNeedsRespawnRepair
+				&& !localNeedsDeathRepair)
+			{
+				HCDEQueuePredictedLocalHealthRepair(serverTic, serverHealth, serverReportsOnGround);
+				++peer.Reconciliations;
+				DebugTrace::Markf("net", "HCDE client local health repair queued from=%d player=%u drift=%.2f health=%d reconciliations=%u",
+					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations);
+				continue;
+			}
+
+			if (NetworkEntityManager::IsPredicting())
+			{
+				P_UnPredictClient();
+				mo = player.mo;
+				if (mo == nullptr)
+					continue;
+				PendingLocalHealthRepair.Valid = false;
 			}
 
 			if (localNeedsRespawnRepair)
@@ -1501,16 +1701,35 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				player.BlendR = player.BlendG = player.BlendB = player.BlendA = 0.f;
 				player.attacker = nullptr;
 				player.viewheight = viewZOffset;
-				player.onground = (poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u;
+				player.onground = serverReportsOnGround;
 				player.viewz = serverPos.Z + viewZOffset;
 				mo->Prev = oldPos;
 				mo->PrevPortalGroup = oldPortalGroup;
 				mo->renderflags |= RF_NOINTERPOLATEVIEW;
 				mo->ClearInterpolation();
 				P_ClearPredictionData();
+				PendingLocalHealthRepair.Valid = false;
 				++peer.HardReconciliations;
 				++peer.Reconciliations;
 				DebugTrace::Markf("net", "HCDE client respawn repair from=%d player=%u drift=%.2f health=%d reconciliations=%u hard=%u",
+					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations, peer.HardReconciliations);
+				continue;
+			}
+
+			if (localNeedsDeathRepair)
+			{
+				const int previousHealth = max<int>(player.health, mo->health);
+				mo->health = min<int>(serverHealth, 0);
+				player.health = mo->health;
+				player.onground = serverReportsOnGround;
+				if (previousHealth > serverHealth)
+					player.damagecount = clamp<int>(player.damagecount + previousHealth - serverHealth, 0, 100);
+				mo->CallDie(nullptr, nullptr, DMG_FORCED, NAME_None);
+				P_ClearPredictionData();
+				PendingLocalHealthRepair.Valid = false;
+				++peer.HardReconciliations;
+				++peer.Reconciliations;
+				DebugTrace::Markf("net", "HCDE client death repair from=%d player=%u drift=%.2f health=%d reconciliations=%u hard=%u",
 					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations, peer.HardReconciliations);
 				continue;
 			}
@@ -1519,9 +1738,8 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 			// server-authored position, velocity, yaw, or pitch here; doing so
 			// can pin movement if the dedicated input route lags or is stale.
 			// Health and grounded state are safe compact corrections.
-			mo->health = serverHealth;
-			player.health = serverHealth;
-			player.onground = (poseFlags & HCDEServerWorldDeltaPoseOnGround) != 0u;
+			HCDEApplyLocalHealthFields(player, serverHealth, serverReportsOnGround);
+			PendingLocalHealthRepair.Valid = false;
 			++peer.Reconciliations;
 			DebugTrace::Markf("net", "HCDE client local state repair from=%d player=%u drift=%.2f health=%d reconciliations=%u",
 				clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations);
@@ -1553,12 +1771,12 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 		}
 	}
 
-	if (deltaPlayers != snapshotPlayers)
+	if ((deltaPlayers & snapshotPlayers) != snapshotPlayers)
 		return false;
 
 	bodyCursor = cursor;
 	DebugTrace::Markf("net", "HCDE server world delta recv tic=%u players=%u bytes=%zu",
-		serverTic, unsigned(deltaCount), size_t(deltaCount) * HCDEServerWorldDeltaRecordSize + HCDEServerWorldDeltaHeaderSize);
+		serverTic, unsigned(deltaCount), size_t(deltaCount) * deltaRecordSize + HCDEServerWorldDeltaHeaderSize);
 	return true;
 }
 
@@ -1624,7 +1842,8 @@ static bool HCDEAppendInvasionSpawnEvents(uint8_t* output, size_t outputCapacity
 
 	uint8_t count = 0u;
 	const size_t eventCount = InvasionRecentSpawnEvents.Size();
-	const size_t start = eventCount > HCDEInvasionSpawnEventReplayLimit ? eventCount - HCDEInvasionSpawnEventReplayLimit : 0u;
+	const size_t replayLimit = min<size_t>(HCDEInvasionSpawnEventReplayLimit, HCDEInvasionSpawnEventPacketLimit);
+	const size_t start = eventCount > replayLimit ? eventCount - replayLimit : 0u;
 	for (size_t i = start; i < eventCount && count < UINT8_MAX; ++i)
 	{
 		const auto& event = InvasionRecentSpawnEvents[i];
@@ -1632,6 +1851,16 @@ static bool HCDEAppendInvasionSpawnEvents(uint8_t* output, size_t outputCapacity
 		const size_t classNameLen = className != nullptr ? strlen(className) : 0u;
 		if (event.Id == 0u || classNameLen == 0u || classNameLen > UINT8_MAX)
 			continue;
+
+		constexpr size_t fixedRecordBytes = 4u + 4u + 2u + 1u + 3u * sizeof(double) + 4u + 2u;
+		const size_t recordBytes = fixedRecordBytes + classNameLen;
+		const size_t actorDeltaReserve = InvasionReplicatedActors.Size() > 0 ? HCDEInvasionSpawnEventActorDeltaReserveBytes : 0u;
+		if (cursor > outputCapacity
+			|| outputCapacity - cursor < recordBytes
+			|| outputCapacity - cursor - recordBytes < actorDeltaReserve)
+		{
+			break;
+		}
 
 		const size_t recordStart = cursor;
 		if (!HCDEAppendBE32(output, outputCapacity, cursor, event.Id)
@@ -1653,6 +1882,8 @@ static bool HCDEAppendInvasionSpawnEvents(uint8_t* output, size_t outputCapacity
 	}
 
 	output[countOffset] = count;
+	DebugTrace::Markf("invasion", "spawn events send count=%u history=%zu bytes-left=%zu",
+		unsigned(count), eventCount, cursor <= outputCapacity ? outputCapacity - cursor : 0u);
 	return true;
 }
 
@@ -1685,6 +1916,50 @@ static void Net_QueueInvasionSpawnEvent(const FInvasionReplicatedSpawnEvent& eve
 		unsigned(event.Id), event.Wave, event.ClassName.GetChars());
 }
 
+static bool Net_HasPendingInvasionMirrorSpawn(uint32_t id)
+{
+	for (const auto& pending : InvasionPendingMirrorSpawns)
+	{
+		if (pending.Id == id)
+			return true;
+	}
+	return false;
+}
+
+static void Net_QueueInvasionMirrorSpawn(uint32_t id, int wave, const FString& className,
+	const DVector3& pos, const DVector3& vel, DAngle yaw, DAngle pitch, int health,
+	bool markApplied)
+{
+	if (id == 0u
+		|| className.IsEmpty()
+		|| Net_HasPendingInvasionMirrorSpawn(id))
+	{
+		return;
+	}
+	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && existing->Actor != nullptr)
+		return;
+
+	FInvasionPendingMirrorSpawn pending;
+	pending.Id = id;
+	pending.Wave = wave;
+	pending.ClassName = className;
+	pending.Pos = pos;
+	pending.Vel = vel;
+	pending.Yaw = yaw;
+	pending.Pitch = pitch;
+	pending.Health = health;
+	pending.MarkApplied = markApplied;
+	pending.QueuedTic = gametic;
+	InvasionPendingMirrorSpawns.Push(pending);
+	while (InvasionPendingMirrorSpawns.Size() > HCDEInvasionSpawnEventHistoryLimit)
+	{
+		InvasionPendingMirrorSpawns.Delete(0);
+	}
+
+	DebugTrace::Markf("invasion", "mirror delta spawn queued id=%u wave=%d class=%s mark=%d reason=prediction-active",
+		unsigned(id), wave, className.GetChars(), markApplied ? 1 : 0);
+}
+
 static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 {
 	if (I_IsLocalHCDEServiceAuthority()
@@ -1695,18 +1970,55 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 	}
 
 	const bool wasThinking = actor->GetStatNum() >= STAT_FIRST_THINKING;
-	const bool needsWorldRelink = (actor->flags & MF_NOBLOCKMAP) == 0;
+	const bool projectileMirror = Net_IsInvasionReplicatedProjectile(actor);
+	const bool blockmapMirror = !projectileMirror;
+	const bool needsWorldRelink = projectileMirror
+		? ((actor->flags & MF_NOBLOCKMAP) == 0
+			|| (actor->flags & (MF_SOLID | MF_SHOOTABLE)) != 0)
+		: blockmapMirror
+		? ((actor->flags & MF_NOBLOCKMAP) != 0
+			|| (actor->flags & MF_SOLID) != 0
+			|| (actor->flags & MF_NOCLIP) == 0
+			|| (actor->flags & MF_SHOOTABLE) == 0)
+		: ((actor->flags & MF_NOBLOCKMAP) == 0);
 	if (needsWorldRelink)
 	{
 		FLinkContext ctx;
 		actor->UnlinkFromWorld(&ctx);
-		actor->flags |= MF_NOBLOCKMAP;
-		actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+		if (projectileMirror)
+		{
+			actor->flags |= MF_NOBLOCKMAP;
+			actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+			actor->renderflags |= RF_NOSPRITESHADOW;
+		}
+		else if (blockmapMirror)
+		{
+			actor->flags &= ~(MF_NOBLOCKMAP | MF_SOLID);
+			actor->flags |= MF_NOCLIP | MF_SHOOTABLE;
+		}
+		else
+		{
+			actor->flags |= MF_NOBLOCKMAP;
+			actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+		}
 		actor->LinkToWorld(&ctx);
 	}
 	else
 	{
-		actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+		if (projectileMirror)
+		{
+			actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+			actor->renderflags |= RF_NOSPRITESHADOW;
+		}
+		else if (blockmapMirror)
+		{
+			actor->flags &= ~MF_SOLID;
+			actor->flags |= MF_NOCLIP | MF_SHOOTABLE;
+		}
+		else
+		{
+			actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+		}
 	}
 
 	actor->flags |= MF_NOCLIP;
@@ -1718,7 +2030,7 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 	actor->goal = nullptr;
 	actor->Vel = DVector3(0, 0, 0);
 
-	if (actor->state == actor->SpawnState && actor->SeeState != nullptr)
+	if (!projectileMirror && actor->state == actor->SpawnState && actor->SeeState != nullptr)
 		actor->SetState(actor->SeeState, true);
 
 	if (wasThinking)
@@ -1726,10 +2038,12 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 
 	if (wasThinking || needsWorldRelink)
 	{
-		DebugTrace::Markf("invasion", "mirror visual-only armed id=%u class=%s stat=%d flags=0x%x flags5=0x%x pos=(%.1f,%.1f,%.1f)",
+		DebugTrace::Markf("invasion", "mirror client replica armed id=%u class=%s stat=%d blockmap=%d projectile=%d flags=0x%x flags5=0x%x pos=(%.1f,%.1f,%.1f)",
 			unsigned(id),
 			actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
 			actor->GetStatNum(),
+			blockmapMirror ? 1 : 0,
+			projectileMirror ? 1 : 0,
 			actor->flags.GetValue(),
 			actor->flags5.GetValue(),
 			actor->X(),
@@ -1743,18 +2057,23 @@ static void Net_SeedInvasionMirrorVisualTarget(FInvasionReplicatedActorRef& ref,
 	if (actor == nullptr)
 		return;
 
+	if (Net_IsInvasionReplicatedProjectile(actor))
+		ref.IsProjectile = true;
 	ref.HasVisualTarget = true;
 	ref.VisualTargetPos = actor->Pos();
+	ref.VisualTargetVel = actor->Vel;
 	ref.VisualTargetYaw = actor->Angles.Yaw;
 	ref.VisualTargetPitch = actor->Angles.Pitch;
 	ref.VisualTargetHealth = actor->health;
 	ref.VisualTargetTic = gametic;
 }
 
-static void Net_SetInvasionMirrorVisualTarget(FInvasionReplicatedActorRef& ref, const DVector3& pos, DAngle yaw, DAngle pitch, int health)
+static void Net_SetInvasionMirrorVisualTarget(FInvasionReplicatedActorRef& ref, const DVector3& pos,
+	const DVector3& vel, DAngle yaw, DAngle pitch, int health)
 {
 	ref.HasVisualTarget = true;
 	ref.VisualTargetPos = pos;
+	ref.VisualTargetVel = vel;
 	ref.VisualTargetYaw = yaw;
 	ref.VisualTargetPitch = pitch;
 	ref.VisualTargetHealth = health;
@@ -1771,7 +2090,7 @@ static double Net_GetInvasionMirrorVisualStepCap(const AActor* actor)
 
 static void Net_TickInvasionMirrorVisualActors()
 {
-	if (I_IsLocalHCDEServiceAuthority() || InvasionReplicatedActors.Size() == 0)
+	if (Net_IsLocalInvasionAuthority() || InvasionReplicatedActors.Size() == 0)
 		return;
 
 	for (auto& ref : InvasionReplicatedActors)
@@ -1809,17 +2128,27 @@ static void Net_TickInvasionMirrorVisualActors()
 					ref.VisualTargetPos.Y,
 					ref.VisualTargetPos.Z);
 			}
-			else if (distSq > 0.01)
+			else if (distSq > 0.01 || (ref.IsProjectile && ref.VisualTargetVel.LengthSquared() > 0.01))
 			{
-				const double dist = sqrt(distSq);
-				const double step = min(dist, Net_GetInvasionMirrorVisualStepCap(actor));
 				const DVector3 oldRenderPos = actor->Pos();
 				const int oldPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
-				actor->SetOrigin(oldRenderPos + delta * (step / dist), false);
+				DVector3 nextPos;
+				if (ref.IsProjectile)
+				{
+					const DVector3 drift = ref.VisualTargetVel + delta * 0.25;
+					nextPos = oldRenderPos + drift;
+				}
+				else
+				{
+					const double dist = sqrt(distSq);
+					const double step = min(dist, Net_GetInvasionMirrorVisualStepCap(actor));
+					nextPos = oldRenderPos + delta * (step / dist);
+				}
+				actor->SetOrigin(nextPos, false);
 				actor->Prev = oldRenderPos;
 				actor->PrevPortalGroup = oldPortalGroup;
 			}
-			actor->Vel = DVector3(0, 0, 0);
+			actor->Vel = ref.IsProjectile ? ref.VisualTargetVel : DVector3(0, 0, 0);
 		}
 
 		if (actor->state == nullptr
@@ -1839,7 +2168,7 @@ static void Net_TickInvasionMirrorVisualActors()
 static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& className,
 	const DVector3& pos, DAngle yaw, DAngle pitch, int health, const char* source, bool markApplied)
 {
-	if (I_IsLocalHCDEServiceAuthority())
+	if (Net_IsLocalInvasionAuthority())
 		return true;
 	if (id == 0u || className.IsEmpty())
 		return false;
@@ -1848,7 +2177,7 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 
 	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && existing->Actor != nullptr)
 	{
-		Net_SetInvasionMirrorVisualTarget(*existing, pos, yaw, pitch, health);
+		Net_SetInvasionMirrorVisualTarget(*existing, pos, DVector3(0, 0, 0), yaw, pitch, health);
 		if (markApplied && id > InvasionLastAppliedSpawnEventId)
 			InvasionLastAppliedSpawnEventId = id;
 		return true;
@@ -1879,12 +2208,16 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 	actor->Angles.Pitch = pitch;
 	if (health > 0)
 		actor->health = health;
+	Net_ApplyInvasionMonsterSkillTuning(actor);
 	actor->ClearInterpolation();
 	Net_SetInvasionMirrorVisualOnly(id, actor);
-	InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(actor));
 	Net_RegisterInvasionReplicatedActor(id, actor);
 	if (auto ref = Net_FindInvasionReplicatedActor(id); ref != nullptr)
-		Net_SetInvasionMirrorVisualTarget(*ref, pos, yaw, pitch, actor->health);
+	{
+		if (!ref->IsProjectile)
+			InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(actor));
+		Net_SetInvasionMirrorVisualTarget(*ref, pos, actor->Vel, yaw, pitch, actor->health);
+	}
 	for (int i = 0; i < MAXPLAYERS; ++i)
 	{
 		if (playeringame[i])
@@ -1901,21 +2234,72 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 		pos.X,
 		pos.Y,
 		pos.Z);
-	Printf(PRINT_HIGH, "Invasion mirror spawned id=%u wave=%d class=%s source=%s pos=(%.1f, %.1f, %.1f) health=%d\n",
-		unsigned(id),
-		wave,
-		className.GetChars(),
-		source != nullptr ? source : "unknown",
-		pos.X,
-		pos.Y,
-		pos.Z,
-		actor->health);
+	if (auto ref = Net_FindInvasionReplicatedActor(id); ref == nullptr || !ref->IsProjectile)
+	{
+		Printf(PRINT_HIGH, "Invasion mirror spawned id=%u wave=%d class=%s source=%s pos=(%.1f, %.1f, %.1f) health=%d\n",
+			unsigned(id),
+			wave,
+			className.GetChars(),
+			source != nullptr ? source : "unknown",
+			pos.X,
+			pos.Y,
+			pos.Z,
+			actor->health);
+	}
 	return true;
+}
+
+static void Net_DrainPendingInvasionMirrorSpawns()
+{
+	if (Net_IsLocalInvasionAuthority()
+		|| InvasionPendingMirrorSpawns.Size() == 0
+		|| NetworkEntityManager::IsPredicting())
+	{
+		return;
+	}
+
+	TArray<FInvasionPendingMirrorSpawn> retained;
+	for (const auto& pending : InvasionPendingMirrorSpawns)
+	{
+		if (auto existing = Net_FindInvasionReplicatedActor(pending.Id); existing != nullptr && existing->Actor != nullptr)
+			continue;
+
+		if (pending.Wave < InvasionWaveDirector.Wave || InvasionState == INVS_DISABLED)
+			continue;
+
+		if (gametic - pending.QueuedTic > TICRATE * 2)
+			continue;
+
+		if (pending.Wave != InvasionWaveDirector.Wave
+			|| !Net_IsInvasionRoundActiveState(InvasionState)
+			|| primaryLevel == nullptr
+			|| gamestate != GS_LEVEL)
+		{
+			retained.Push(pending);
+			continue;
+		}
+
+		if (!Net_SpawnInvasionMirrorActor(pending.Id, pending.Wave, pending.ClassName,
+			pending.Pos, pending.Yaw, pending.Pitch, pending.Health,
+			"delta-repair-queued", pending.MarkApplied))
+		{
+			retained.Push(pending);
+			continue;
+		}
+
+		if (auto ref = Net_FindInvasionReplicatedActor(pending.Id); ref != nullptr && ref->Actor != nullptr)
+		{
+			ref->Actor->Vel = pending.Vel;
+			Net_SetInvasionMirrorVisualTarget(*ref, pending.Pos, pending.Vel, pending.Yaw, pending.Pitch, pending.Health);
+		}
+	}
+
+	InvasionPendingMirrorSpawns.Swap(retained);
 }
 
 static bool Net_ApplyInvasionSpawnEvent(const FInvasionReplicatedSpawnEvent& event)
 {
-	if (I_IsLocalHCDEServiceAuthority())
+	if (Net_IsLocalInvasionAuthority())
 		return true;
 
 	if (event.Id <= InvasionLastAppliedSpawnEventId)
@@ -1947,7 +2331,7 @@ static bool Net_ApplyInvasionSpawnEvent(const FInvasionReplicatedSpawnEvent& eve
 
 static void Net_DrainPendingInvasionSpawnEvents()
 {
-	if (I_IsLocalHCDEServiceAuthority()
+	if (Net_IsLocalInvasionAuthority()
 		|| InvasionPendingSpawnEvents.Size() == 0
 		|| NetworkEntityManager::IsPredicting())
 	{
@@ -1991,7 +2375,7 @@ static void Net_DrainPendingInvasionSpawnEvents()
 
 static void Net_LogInvasionMirrorVisualDiagnostic()
 {
-	if (I_IsLocalHCDEServiceAuthority()
+	if (Net_IsLocalInvasionAuthority()
 		|| InvasionState == INVS_DISABLED
 		|| gamestate != GS_LEVEL
 		|| gametic < InvasionMirrorNextVisualDiagnosticTic)
@@ -2186,6 +2570,144 @@ static bool Net_IsInvasionActorCorpseLike(const AActor* actor)
 		&& (actor->health <= 0 || (actor->flags & MF_CORPSE) != 0);
 }
 
+static bool Net_IsInvasionReplicatedProjectile(const AActor* actor)
+{
+	return actor != nullptr
+		&& ((actor->flags & MF_MISSILE) != 0 || (actor->BounceFlags & BOUNCE_MBF) != 0);
+}
+
+static void Net_PrepareInvasionMirrorCorpsePhysics(AActor* actor, bool snapToFloor)
+{
+	if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+		return;
+
+	if (actor->GetStatNum() < STAT_FIRST_THINKING)
+		actor->ChangeStatNum(STAT_DEFAULT);
+	actor->flags &= ~MF_NOCLIP;
+	actor->flags4 &= ~MF4_STANDSTILL;
+	if (actor->Sector != nullptr)
+	{
+		P_FindFloorCeiling(actor);
+		if (snapToFloor && (actor->flags & MF_NOGRAVITY) == 0 && fabs(actor->Z() - actor->floorz) > 0.5)
+		{
+			actor->SetZ(actor->floorz, false);
+			actor->Prev.Z = actor->Z();
+		}
+	}
+	actor->Vel = DVector3(0, 0, 0);
+	actor->ClearInterpolation();
+}
+
+static bool Net_InvasionStateSequenceContains(const AActor* actor, FState* start, FState* state)
+{
+	if (actor == nullptr || start == nullptr || state == nullptr)
+		return false;
+
+	FState* current = start;
+	for (int steps = 0; current != nullptr && steps < 32; ++steps)
+	{
+		if (current == state)
+			return true;
+
+		FState* next = current->GetNextState();
+		if (next == nullptr
+			|| next == start
+			|| next == actor->SpawnState
+			|| next == actor->SeeState)
+		{
+			return false;
+		}
+		current = next;
+	}
+	return false;
+}
+
+static uint8_t Net_GetInvasionActorActionState(const AActor* actor)
+{
+	if (actor == nullptr || actor->state == nullptr)
+		return HCDEInvasionActorActionNone;
+	if (Net_IsInvasionActorCorpseLike(actor))
+		return HCDEInvasionActorActionNone;
+	if (auto ref = Net_FindInvasionReplicatedActorByActor(actor); ref != nullptr)
+	{
+		if ((ref->ServerForcedActionState == HCDEInvasionActorActionMelee
+				|| ref->ServerForcedActionState == HCDEInvasionActorActionMissile
+				|| ref->ServerForcedActionState == HCDEInvasionActorActionPain)
+			&& gametic - ref->ServerForcedActionTic <= HCDEInvasionActorActionHoldTics)
+		{
+			return ref->ServerForcedActionState;
+		}
+	}
+	if (Net_InvasionStateSequenceContains(actor, actor->MeleeState, actor->state))
+		return HCDEInvasionActorActionMelee;
+	if (Net_InvasionStateSequenceContains(actor, actor->MissileState, actor->state))
+		return HCDEInvasionActorActionMissile;
+	if (Net_InvasionStateSequenceContains(actor, actor->FindState(NAME_Pain), actor->state))
+		return HCDEInvasionActorActionPain;
+	if (actor->SeeState != nullptr)
+		return HCDEInvasionActorActionSee;
+	if (actor->SpawnState != nullptr)
+		return HCDEInvasionActorActionSpawn;
+	return HCDEInvasionActorActionNone;
+}
+
+static FState* Net_GetInvasionMirrorActionState(AActor* actor, uint8_t actionState)
+{
+	if (actor == nullptr)
+		return nullptr;
+
+	switch (actionState)
+	{
+	case HCDEInvasionActorActionSpawn:
+		return actor->SpawnState;
+	case HCDEInvasionActorActionSee:
+		return actor->SeeState != nullptr ? actor->SeeState : actor->SpawnState;
+	case HCDEInvasionActorActionMelee:
+		return actor->MeleeState != nullptr ? actor->MeleeState : actor->SeeState;
+	case HCDEInvasionActorActionMissile:
+		return actor->MissileState != nullptr ? actor->MissileState : actor->SeeState;
+	case HCDEInvasionActorActionPain:
+		if (FState* pain = actor->FindState(NAME_Pain); pain != nullptr)
+			return pain;
+		return actor->SeeState;
+	default:
+		return nullptr;
+	}
+}
+
+static bool Net_IsInvasionActorActionPriority(uint8_t actionState)
+{
+	return actionState == HCDEInvasionActorActionMelee
+		|| actionState == HCDEInvasionActorActionMissile
+		|| actionState == HCDEInvasionActorActionPain;
+}
+
+static void Net_ApplyInvasionMirrorActionState(FInvasionReplicatedActorRef& ref, AActor* actor, uint8_t actionState)
+{
+	if (actor == nullptr
+		|| actionState == HCDEInvasionActorActionNone
+		|| actionState > HCDEInvasionActorActionMax
+		|| Net_IsInvasionActorCorpseLike(actor))
+	{
+		return;
+	}
+
+	FState* targetState = Net_GetInvasionMirrorActionState(actor, actionState);
+	if (targetState == nullptr)
+		return;
+
+	const bool forceAttackRefresh =
+		(actionState == HCDEInvasionActorActionMelee || actionState == HCDEInvasionActorActionMissile)
+		&& ref.VisualActionState == actionState
+		&& gametic - ref.VisualActionTic > TICRATE / 4;
+	if (ref.VisualActionState != actionState || actor->state == nullptr || forceAttackRefresh)
+	{
+		actor->SetState(targetState, true);
+		ref.VisualActionState = actionState;
+		ref.VisualActionTic = gametic;
+	}
+}
+
 static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref)
 {
 	AActor* actor = ref.Actor;
@@ -2193,10 +2715,7 @@ static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref)
 	{
 		// A retired mirror corpse is no longer server-driven, so stop any last
 		// replicated velocity from making the death frame slide around.
-		if (actor->GetStatNum() < STAT_FIRST_THINKING)
-			actor->ChangeStatNum(STAT_DEFAULT);
-		actor->Vel = DVector3(0, 0, 0);
-		actor->ClearInterpolation();
+		Net_PrepareInvasionMirrorCorpsePhysics(actor, true);
 		DebugTrace::Markf("invasion", "mirror corpse detached id=%u class=%s health=%d pos=(%.1f,%.1f,%.1f)",
 			unsigned(ref.Id),
 			actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
@@ -2204,6 +2723,40 @@ static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref)
 			actor->X(),
 			actor->Y(),
 			actor->Z());
+	}
+	ref.Actor = MakeObjPtr<AActor*>(nullptr);
+	ref.DeathDeltaSent = true;
+}
+
+static void Net_RetireInvasionMirrorProjectile(FInvasionReplicatedActorRef& ref)
+{
+	AActor* actor = ref.Actor;
+	if (actor != nullptr && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
+	{
+		if (actor->GetStatNum() < STAT_FIRST_THINKING)
+			actor->ChangeStatNum(STAT_DEFAULT);
+		actor->flags |= MF_NOBLOCKMAP | MF_NOCLIP;
+		actor->flags &= ~(MF_SOLID | MF_SHOOTABLE);
+		actor->flags5 |= MF5_NOINTERACTION;
+
+		DebugTrace::Markf("invasion", "mirror projectile retired id=%u class=%s pos=(%.1f,%.1f,%.1f) flags=0x%x bounce=0x%x",
+			unsigned(ref.Id),
+			actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
+			actor->X(),
+			actor->Y(),
+			actor->Z(),
+			actor->flags.GetValue(),
+			actor->BounceFlags.GetValue());
+
+		if (Net_IsInvasionReplicatedProjectile(actor))
+		{
+			P_ExplodeMissile(actor, nullptr, nullptr);
+		}
+		else
+		{
+			actor->ClearCounters();
+			actor->Destroy();
+		}
 	}
 	ref.Actor = MakeObjPtr<AActor*>(nullptr);
 	ref.DeathDeltaSent = true;
@@ -2218,12 +2771,17 @@ static void Net_RetireInvasionMirrorActor(FInvasionReplicatedActorRef& ref, int 
 		return;
 	}
 
+	if (ref.IsProjectile)
+	{
+		Net_RetireInvasionMirrorProjectile(ref);
+		return;
+	}
+
 	const bool alreadyCorpse = Net_IsInvasionActorCorpseLike(actor);
 	if (!alreadyCorpse && serverHealth <= 0 && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
 	{
 		actor->health = min<int>(actor->health, serverHealth);
-		if (actor->GetStatNum() < STAT_FIRST_THINKING)
-			actor->ChangeStatNum(STAT_DEFAULT);
+		Net_PrepareInvasionMirrorCorpsePhysics(actor, false);
 		if ((actor->flags & MF_CORPSE) == 0)
 			actor->CallDie(nullptr, nullptr);
 	}
@@ -2261,7 +2819,27 @@ static int Net_CompactInvasionReplicatedActors()
 			continue;
 		}
 
-		if (Net_IsInvasionActorCorpseLike(actor))
+		if (InvasionReplicatedActors[i].IsProjectile)
+		{
+			const bool projectileExpired = InvasionReplicatedActors[i].SpawnTic > 0
+				&& gametic - InvasionReplicatedActors[i].SpawnTic > HCDEInvasionProjectileMirrorMaxAgeTics;
+			if (!Net_IsInvasionReplicatedProjectile(actor) || projectileExpired || InvasionReplicatedActors[i].ForceDeathDelta)
+			{
+				if (InvasionReplicatedActors[i].DeathDeltaSent)
+					continue;
+
+				// Send one final non-live packet so clients can play a local
+				// projectile impact instead of leaving a stale missile sprite.
+				InvasionReplicatedActors[i].DeathDeltaSent = true;
+				if (projectileExpired)
+					InvasionReplicatedActors[i].ForceDeathDelta = true;
+			}
+			else
+			{
+				InvasionReplicatedActors[i].DeathDeltaSent = false;
+			}
+		}
+		else if (Net_IsInvasionActorCorpseLike(actor))
 		{
 			if (InvasionReplicatedActors[i].DeathDeltaSent)
 				continue;
@@ -2298,6 +2876,93 @@ static FInvasionReplicatedActorRef* Net_FindInvasionReplicatedActor(uint32_t id)
 	return nullptr;
 }
 
+static FInvasionReplicatedActorRef* Net_FindInvasionReplicatedActorByActor(const AActor* actor)
+{
+	if (actor == nullptr)
+		return nullptr;
+
+	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
+	{
+		if (InvasionReplicatedActors[i].Actor == actor)
+			return &InvasionReplicatedActors[i];
+	}
+	return nullptr;
+}
+
+static void Net_ForceInvasionActorAction(const AActor* actor, uint8_t actionState)
+{
+	if (actor == nullptr
+		|| (actionState != HCDEInvasionActorActionMelee
+			&& actionState != HCDEInvasionActorActionMissile
+			&& actionState != HCDEInvasionActorActionPain))
+	{
+		return;
+	}
+
+	if (auto ref = Net_FindInvasionReplicatedActorByActor(actor); ref != nullptr)
+	{
+		ref->ServerForcedActionState = actionState;
+		ref->ServerForcedActionTic = gametic;
+	}
+}
+
+bool Net_IsInvasionClientMirrorActor(const AActor* actor)
+{
+	if (actor == nullptr || !I_UsesDedicatedServerSlot() || I_IsLocalHCDEServiceAuthority())
+		return false;
+
+	return Net_FindInvasionReplicatedActorByActor(actor) != nullptr;
+}
+
+bool Net_IsInvasionClientMirrorBlockingActor(const AActor* actor)
+{
+	if (actor == nullptr
+		|| !I_UsesDedicatedServerSlot()
+		|| I_IsLocalHCDEServiceAuthority()
+		|| (actor->ObjectFlags & OF_EuthanizeMe) != 0
+		|| Net_IsInvasionActorCorpseLike(actor))
+	{
+		return false;
+	}
+
+	auto ref = Net_FindInvasionReplicatedActorByActor(actor);
+	return ref != nullptr && !ref->IsProjectile;
+}
+
+void Net_RecordInvasionActorAttack(AActor* attacker, AActor* target)
+{
+	if (!I_IsLocalHCDEServiceAuthority()
+		|| !Net_IsInvasionModeEnabled()
+		|| gamestate != GS_LEVEL
+		|| attacker == nullptr
+		|| target == nullptr
+		|| attacker->health <= 0
+		|| (attacker->flags3 & MF3_ISMONSTER) == 0
+		|| Net_FindInvasionReplicatedActorByActor(attacker) == nullptr)
+	{
+		return;
+	}
+
+	uint8_t actionState = Net_GetInvasionActorActionState(attacker);
+	if (actionState != HCDEInvasionActorActionMelee && actionState != HCDEInvasionActorActionMissile)
+	{
+		const double meleeRange = max<double>(attacker->meleerange, 0.0)
+			+ attacker->radius
+			+ target->radius
+			+ 32.0;
+		const bool likelyMelee = attacker->MeleeState != nullptr
+			&& attacker->Distance3D(target) <= meleeRange;
+		if (likelyMelee)
+			actionState = HCDEInvasionActorActionMelee;
+		else if (attacker->MissileState != nullptr)
+			actionState = HCDEInvasionActorActionMissile;
+		else if (attacker->MeleeState != nullptr)
+			actionState = HCDEInvasionActorActionMelee;
+	}
+
+	Net_ForceInvasionActorAction(attacker, actionState);
+}
+
 static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor)
 {
 	if (id == 0u || actor == nullptr)
@@ -2307,6 +2972,9 @@ static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor)
 	{
 		existing->Actor = MakeObjPtr<AActor*>(actor);
 		existing->DeathDeltaSent = false;
+		existing->ForceDeathDelta = false;
+		if (Net_IsInvasionReplicatedProjectile(actor))
+			existing->IsProjectile = true;
 		Net_SeedInvasionMirrorVisualTarget(*existing, actor);
 		return;
 	}
@@ -2314,11 +2982,70 @@ static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor)
 	FInvasionReplicatedActorRef ref;
 	ref.Id = id;
 	ref.Actor = MakeObjPtr<AActor*>(actor);
+	ref.IsProjectile = Net_IsInvasionReplicatedProjectile(actor);
+	ref.SpawnTic = gametic;
 	Net_SeedInvasionMirrorVisualTarget(ref, actor);
 	InvasionReplicatedActors.Push(ref);
 }
 
-static bool HCDEAppendInvasionActorDeltas(uint8_t* output, size_t outputCapacity, size_t& cursor)
+static bool Net_InvasionDeltaVectorChanged(const DVector3& a, const DVector3& b, double epsilon)
+{
+	return fabs(a.X - b.X) > epsilon
+		|| fabs(a.Y - b.Y) > epsilon
+		|| fabs(a.Z - b.Z) > epsilon;
+}
+
+static void Net_ResetInvasionActorDeltaBaseline(int clientNum)
+{
+	if (clientNum < 0 || clientNum >= MAXPLAYERS)
+		return;
+
+	for (auto& ref : InvasionReplicatedActors)
+	{
+		ref.LastSent[clientNum] = {};
+		ref.LastFullDeltaTic[clientNum] = 0;
+	}
+}
+
+void Net_RegisterInvasionReplicatedMissile(AActor* missile, const AActor* source)
+{
+	if (!I_IsLocalHCDEServiceAuthority()
+		|| !Net_IsInvasionModeEnabled()
+		|| gamestate != GS_LEVEL
+		|| primaryLevel == nullptr
+		|| missile == nullptr
+		|| source == nullptr
+		|| (missile->ObjectFlags & OF_EuthanizeMe) != 0
+		|| !Net_IsInvasionReplicatedProjectile(missile)
+		|| Net_FindInvasionReplicatedActorByActor(missile) != nullptr)
+	{
+		return;
+	}
+
+	auto sourceRef = Net_FindInvasionReplicatedActorByActor(source);
+	if (sourceRef == nullptr)
+		return;
+	sourceRef->ServerForcedActionState = HCDEInvasionActorActionMissile;
+	sourceRef->ServerForcedActionTic = gametic;
+
+	const uint32_t projectileId = InvasionNextSpawnEventId++;
+	if (InvasionNextSpawnEventId == 0u)
+		InvasionNextSpawnEventId = 1u;
+	Net_RegisterInvasionReplicatedActor(projectileId, missile);
+
+	DebugTrace::Markf("invasion", "missile replicated id=%u class=%s source=%s pos=(%.1f,%.1f,%.1f) vel=(%.1f,%.1f,%.1f)",
+		unsigned(projectileId),
+		missile->GetClass() != nullptr ? missile->GetClass()->TypeName.GetChars() : "<unknown>",
+		source->GetClass() != nullptr ? source->GetClass()->TypeName.GetChars() : "<unknown>",
+		missile->X(),
+		missile->Y(),
+		missile->Z(),
+		missile->Vel.X,
+		missile->Vel.Y,
+		missile->Vel.Z);
+}
+
+static bool HCDEAppendInvasionActorDeltas(int clientNum, uint8_t* output, size_t outputCapacity, size_t& cursor)
 {
 	if (!I_IsLocalHCDEServiceAuthority())
 	{
@@ -2328,56 +3055,199 @@ static bool HCDEAppendInvasionActorDeltas(uint8_t* output, size_t outputCapacity
 			&& HCDEAppendByte(output, outputCapacity, cursor, 0u)
 			&& HCDEAppendByte(output, outputCapacity, cursor, 0u);
 	}
+	if (clientNum < 0 || clientNum >= MAXPLAYERS)
+		return false;
 
 	const int activeRefs = Net_CompactInvasionReplicatedActors();
-	const uint8_t count = uint8_t(clamp<int>(activeRefs, 0, UINT8_MAX));
-	const uint8_t flags = activeRefs <= int(UINT8_MAX) ? HCDEInvasionActorDeltasFlagComplete : 0u;
+	if (activeRefs <= 0)
+		InvasionActorDeltaSendCursor = 0u;
+	else if (InvasionActorDeltaSendCursor >= size_t(activeRefs))
+		InvasionActorDeltaSendCursor %= size_t(activeRefs);
+
+	const size_t headerCursor = cursor;
 	if (!HCDEAppendBytes(output, outputCapacity, cursor, HCDEInvasionActorDeltasMagic, sizeof(HCDEInvasionActorDeltasMagic))
 		|| !HCDEAppendByte(output, outputCapacity, cursor, HCDEInvasionActorDeltasProtocolVersion)
-		|| !HCDEAppendByte(output, outputCapacity, cursor, flags)
-		|| !HCDEAppendByte(output, outputCapacity, cursor, count)
+		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
+		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
 		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u))
 	{
 		return false;
 	}
 
-	for (uint8_t i = 0u; i < count; ++i)
+	uint8_t count = 0u;
+	uint8_t priorityCount = 0u;
+	size_t nextSendCursor = InvasionActorDeltaSendCursor;
+	TArray<size_t> sentIndexes;
+	auto wasIndexSent = [&sentIndexes](size_t actorIndex) -> bool
 	{
-		AActor* actor = InvasionReplicatedActors[i].Actor;
+		for (const size_t sentIndex : sentIndexes)
+		{
+			if (sentIndex == actorIndex)
+				return true;
+		}
+		return false;
+	};
+	auto appendActorDelta = [&](size_t actorIndex, bool priority) -> int
+	{
+		AActor* actor = InvasionReplicatedActors[actorIndex].Actor;
 		if (actor == nullptr)
-			return false;
+			return -1;
+		auto& ref = InvasionReplicatedActors[actorIndex];
+		auto& sent = ref.LastSent[clientNum];
 
 		const char* className = actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : nullptr;
 		const size_t classNameLen = className != nullptr ? strlen(className) : 0u;
 		if (classNameLen == 0u || classNameLen > UINT8_MAX)
-			return false;
+			return -1;
 
 		uint8_t actorFlags = 0u;
-		if (actor->health > 0 && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
+		const bool projectileLive = ref.IsProjectile && Net_IsInvasionReplicatedProjectile(actor) && !ref.ForceDeathDelta;
+		if ((actor->health > 0 || projectileLive) && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
 			actorFlags |= HCDEInvasionActorDeltaFlagLive;
+		const uint8_t actorActionState = Net_GetInvasionActorActionState(actor);
+		const int actorHealth = projectileLive && actor->health <= 0 ? 1 : actor->health;
+		const DVector3 actorPos = actor->Pos();
+		const DVector3 actorVel = actor->Vel;
+		const uint32_t actorYaw = actor->Angles.Yaw.BAMs();
+		const uint32_t actorPitch = actor->Angles.Pitch.BAMs();
+		const bool forceFull = !sent.Valid
+			|| gametic - ref.LastFullDeltaTic[clientNum] >= TICRATE
+			|| (actorFlags & HCDEInvasionActorDeltaFlagLive) == 0u;
 
-		if (!HCDEAppendBE32(output, outputCapacity, cursor, InvasionReplicatedActors[i].Id)
-			|| !HCDEAppendByte(output, outputCapacity, cursor, actorFlags)
-			|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
-			|| !HCDEAppendByte(output, outputCapacity, cursor, uint8_t(classNameLen))
-			|| !HCDEAppendBytes(output, outputCapacity, cursor, reinterpret_cast<const uint8_t*>(className), classNameLen)
-			|| !HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(clamp<int>(actor->health, INT16_MIN, INT16_MAX)))
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->X())
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->Y())
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->Z())
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->Vel.X)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->Vel.Y)
-			|| !HCDEAppendDouble(output, outputCapacity, cursor, actor->Vel.Z)
-			|| !HCDEAppendBE32(output, outputCapacity, cursor, actor->Angles.Yaw.BAMs())
-			|| !HCDEAppendBE32(output, outputCapacity, cursor, actor->Angles.Pitch.BAMs()))
+		uint16_t fieldMask = 0u;
+		if (forceFull || sent.ClassName.Compare(className) != 0)
+			fieldMask |= HCDEInvasionActorDeltaFieldClass;
+		if (forceFull || sent.ActorFlags != actorFlags)
+			fieldMask |= HCDEInvasionActorDeltaFieldFlags;
+		if (forceFull || sent.ActionState != actorActionState || (priority && Net_IsInvasionActorActionPriority(actorActionState)))
+			fieldMask |= HCDEInvasionActorDeltaFieldAction;
+		if (forceFull || sent.Health != actorHealth)
+			fieldMask |= HCDEInvasionActorDeltaFieldHealth;
+		if (forceFull || Net_InvasionDeltaVectorChanged(sent.Pos, actorPos, 0.03125))
+			fieldMask |= HCDEInvasionActorDeltaFieldPos;
+		if (forceFull || Net_InvasionDeltaVectorChanged(sent.Vel, actorVel, 0.03125))
+			fieldMask |= HCDEInvasionActorDeltaFieldVel;
+		if (forceFull || sent.Yaw != actorYaw || sent.Pitch != actorPitch)
+			fieldMask |= HCDEInvasionActorDeltaFieldAngles;
+		if (fieldMask == 0u)
+			return -2;
+
+		size_t recordBytes = 4u + 2u;
+		if (fieldMask & HCDEInvasionActorDeltaFieldClass)
+			recordBytes += 1u + classNameLen;
+		if (fieldMask & HCDEInvasionActorDeltaFieldFlags)
+			recordBytes += 1u;
+		if (fieldMask & HCDEInvasionActorDeltaFieldAction)
+			recordBytes += 1u;
+		if (fieldMask & HCDEInvasionActorDeltaFieldHealth)
+			recordBytes += 2u;
+		if (fieldMask & HCDEInvasionActorDeltaFieldPos)
+			recordBytes += 3u * sizeof(float);
+		if (fieldMask & HCDEInvasionActorDeltaFieldVel)
+			recordBytes += 3u * sizeof(float);
+		if (fieldMask & HCDEInvasionActorDeltaFieldAngles)
+			recordBytes += 8u;
+		if (cursor > outputCapacity || outputCapacity - cursor < recordBytes)
 		{
-			return false;
+			return 0;
 		}
+
+		if (!HCDEAppendBE32(output, outputCapacity, cursor, ref.Id)
+			|| !HCDEAppendBE16(output, outputCapacity, cursor, fieldMask))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldClass)
+			&& (!HCDEAppendByte(output, outputCapacity, cursor, uint8_t(classNameLen))
+				|| !HCDEAppendBytes(output, outputCapacity, cursor, reinterpret_cast<const uint8_t*>(className), classNameLen)))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldFlags)
+			&& !HCDEAppendByte(output, outputCapacity, cursor, actorFlags))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldAction)
+			&& !HCDEAppendByte(output, outputCapacity, cursor, actorActionState))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldHealth)
+			&& !HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(clamp<int>(actorHealth, INT16_MIN, INT16_MAX))))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldPos)
+			&& (!HCDEAppendFloat(output, outputCapacity, cursor, actorPos.X)
+				|| !HCDEAppendFloat(output, outputCapacity, cursor, actorPos.Y)
+				|| !HCDEAppendFloat(output, outputCapacity, cursor, actorPos.Z)))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldVel)
+			&& (!HCDEAppendFloat(output, outputCapacity, cursor, actorVel.X)
+				|| !HCDEAppendFloat(output, outputCapacity, cursor, actorVel.Y)
+				|| !HCDEAppendFloat(output, outputCapacity, cursor, actorVel.Z)))
+			return -1;
+		if ((fieldMask & HCDEInvasionActorDeltaFieldAngles)
+			&& (!HCDEAppendBE32(output, outputCapacity, cursor, actorYaw)
+				|| !HCDEAppendBE32(output, outputCapacity, cursor, actorPitch)))
+			return -1;
+
+		sent.Valid = true;
+		sent.ActorFlags = actorFlags;
+		sent.ActionState = actorActionState;
+		sent.Health = actorHealth;
+		sent.ClassName = className;
+		sent.Pos = actorPos;
+		sent.Vel = actorVel;
+		sent.Yaw = actorYaw;
+		sent.Pitch = actorPitch;
+		if (forceFull)
+			ref.LastFullDeltaTic[clientNum] = gametic;
+		++count;
+		if (priority)
+			++priorityCount;
+		sentIndexes.Push(actorIndex);
+		return 1;
+	};
+
+	for (size_t actorIndex = 0u; actorIndex < size_t(activeRefs) && count < UINT8_MAX; ++actorIndex)
+	{
+		AActor* actor = InvasionReplicatedActors[actorIndex].Actor;
+		if (actor == nullptr)
+			return false;
+		if (!InvasionReplicatedActors[actorIndex].IsProjectile
+			&& !Net_IsInvasionActorActionPriority(Net_GetInvasionActorActionState(actor)))
+			continue;
+
+		const int appendResult = appendActorDelta(actorIndex, true);
+		if (appendResult == -2)
+			continue;
+		if (appendResult < 0)
+			return false;
+		if (appendResult == 0)
+			break;
 	}
 
-	DebugTrace::Markf("invasion", "actor deltas send count=%u complete=%d wave=%d active=%d",
-		unsigned(count), (flags & HCDEInvasionActorDeltasFlagComplete) != 0u ? 1 : 0,
-		InvasionWaveDirector.Wave, activeRefs);
+	for (int sentCandidates = 0; sentCandidates < activeRefs && count < UINT8_MAX; ++sentCandidates)
+	{
+		const size_t actorIndex = (InvasionActorDeltaSendCursor + size_t(sentCandidates)) % size_t(activeRefs);
+		if (wasIndexSent(actorIndex))
+			continue;
+
+		const int appendResult = appendActorDelta(actorIndex, false);
+		if (appendResult == -2)
+			continue;
+		if (appendResult < 0)
+			return false;
+		if (appendResult == 0)
+		{
+			nextSendCursor = actorIndex;
+			break;
+		}
+		nextSendCursor = (actorIndex + 1u) % size_t(activeRefs);
+	}
+
+	InvasionActorDeltaSendCursor = activeRefs > 0 ? nextSendCursor : 0u;
+	const uint8_t flags = count == activeRefs ? HCDEInvasionActorDeltasFlagComplete : 0u;
+	output[headerCursor + HCDEInvasionActorDeltasFlagsOffset] = flags;
+	output[headerCursor + HCDEInvasionActorDeltasCountOffset] = count;
+
+	DebugTrace::Markf("invasion", "actor deltas send count=%u priority=%u complete=%d wave=%d active=%d cursor=%zu bytes-left=%zu",
+		unsigned(count), unsigned(priorityCount),
+		(flags & HCDEInvasionActorDeltasFlagComplete) != 0u ? 1 : 0,
+		InvasionWaveDirector.Wave, activeRefs, InvasionActorDeltaSendCursor,
+		cursor <= outputCapacity ? outputCapacity - cursor : 0u);
 	return true;
 }
 
@@ -2392,13 +3262,16 @@ static bool HCDEApplyInvasionActorDeltas(int clientNum, const uint8_t* body, siz
 	const uint8_t flags = body[bodyCursor + HCDEInvasionActorDeltasFlagsOffset];
 	const uint8_t count = body[bodyCursor + HCDEInvasionActorDeltasCountOffset];
 	const uint8_t reserved = body[bodyCursor + HCDEInvasionActorDeltasReservedOffset];
-	if ((version != 1u && version != HCDEInvasionActorDeltasProtocolVersion)
+	if ((version < 1u || version > HCDEInvasionActorDeltasProtocolVersion)
 		|| (flags & ~HCDEInvasionActorDeltasFlagComplete) != 0u
 		|| reserved != 0u)
 	{
 		return false;
 	}
 	const bool hasClassNames = version >= 2u;
+	const bool hasActionState = version >= 3u;
+	const bool hasCompactTransform = version >= 4u;
+	const bool hasFieldMask = version >= 5u;
 
 	size_t cursor = bodyCursor + HCDEInvasionActorDeltasHeaderSize;
 	TArray<uint32_t> seenIds;
@@ -2411,20 +3284,35 @@ static bool HCDEApplyInvasionActorDeltas(int clientNum, const uint8_t* body, siz
 		uint8_t actorFlags = 0u;
 		uint8_t actorReserved = 0u;
 		uint8_t classNameLen = 0u;
+		uint16_t fieldMask = HCDEInvasionActorDeltaFieldAll;
 		uint16_t healthBits = 0u;
 		uint32_t yaw = 0u;
 		uint32_t pitch = 0u;
 		double values[6] = {};
-		if (!hasClassNames && (cursor > bodyBytes || bodyBytes - cursor < HCDEInvasionActorDeltaV1RecordSize))
-			return false;
-		if (!HCDEReadBE32Field(body, bodyBytes, cursor, id)
-			|| !HCDEReadByteField(body, bodyBytes, cursor, actorFlags)
-			|| !HCDEReadByteField(body, bodyBytes, cursor, actorReserved))
-		{
-			return false;
-		}
 		FString className;
-		if (hasClassNames)
+		if (hasFieldMask)
+		{
+			if (!HCDEReadBE32Field(body, bodyBytes, cursor, id)
+				|| !HCDEReadBE16Field(body, bodyBytes, cursor, fieldMask))
+			{
+				return false;
+			}
+			if (fieldMask == 0u || (fieldMask & ~HCDEInvasionActorDeltaFieldAll) != 0u)
+				return false;
+		}
+		else
+		{
+			if (!hasClassNames && (cursor > bodyBytes || bodyBytes - cursor < HCDEInvasionActorDeltaV1RecordSize))
+				return false;
+			if (!HCDEReadBE32Field(body, bodyBytes, cursor, id)
+				|| !HCDEReadByteField(body, bodyBytes, cursor, actorFlags)
+				|| !HCDEReadByteField(body, bodyBytes, cursor, actorReserved))
+			{
+				return false;
+			}
+		}
+
+		if (fieldMask & HCDEInvasionActorDeltaFieldClass)
 		{
 			if (!HCDEReadByteField(body, bodyBytes, cursor, classNameLen)
 				|| classNameLen == 0u
@@ -2436,36 +3324,121 @@ static bool HCDEApplyInvasionActorDeltas(int clientNum, const uint8_t* body, siz
 			className = FString(reinterpret_cast<const char*>(&body[cursor]), classNameLen);
 			cursor += classNameLen;
 		}
-		if (!HCDEReadBE16Field(body, bodyBytes, cursor, healthBits))
-			return false;
-		for (double& value : values)
-		{
-			if (!HCDEReadDoubleField(body, bodyBytes, cursor, value))
-				return false;
-		}
-		if (!HCDEReadBE32Field(body, bodyBytes, cursor, yaw)
-			|| !HCDEReadBE32Field(body, bodyBytes, cursor, pitch))
+		if ((fieldMask & HCDEInvasionActorDeltaFieldFlags)
+			&& !HCDEReadByteField(body, bodyBytes, cursor, actorFlags))
 		{
 			return false;
 		}
-		if (id == 0u || actorReserved != 0u || (actorFlags & ~HCDEInvasionActorDeltaFlagLive) != 0u)
+		if ((fieldMask & HCDEInvasionActorDeltaFieldAction)
+			&& !HCDEReadByteField(body, bodyBytes, cursor, actorReserved))
+		{
 			return false;
+		}
+		if ((fieldMask & HCDEInvasionActorDeltaFieldHealth)
+			&& !HCDEReadBE16Field(body, bodyBytes, cursor, healthBits))
+		{
+			return false;
+		}
+		if (fieldMask & HCDEInvasionActorDeltaFieldPos)
+		{
+			for (int valueIndex = 0; valueIndex < 3; ++valueIndex)
+			{
+				if (hasCompactTransform
+					? !HCDEReadFloatField(body, bodyBytes, cursor, values[valueIndex])
+					: !HCDEReadDoubleField(body, bodyBytes, cursor, values[valueIndex]))
+				{
+					return false;
+				}
+			}
+		}
+		if (fieldMask & HCDEInvasionActorDeltaFieldVel)
+		{
+			for (int valueIndex = 3; valueIndex < 6; ++valueIndex)
+			{
+				if (hasCompactTransform
+					? !HCDEReadFloatField(body, bodyBytes, cursor, values[valueIndex])
+					: !HCDEReadDoubleField(body, bodyBytes, cursor, values[valueIndex]))
+				{
+					return false;
+				}
+			}
+		}
+		if ((fieldMask & HCDEInvasionActorDeltaFieldAngles)
+			&& (!HCDEReadBE32Field(body, bodyBytes, cursor, yaw)
+				|| !HCDEReadBE32Field(body, bodyBytes, cursor, pitch)))
+		{
+			return false;
+		}
+		if (id == 0u
+			|| (!hasActionState && actorReserved != 0u)
+			|| (hasActionState && actorReserved > HCDEInvasionActorActionMax)
+			|| (actorFlags & ~HCDEInvasionActorDeltaFlagLive) != 0u)
+		{
+			return false;
+		}
+
+		seenIds.Push(id);
+		auto ref = Net_FindInvasionReplicatedActor(id);
+		AActor* existingActor = ref != nullptr ? ref->Actor : nullptr;
+		if (hasFieldMask && existingActor != nullptr)
+		{
+			if ((fieldMask & HCDEInvasionActorDeltaFieldFlags) == 0u
+				&& (existingActor->health > 0 || (ref != nullptr && ref->IsProjectile))
+				&& (existingActor->ObjectFlags & OF_EuthanizeMe) == 0)
+			{
+				actorFlags = HCDEInvasionActorDeltaFlagLive;
+			}
+			if ((fieldMask & HCDEInvasionActorDeltaFieldAction) == 0u)
+				actorReserved = ref != nullptr ? ref->VisualActionState : HCDEInvasionActorActionNone;
+			if ((fieldMask & HCDEInvasionActorDeltaFieldHealth) == 0u)
+				healthBits = uint16_t(clamp<int>(existingActor->health, INT16_MIN, INT16_MAX));
+			if ((fieldMask & HCDEInvasionActorDeltaFieldPos) == 0u)
+			{
+				const DVector3 pos = ref != nullptr && ref->HasVisualTarget ? ref->VisualTargetPos : existingActor->Pos();
+				values[0] = pos.X;
+				values[1] = pos.Y;
+				values[2] = pos.Z;
+			}
+			if ((fieldMask & HCDEInvasionActorDeltaFieldVel) == 0u)
+			{
+				values[3] = existingActor->Vel.X;
+				values[4] = existingActor->Vel.Y;
+				values[5] = existingActor->Vel.Z;
+			}
+			if ((fieldMask & HCDEInvasionActorDeltaFieldAngles) == 0u)
+			{
+				const DAngle fallbackYaw = ref != nullptr && ref->HasVisualTarget ? ref->VisualTargetYaw : existingActor->Angles.Yaw;
+				const DAngle fallbackPitch = ref != nullptr && ref->HasVisualTarget ? ref->VisualTargetPitch : existingActor->Angles.Pitch;
+				yaw = fallbackYaw.BAMs();
+				pitch = fallbackPitch.BAMs();
+			}
+		}
 
 		const int health = int(int16_t(healthBits));
 		const DVector3 pos(values[0], values[1], values[2]);
 		const DAngle targetYaw = DAngle::fromBam(yaw);
 		const DAngle targetPitch = DAngle::fromBam(pitch);
-		seenIds.Push(id);
-		auto ref = Net_FindInvasionReplicatedActor(id);
 		if (ref == nullptr || ref->Actor == nullptr)
 		{
+			const bool hasSpawnState = (fieldMask & (HCDEInvasionActorDeltaFieldClass | HCDEInvasionActorDeltaFieldFlags | HCDEInvasionActorDeltaFieldHealth | HCDEInvasionActorDeltaFieldPos | HCDEInvasionActorDeltaFieldAngles))
+				== (HCDEInvasionActorDeltaFieldClass | HCDEInvasionActorDeltaFieldFlags | HCDEInvasionActorDeltaFieldHealth | HCDEInvasionActorDeltaFieldPos | HCDEInvasionActorDeltaFieldAngles);
 			if (hasClassNames
+				&& (!hasFieldMask || hasSpawnState)
 				&& (actorFlags & HCDEInvasionActorDeltaFlagLive) != 0u
 				&& health > 0
 				&& Net_SpawnInvasionMirrorActor(id, InvasionWaveDirector.Wave, className, pos,
-					targetYaw, targetPitch, health, "delta-repair", true))
+					targetYaw, targetPitch, health, "delta-repair", false))
 			{
 				ref = Net_FindInvasionReplicatedActor(id);
+			}
+			else if (hasClassNames
+				&& (!hasFieldMask || hasSpawnState)
+				&& (actorFlags & HCDEInvasionActorDeltaFlagLive) != 0u
+				&& health > 0
+				&& NetworkEntityManager::IsPredicting())
+			{
+				Net_QueueInvasionMirrorSpawn(id, InvasionWaveDirector.Wave, className, pos,
+					DVector3(values[3], values[4], values[5]), targetYaw, targetPitch, health, false);
 			}
 			if (ref == nullptr || ref->Actor == nullptr)
 			{
@@ -2483,19 +3456,32 @@ static bool HCDEApplyInvasionActorDeltas(int clientNum, const uint8_t* body, siz
 
 		const DVector3 oldPos = actor->Pos();
 		const bool firstVisualTarget = !ref->HasVisualTarget;
-		Net_SetInvasionMirrorVisualTarget(*ref, pos, targetYaw, targetPitch, health);
+		Net_SetInvasionMirrorVisualTarget(*ref, pos, DVector3(values[3], values[4], values[5]),
+			targetYaw, targetPitch, health);
 		actor->health = health;
 		actor->Angles.Yaw = targetYaw;
 		actor->Angles.Pitch = targetPitch;
 		Net_SetInvasionMirrorVisualOnly(id, actor);
+		if (hasActionState && !ref->IsProjectile)
+			Net_ApplyInvasionMirrorActionState(*ref, actor, actorReserved);
 		const double distSq = (pos - oldPos).LengthSquared();
 		const double snapDistanceSq = HCDEInvasionMirrorVisualSnapDistance * HCDEInvasionMirrorVisualSnapDistance;
-		if (firstVisualTarget || distSq > snapDistanceSq)
+		if (firstVisualTarget || ref->IsProjectile || distSq > snapDistanceSq)
 		{
 			actor->SetOrigin(pos, false);
 			actor->Prev = pos;
 			actor->PrevPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
 			actor->ClearInterpolation();
+			if (!firstVisualTarget && distSq > snapDistanceSq)
+			{
+				DebugTrace::Markf("invasion", "mirror visual snap id=%u class=%s dist=%.1f pos=(%.1f,%.1f,%.1f)",
+					unsigned(id),
+					actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
+					sqrt(distSq),
+					pos.X,
+					pos.Y,
+					pos.Z);
+			}
 		}
 		++applied;
 	}
@@ -2542,7 +3528,7 @@ static bool HCDEApplyInvasionActorDeltas(int clientNum, const uint8_t* body, siz
 	return true;
 }
 
-static bool HCDEAppendInvasionSnapshot(uint8_t* output, size_t outputCapacity, size_t& cursor)
+static bool HCDEAppendInvasionSnapshot(int clientNum, uint8_t* output, size_t outputCapacity, size_t& cursor)
 {
 	uint8_t flags = 0u;
 	if (Net_IsInvasionBossWave())
@@ -2575,8 +3561,9 @@ static bool HCDEAppendInvasionSnapshot(uint8_t* output, size_t outputCapacity, s
 	{
 		return false;
 	}
-	return HCDEAppendInvasionSpawnEvents(output, outputCapacity, cursor)
-		&& HCDEAppendInvasionActorDeltas(output, outputCapacity, cursor);
+	const size_t invasionPayloadEnd = min(outputCapacity, cursor + HCDEInvasionSnapshotPayloadBudgetBytes);
+	return HCDEAppendInvasionSpawnEvents(output, invasionPayloadEnd, cursor)
+		&& HCDEAppendInvasionActorDeltas(clientNum, output, invasionPayloadEnd, cursor);
 }
 
 static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t bodyBytes, size_t& bodyCursor)
@@ -3585,8 +4572,22 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 	size_t recordCursor = cursor;
 	size_t bodyCursor = HCDEServerSnapshotHeaderSize + quitterBytes;
 	uint64_t playersSeen = 0u;
-	uint8_t snapshotPlayers[MAXPLAYERS] = {};
-	size_t snapshotPlayerCount = 0u;
+	uint64_t worldDeltaPlayersSeen = 0u;
+	uint8_t worldDeltaPlayers[MAXPLAYERS] = {};
+	size_t worldDeltaPlayerCount = 0u;
+	auto addWorldDeltaPlayer = [&](uint8_t playerNum) -> bool
+	{
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u)
+			return false;
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if ((worldDeltaPlayersSeen & playerMask) != 0u)
+			return true;
+		if (worldDeltaPlayerCount >= MAXPLAYERS)
+			return false;
+		worldDeltaPlayersSeen |= playerMask;
+		worldDeltaPlayers[worldDeltaPlayerCount++] = playerNum;
+		return true;
+	};
 	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsMagic, sizeof(HCDEServerSnapshotRecordsMagic))
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsProtocolVersion)
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
@@ -3607,9 +4608,8 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		if (playersSeen & playerMask)
 			return RejectHCDEServerSnapshotBuild(client, "duplicate-player-record", legacySize, recordCursor);
 		playersSeen |= playerMask;
-		if (snapshotPlayerCount >= MAXPLAYERS)
+		if (!addWorldDeltaPlayer(playerNum))
 			return RejectHCDEServerSnapshotBuild(client, "too-many-world-delta-players", legacySize, recordCursor);
-		snapshotPlayers[snapshotPlayerCount++] = playerNum;
 
 		const uint16_t latency = HCDELiveReadBE16(&legacyPacket[recordCursor]);
 		recordCursor += 2u;
@@ -3681,12 +4681,20 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		}
 	}
 
+	for (uint8_t playerNum = 0u; playerNum < MAXPLAYERS; ++playerNum)
+	{
+		if (!playeringame[playerNum] || I_IsServerReservedSlot(playerNum) || players[playerNum].mo == nullptr)
+			continue;
+		if (!addWorldDeltaPlayer(playerNum))
+			return RejectHCDEServerSnapshotBuild(client, "too-many-world-delta-players", legacySize, recordCursor);
+	}
+
 	if (recordCursor != legacySize)
 		return RejectHCDEServerSnapshotBuild(client, "trailing-snapshot-bytes", legacySize, recordCursor);
 
-	if (!HCDEAppendServerWorldDeltas(output, outputCapacity, bodyCursor, snapshotPlayers, snapshotPlayerCount))
+	if (!HCDEAppendServerWorldDeltas(output, outputCapacity, bodyCursor, worldDeltaPlayers, worldDeltaPlayerCount))
 		return RejectHCDEServerSnapshotBuild(client, "world-delta-overflow", legacySize, recordCursor);
-	if (!HCDEAppendInvasionSnapshot(output, outputCapacity, bodyCursor))
+	if (!HCDEAppendInvasionSnapshot(client, output, outputCapacity, bodyCursor))
 		return RejectHCDEServerSnapshotBuild(client, "invasion-overflow", legacySize, recordCursor);
 
 	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
@@ -3720,7 +4728,7 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 	outputSize = bodyCursor;
 
 	DebugTrace::Markf("net", "HCDE server snapshot payload build client=%d players=%u tics=%u consistencies=%u quitters=%zu records=%zu deltas=%zu raw=%zu",
-		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, snapshotPlayerCount, rawSnapshotBytes);
+		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, worldDeltaPlayerCount, rawSnapshotBytes);
 	return true;
 }
 
@@ -4687,6 +5695,11 @@ CUSTOM_CVAR(Int, sv_invasionspawnburst, 3, CVAR_SERVERINFO | CVAR_NOSAVE)
 	if (self < 1)
 		self = 1;
 }
+CUSTOM_CVAR(Int, sv_invasionmaxactive, 0, CVAR_SERVERINFO | CVAR_NOSAVE)
+{
+	if (self < 0)
+		self = 0;
+}
 CUSTOM_CVAR(Int, sv_invasionbosswaveevery, 5, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
 	if (self < 0)
@@ -5162,6 +6175,68 @@ static DVector3 Net_GetInvasionSpawnCandidate(const DVector3& basePos, double xO
 	return candidate;
 }
 
+static AActor* Net_SelectInvasionCombatTarget(AActor* actor)
+{
+	AActor* best = nullptr;
+	double bestDistSq = 0.0;
+	for (int player = 0; player < MAXPLAYERS; ++player)
+	{
+		if (!playeringame[player] || I_IsServerReservedSlot(player))
+			continue;
+
+		player_t& playerState = players[player];
+		AActor* playerMo = playerState.mo;
+		if (playerMo == nullptr || playerState.playerstate != PST_LIVE)
+			continue;
+
+		if (playerMo->health <= 0 && playerState.health <= 0)
+			continue;
+		if ((playerMo->flags & MF_SHOOTABLE) == 0)
+			continue;
+		if ((playerState.cheats & CF_NOTARGET) != 0)
+			continue;
+		if (actor != nullptr && actor->IsFriend(playerMo))
+			continue;
+
+		const double distSq = actor != nullptr ? (playerMo->Pos() - actor->Pos()).LengthSquared() : 0.0;
+		if (best == nullptr || distSq < bestDistSq)
+		{
+			best = playerMo;
+			bestDistSq = distSq;
+		}
+	}
+
+	return best;
+}
+
+static void Net_AwakenInvasionMonster(AActor* actor)
+{
+	if (actor == nullptr || actor->health <= 0 || (actor->flags3 & MF3_ISMONSTER) == 0)
+		return;
+
+	AActor* target = Net_SelectInvasionCombatTarget(actor);
+	if (target == nullptr)
+		return;
+
+	actor->target = target;
+	actor->LastHeard = target;
+	actor->lastenemy = nullptr;
+	actor->reactiontime = max<int>(actor->reactiontime, Net_GetInvasionSkillWakeDelayTics());
+	actor->threshold = max<int>(actor->DefThreshold, 10);
+	actor->flags4 |= MF4_INCOMBAT;
+	actor->Angles.Yaw = actor->AngleTo(target);
+	if (actor->SeeState != nullptr)
+		actor->SetState(actor->SeeState, true);
+
+	DebugTrace::Markf("invasion", "monster awakened class=%s target=%d dist=%.1f threshold=%d reaction=%d skill=%d",
+		actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
+		target->player != nullptr ? int(target->player - players) : -1,
+		(target->Pos() - actor->Pos()).Length(),
+		actor->threshold,
+		actor->reactiontime,
+		clamp<int>(gameskill, 0, 4));
+}
+
 // Spawns a monster at the specified spot. Handles telefrag protection and
 // collision validation, and returns a compact reason for diagnostics when it
 // cannot spawn yet.
@@ -5253,6 +6328,8 @@ static bool Net_SpawnInvasionMonster(FInvasionSpawnSpotRecord& spot, const char*
 		return fail(lastReason != nullptr ? lastReason : "blocked-location");
 
 	// Track the monster for wave-cleared calculations.
+	Net_ApplyInvasionMonsterSkillTuning(spawned);
+	Net_AwakenInvasionMonster(spawned);
 	InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(spawned));
 	Net_RecordInvasionSpawnEvent(spawned);
 	return true;
@@ -5355,6 +6432,8 @@ static int Net_DestroyTrackedInvasionMonsters(const char* reason)
 
 	InvasionWaveDirector.ActiveMonsters.Clear();
 	InvasionReplicatedActors.Clear();
+	InvasionPendingMirrorSpawns.Clear();
+	InvasionActorDeltaSendCursor = 0u;
 	if (removed > 0)
 	{
 		DebugTrace::Markf("invasion", "cleanup removed=%d reason=%s wave=%d map=%s",
@@ -5374,6 +6453,89 @@ static double Net_GetInvasionMonsterDifficultyModifier()
 	if (skillIndex == 2)
 		return 1.5;
 	return 1.6225;
+}
+
+static double Net_GetInvasionSkillBudgetScale()
+{
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 0)
+		return 0.50;
+	if (skillIndex == 1)
+		return 0.70;
+	if (skillIndex == 2)
+		return 0.85;
+	return 1.0;
+}
+
+static int Net_ApplyInvasionSkillBudgetScale(int budget)
+{
+	if (budget <= 1)
+		return max<int>(budget, 1);
+
+	const double scaled = double(budget) * Net_GetInvasionSkillBudgetScale();
+	return clamp<int>(int(floor(scaled + 0.5)), 1, 65535);
+}
+
+static double Net_GetInvasionSkillSpawnIntervalScale()
+{
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 0)
+		return 1.75;
+	if (skillIndex == 1)
+		return 1.35;
+	if (skillIndex == 2)
+		return 1.15;
+	return 1.0;
+}
+
+static int Net_GetInvasionSkillWakeDelayTics()
+{
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 0)
+		return TICRATE;
+	if (skillIndex == 1)
+		return TICRATE / 2;
+	return 0;
+}
+
+static double Net_GetInvasionSkillMonsterSpeedScale()
+{
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 0)
+		return 0.65;
+	if (skillIndex == 1)
+		return 0.75;
+	if (skillIndex == 2)
+		return 0.85;
+	return 1.0;
+}
+
+static void Net_ApplyInvasionMonsterSkillTuning(AActor* actor)
+{
+	if (actor == nullptr || (actor->flags3 & MF3_ISMONSTER) == 0)
+		return;
+
+	const double speedScale = Net_GetInvasionSkillMonsterSpeedScale();
+	if (speedScale < 0.999)
+	{
+		actor->Speed *= speedScale;
+	}
+}
+
+static int Net_GetInvasionActiveMonsterCap()
+{
+	if (sv_invasionmaxactive > 0)
+		return clamp<int>(sv_invasionmaxactive, 1, 1024);
+
+	const int players = max(Net_CountInvasionParticipants(), 1);
+	const int skillIndex = clamp<int>(gameskill, 0, 4);
+	if (skillIndex <= 0)
+		return 8 + max(players - 1, 0) * 4;
+	if (skillIndex == 1)
+		return 11 + max(players - 1, 0) * 5;
+	if (skillIndex == 2)
+		return 16 + max(players - 1, 0) * 6;
+	return 24 + max(players - 1, 0) * 8;
 }
 
 static int Net_ComputeInvasionSpotWaveCount(const FInvasionSpawnSpotRecord& spot, int wave)
@@ -5609,6 +6771,7 @@ static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, 
 	{
 		Net_DestroyTrackedInvasionMonsters("mirror-snapshot-reset");
 		InvasionPendingSpawnEvents.Clear();
+		InvasionPendingMirrorSpawns.Clear();
 		InvasionLastAppliedSpawnEventId = 0u;
 		InvasionMirrorNextVisualDiagnosticTic = 0;
 	}
@@ -5858,7 +7021,9 @@ static void Net_ResetInvasionState(const char* reason)
 	InvasionSpawnDirectory.Reset();
 	InvasionRecentSpawnEvents.Clear();
 	InvasionPendingSpawnEvents.Clear();
+	InvasionPendingMirrorSpawns.Clear();
 	InvasionReplicatedActors.Clear();
+	InvasionActorDeltaSendCursor = 0u;
 	InvasionNextSpawnEventId = 1u;
 	InvasionLastAppliedSpawnEventId = 0u;
 	InvasionMirrorNextVisualDiagnosticTic = 0;
@@ -6023,13 +7188,24 @@ static void Net_StartInvasionWave(const char* reason)
 
 	if (!usingPendingCountdownWave)
 		++InvasionWaveDirector.Wave;
+
+	if ((dmflags & DF_FAST_MONSTERS) != 0)
+	{
+		dmflags = int(dmflags) & ~DF_FAST_MONSTERS;
+		Printf(PRINT_HIGH, "HCDE invasion disabled fast monsters for wave %d\n", InvasionWaveDirector.Wave);
+	}
+
 	const bool bossWave = Net_IsInvasionBossWave(InvasionWaveDirector.Wave);
 	InvasionWaveDirector.WaveFlags = bossWave ? INV_WAVEF_BOSS : 0u;
 	InvasionWaveDirector.WaveBudget = Net_ComputeInvasionWaveBudget(InvasionWaveDirector.Wave, bossWave);
 	InvasionWaveDirector.WaveSpawned = 0;
 	InvasionWaveDirector.WaveCleared = 0;
 	InvasionWaveDirector.ActiveMonsters.Clear();
-	InvasionWaveDirector.SpawnIntervalTics = max(Net_InvasionSecondsToTics(sv_invasionspawninterval), 1);
+	int unscaledWaveBudget = InvasionWaveDirector.WaveBudget;
+	const int baseSpawnIntervalTics = max(Net_InvasionSecondsToTics(sv_invasionspawninterval), 1);
+	InvasionWaveDirector.SpawnIntervalTics = max<int>(
+		int(ceil(double(baseSpawnIntervalTics) * Net_GetInvasionSkillSpawnIntervalScale())),
+		1);
 	InvasionWaveDirector.SpawnIntervalCountdown = InvasionWaveDirector.SpawnIntervalTics;
 
 	Net_RebuildInvasionSpawnSpots(InvasionWaveDirector.Wave);
@@ -6038,7 +7214,9 @@ static void Net_StartInvasionWave(const char* reason)
 		// Invasion spot records own wave budgets when a map provides native invasion
 		// markers. The Stage 3 budget cvars remain as fallback for non-invasion maps.
 		InvasionWaveDirector.WaveBudget = InvasionSpawnDirectory.TotalSpawnBudget;
+		unscaledWaveBudget = InvasionWaveDirector.WaveBudget;
 	}
+	InvasionWaveDirector.WaveBudget = Net_ApplyInvasionSkillBudgetScale(InvasionWaveDirector.WaveBudget);
 
 	int spawnWindow = Net_InvasionSecondsToTics(sv_invasionspawntime);
 	if (spawnWindow <= 0)
@@ -6056,15 +7234,23 @@ static void Net_StartInvasionWave(const char* reason)
 		spawnWindow = spotWindow;
 	}
 
-	DebugTrace::Markf("invasion", "wave=%d/%d budget=%d spots=%d active=%d tag=%d fallback=%d source=%s map=%s",
+	DebugTrace::Markf("invasion", "wave=%d/%d budget=%d rawbudget=%d skill=%d spots=%d active=%d tag=%d fallback=%d source=%s interval=%d fastmonsters=%d map=%s",
 		InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves, InvasionWaveDirector.WaveBudget,
+		unscaledWaveBudget, clamp<int>(gameskill, 0, 4),
 		InvasionSpawnDirectory.TotalSpotCount, InvasionSpawnDirectory.ActiveSpotCount, InvasionSpawnDirectory.ActiveTag,
 		InvasionSpawnDirectory.UsingFallback ? 1 : 0, Net_InvasionSpawnSourceName(InvasionSpawnDirectory.FallbackSource),
+		InvasionWaveDirector.SpawnIntervalTics,
+		(dmflags & DF_FAST_MONSTERS) != 0 ? 1 : 0,
 		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-	Printf(PRINT_HIGH, "Invasion wave %d/%d starting: budget=%d spots=%d active=%d tag=%d fallback=%d source=%s map=%s\n",
+	Printf(PRINT_HIGH, "Invasion wave %d/%d starting: budget=%d rawbudget=%d skill=%d spots=%d active=%d cap=%d speedscale=%.2f tag=%d fallback=%d source=%s interval=%d fastmonsters=%d map=%s\n",
 		InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves, InvasionWaveDirector.WaveBudget,
-		InvasionSpawnDirectory.TotalSpotCount, InvasionSpawnDirectory.ActiveSpotCount, InvasionSpawnDirectory.ActiveTag,
+		unscaledWaveBudget, clamp<int>(gameskill, 0, 4),
+		InvasionSpawnDirectory.TotalSpotCount, InvasionSpawnDirectory.ActiveSpotCount,
+		Net_GetInvasionActiveMonsterCap(), Net_GetInvasionSkillMonsterSpeedScale(),
+		InvasionSpawnDirectory.ActiveTag,
 		InvasionSpawnDirectory.UsingFallback ? 1 : 0, Net_InvasionSpawnSourceName(InvasionSpawnDirectory.FallbackSource),
+		InvasionWaveDirector.SpawnIntervalTics,
+		(dmflags & DF_FAST_MONSTERS) != 0 ? 1 : 0,
 		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 
 	Net_SetInvasionState(INVS_SPAWNING, spawnWindow, reason != nullptr ? reason : "wave-start");
@@ -6148,11 +7334,15 @@ static void Net_TickInvasionState()
 		// Support both flows:
 		// - cutscene-ready countdowns continue to mirror the shared cutscene timer
 		// - native invasion auto-starts count down locally when no cutscene timer exists
-		if (CutsceneCountdown > 0)
-		{
-			InvasionStateTics = max(CutsceneCountdown, 0);
-			return;
-		}
+	if (CutsceneCountdown > 0)
+	{
+		if (!netgame)
+			--CutsceneCountdown;
+		InvasionStateTics = max(CutsceneCountdown, 0);
+		if (CutsceneCountdown <= 0)
+			Net_StartInvasionWave("countdown-complete");
+		return;
+	}
 
 		if (InvasionStateTics > 0)
 			--InvasionStateTics;
@@ -6237,13 +7427,24 @@ static void Net_TickInvasionState()
 			if (--InvasionWaveDirector.SpawnIntervalCountdown <= 0)
 			{
 				InvasionWaveDirector.SpawnIntervalCountdown = InvasionWaveDirector.SpawnIntervalTics;
-				const int burst = max<int>(sv_invasionspawnburst, 1);
-				int consumed = 0;
-				while (consumed < burst && InvasionWaveDirector.WaveSpawned < InvasionWaveDirector.WaveBudget)
+				const int activeCap = Net_GetInvasionActiveMonsterCap();
+				const int activeMonsters = Net_GetInvasionActiveMonsterCount();
+				if (activeMonsters >= activeCap)
 				{
-					if (!Net_TryConsumeInvasionSpawnSlot())
-						break;
-					++consumed;
+					DebugTrace::Markf("invasion", "spawn throttled active=%d cap=%d wave=%d/%d spawned=%d/%d",
+						activeMonsters, activeCap, InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves,
+						InvasionWaveDirector.WaveSpawned, InvasionWaveDirector.WaveBudget);
+				}
+				else
+				{
+					const int burst = min<int>(max<int>(sv_invasionspawnburst, 1), activeCap - activeMonsters);
+					int consumed = 0;
+					while (consumed < burst && InvasionWaveDirector.WaveSpawned < InvasionWaveDirector.WaveBudget)
+					{
+						if (!Net_TryConsumeInvasionSpawnSlot())
+							break;
+						++consumed;
+					}
 				}
 			}
 		}
@@ -6309,12 +7510,13 @@ static void Net_TickInvasionState()
 	}
 }
 
-static void Net_TickInvasionMirrorState()
+static void Net_TickInvasionMirrorVisualFrame()
 {
-	if (I_IsLocalHCDEServiceAuthority() || InvasionState == INVS_DISABLED)
+	if (Net_IsLocalInvasionAuthority() || InvasionState == INVS_DISABLED)
 		return;
 
 	Net_DrainPendingInvasionSpawnEvents();
+	Net_DrainPendingInvasionMirrorSpawns();
 	if (InvasionMirrorVisualTickBudget > 0)
 	{
 		// Catch-up can run several gameplay tics in one frame. Mirror actors are
@@ -6324,6 +7526,13 @@ static void Net_TickInvasionMirrorState()
 		Net_TickInvasionMirrorVisualActors();
 	}
 	Net_LogInvasionMirrorVisualDiagnostic();
+}
+
+static void Net_TickInvasionMirrorState()
+{
+	Net_TickInvasionMirrorVisualFrame();
+	if (Net_IsLocalInvasionAuthority() || InvasionState == INVS_DISABLED)
+		return;
 
 	if (InvasionStateTics > 0)
 		--InvasionStateTics;
@@ -6552,7 +7761,10 @@ void Net_StartCutscene()
 	if (sv_gametype == 4)
 		countdownSeconds = sv_invasioncountdowntime;
 
-	CutsceneCountdown = netgame && !demoplayback && countdownSeconds > 0.0f ? static_cast<int>(ceil(countdownSeconds * TICRATE)) : 0;
+	const bool shouldUseCountdown = !demoplayback
+		&& countdownSeconds > 0.0f
+		&& (netgame || Net_IsInvasionModeEnabled());
+	CutsceneCountdown = shouldUseCountdown ? static_cast<int>(ceil(countdownSeconds * TICRATE)) : 0;
 	if (Net_IsInvasionModeEnabled())
 		Net_SetInvasionState(INVS_COUNTDOWN, CutsceneCountdown, "cutscene-start");
 }
@@ -7039,6 +8251,7 @@ void Net_ResetClientState(int clientNum)
 		tic.Data.SetData(nullptr, 0);
 
 	HCDELivePeers[clientNum].Clear();
+	Net_ResetInvasionActorDeltaBaseline(clientNum);
 }
 
 static void DisconnectClient(int clientNum)
@@ -8413,7 +9626,22 @@ void NetUpdate(int tics)
 				curState.ResendSequenceFrom = curState.SequenceAck + 1;
 		}
 
-		const int sequenceNum = curState.ResendSequenceFrom >= 0 ? curState.ResendSequenceFrom : startSequence;
+		int passiveResendSequenceFrom = -1;
+		if (localAuthority && !isSelf && curState.SequenceAck >= 0 && curState.SequenceAck + 1 < startSequence)
+		{
+			// Dedicated clients can occasionally miss the explicit retransmit edge
+			// while still reporting an older sequence ack every input packet. Honor
+			// that ack as a soft resend request so one lost authority tic cannot
+			// leave the client stuck at the tic gate forever.
+			passiveResendSequenceFrom = curState.SequenceAck + 1;
+			DebugTrace::Warningf("net", "passive authority resend client=%d from=%d start=%d end=%d seq=%d ack=%d room=%u",
+				client, passiveResendSequenceFrom, startSequence, endSequence,
+				curState.CurrentSequence, curState.SequenceAck, unsigned(CurrentRoomID));
+		}
+
+		const int sequenceNum = curState.ResendSequenceFrom >= 0
+			? curState.ResendSequenceFrom
+			: (passiveResendSequenceFrom >= 0 ? passiveResendSequenceFrom : startSequence);
 		const int numTics = clamp<int>(endSequence - sequenceNum, 0, MAXSENDTICS);
 
 		if (curState.Flags & CF_RETRANSMIT_CON)
@@ -9088,6 +10316,23 @@ static void CalculateNetStabilityBuffer(int diff)
 		return;
 	}
 
+	if (I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority())
+	{
+		const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+		const bool lowLatencyAuthority = authoritySlot >= 0
+			&& authoritySlot < MAXPLAYERS
+			&& HCDELivePeers[authoritySlot].SnapshotReceived > 0u
+			&& HCDELivePeers[authoritySlot].RxServerSnapshotSequence > 0u
+			&& ClientStates[authoritySlot].AverageLatency <= 16u;
+		if (lowLatencyAuthority)
+		{
+			StabilityBuffer = 0;
+			PrevAvailableDiff = max<int>(diff, 0);
+			memset(StabilityTics, 0, sizeof(StabilityTics));
+			return;
+		}
+	}
+
 	if (diff < 0)
 		diff = 0;
 
@@ -9285,6 +10530,14 @@ void TryRunTics()
 		if (ClientTic > startCommand)
 		{
 			LagState = LAG_PREDICTING;
+			if (netgame
+				&& totalTics > 0
+				&& !Net_IsLocalInvasionAuthority())
+			{
+				InvasionMirrorVisualTickBudget = 1;
+				Net_TickInvasionMirrorVisualFrame();
+				InvasionMirrorVisualTickBudget = 0;
+			}
 			P_PredictClient();
 		}
 
@@ -9311,7 +10564,8 @@ void TryRunTics()
 
 	// Run the available tics.
 	P_UnPredictClient();
-	InvasionMirrorVisualTickBudget = I_IsLocalHCDEServiceAuthority() ? 0 : 1;
+	HCDEApplyPendingLocalHealthRepair();
+	InvasionMirrorVisualTickBudget = Net_IsLocalInvasionAuthority() ? 0 : 1;
 	while (runTics--)
 	{
 		const bool stabilize = ShouldStabilizeTick();
@@ -9323,7 +10577,7 @@ void TryRunTics()
 
 		G_Ticker();
 		++gametic;
-		if (I_IsLocalHCDEServiceAuthority())
+		if (Net_IsLocalInvasionAuthority())
 			Net_TickInvasionState();
 		else
 			Net_TickInvasionMirrorState();
@@ -10579,9 +11833,11 @@ static bool Net_TrySkipUserCmdMessageWithBoundary(const uint8_t* data, size_t da
 		if (remainingRecords > 0u && cursor < dataSize)
 		{
 			const uint8_t nextOffset = data[cursor];
+			const bool nextByteIsUserCommand = nextOffset == DEM_USERCMD || nextOffset == DEM_EMPTYUSERCMD;
 			const bool plausibleNextOffset = nextOffset < commandTics
 				&& nextOffset < 64u
-				&& (commandOffsetsSeen & (uint64_t(1u) << nextOffset)) == 0u;
+				&& (commandOffsetsSeen & (uint64_t(1u) << nextOffset)) == 0u
+				&& !nextByteIsUserCommand;
 			if (plausibleNextOffset
 				&& Net_TrySkipRemainingUserCmdRecords(&data[cursor], dataSize - cursor,
 					commandTics, commandOffsetsSeen, remainingRecords))
@@ -10703,7 +11959,7 @@ int Net_GetInvasionWaveCleared()
 
 int Net_GetInvasionActiveMonsterCount()
 {
-	if (!I_IsLocalHCDEServiceAuthority())
+	if (!Net_IsLocalInvasionAuthority())
 		return max(InvasionReplicatedActiveMonsterCount, 0);
 	return max(int(InvasionWaveDirector.ActiveMonsters.Size()), 0);
 }
@@ -10799,7 +12055,7 @@ int Net_GetInvasionSpawnFallbackSource()
 
 int Net_ControlInvasion(int action, const char* reason)
 {
-	if (!I_IsLocalHCDEServiceAuthority())
+	if (!Net_IsLocalInvasionAuthority())
 		return 0;
 	if (!Net_IsInvasionModeEnabled())
 		return 0;
@@ -11105,12 +12361,14 @@ CCMD(invasion_standard)
 	sv_invasionperplayer = 6;
 	sv_invasionspawninterval = 0.35f;
 	sv_invasionspawnburst = 3;
+	sv_invasionmaxactive = 0;
 	sv_invasionbosswaveevery = 5;
 	sv_invasionbossbonus = 20;
 	sv_invasionspotusemaptags = false;
 	sv_invasionspotfallback = true;
+	dmflags = int(dmflags) & ~DF_FAST_MONSTERS;
 
-	Printf("Applied Invasion Standard preset (sv_gametype=4, waves=%d map-wavelimit=%d use-map-settings=%d budget=%d+%d/wave, per-player=%d)\n",
+	Printf("Applied Invasion Standard preset (sv_gametype=4, fastmonsters=0, waves=%d map-wavelimit=%d use-map-settings=%d budget=%d+%d/wave, per-player=%d)\n",
 		int(sv_invasionwaves), int(wavelimit_compat), sv_usemapsettingswavelimit ? 1 : 0,
 		int(sv_invasionbasebudget), int(sv_invasionbudgetstep), int(sv_invasionperplayer));
 }
@@ -11118,7 +12376,7 @@ CCMD(invasion_standard)
 // Print a concise runtime + configuration summary for remote admin/debug use.
 CCMD(invasion_status)
 {
-	Printf("Invasion status: state=%s (%d tics) wave=%d/%d budget=%d spawned=%d cleared=%d active=%d boss=%d\n",
+	Printf("Invasion status: state=%s (%d tics) wave=%d/%d budget=%d spawned=%d cleared=%d active=%d cap=%d speedscale=%.2f boss=%d fastmonsters=%d\n",
 		Net_GetInvasionStateName(),
 		Net_GetInvasionStateTics(),
 		Net_GetInvasionWave(),
@@ -11127,7 +12385,10 @@ CCMD(invasion_status)
 		Net_GetInvasionWaveSpawned(),
 		Net_GetInvasionWaveCleared(),
 		Net_GetInvasionActiveMonsterCount(),
-		Net_IsInvasionBossWave() ? 1 : 0);
+		Net_GetInvasionActiveMonsterCap(),
+		Net_GetInvasionSkillMonsterSpeedScale(),
+		Net_IsInvasionBossWave() ? 1 : 0,
+		(dmflags & DF_FAST_MONSTERS) != 0 ? 1 : 0);
 	const int mapWaveLimit = (primaryLevel != nullptr && primaryLevel->info != nullptr)
 		? clamp<int>(primaryLevel->info->InvasionWaveLimit, 0, 255)
 		: 0;
@@ -11135,7 +12396,7 @@ CCMD(invasion_status)
 		? clamp<int>(primaryLevel->info->DuelLimit, 0, 255)
 		: 0;
 	const bool canOverrideCmpgninfLimits = HCDE_CanOverrideCmpgninfLimits();
-	Printf("Invasion settings: count=%.2f spawn=%.2f cleanup=%.2f inter=%.2f result=%.2f interval=%.2f burst=%d waves=%d legacy-wavelimit=%d use-map-wavelimit=%d map-wavelimit=%d resolved-wavelimit=%d map-duellimit=%d legacy-duellimit=%d allow-offline-overrides=%d base=%d step=%d perplayer=%d boss-every=%d boss-bonus=%d map-tags=%d fallback=%d\n",
+	Printf("Invasion settings: count=%.2f spawn=%.2f cleanup=%.2f inter=%.2f result=%.2f interval=%.2f burst=%d maxactive=%d waves=%d legacy-wavelimit=%d use-map-wavelimit=%d map-wavelimit=%d resolved-wavelimit=%d map-duellimit=%d legacy-duellimit=%d allow-offline-overrides=%d base=%d step=%d perplayer=%d boss-every=%d boss-bonus=%d map-tags=%d fallback=%d\n",
 		double(sv_invasioncountdowntime),
 		double(sv_invasionspawntime),
 		double(sv_invasioncleanuptime),
@@ -11143,6 +12404,7 @@ CCMD(invasion_status)
 		double(sv_invasionresulttime),
 		double(sv_invasionspawninterval),
 		int(sv_invasionspawnburst),
+		int(sv_invasionmaxactive),
 		int(sv_invasionwaves),
 		int(wavelimit_compat),
 		sv_usemapsettingswavelimit ? 1 : 0,

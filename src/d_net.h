@@ -32,6 +32,7 @@ struct FMapThing;
 struct FLevelLocals;
 class PClassActor;
 class FString;
+class AActor;
 
 enum EChatType
 {
@@ -189,6 +190,10 @@ int Net_GetInvasionSpawnPlanBudget();
 int Net_GetInvasionSpawnActiveTag();
 bool Net_IsInvasionSpawnUsingFallback();
 int Net_GetInvasionSpawnFallbackSource();
+bool Net_IsInvasionClientMirrorActor(const AActor* actor);
+bool Net_IsInvasionClientMirrorBlockingActor(const AActor* actor);
+void Net_RegisterInvasionReplicatedMissile(AActor* missile, const AActor* source);
+void Net_RecordInvasionActorAttack(AActor* attacker, AActor* target);
 int Net_GetCompatDuelLimit();
 int Net_ControlInvasion(int action, const char* reason = nullptr);
 void Net_BeginInvasionSpawnRegistration(FLevelLocals* level);

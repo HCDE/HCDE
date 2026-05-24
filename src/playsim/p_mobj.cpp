@@ -7792,6 +7792,7 @@ bool P_CheckMissileSpawn (AActor* th, double maxdist)
 	}
 	th->flags2 = oldf2;
 	th->ClearInterpolation();
+	Net_RegisterInvasionReplicatedMissile(th, th->target);
 	return true;
 }
 
@@ -7921,7 +7922,10 @@ AActor *P_SpawnMissileXYZ (DVector3 pos, AActor *source, AActor *dest, PClassAct
 		th->SetFriendPlayer(owner->player);
 	}
 
-	return (!checkspawn || P_CheckMissileSpawn (th, source->radius)) ? th : NULL;
+	if (checkspawn && !P_CheckMissileSpawn(th, source->radius))
+		return NULL;
+	Net_RegisterInvasionReplicatedMissile(th, source);
+	return th;
 }
 
 DEFINE_ACTION_FUNCTION(AActor, SpawnMissileXYZ)
@@ -7997,6 +8001,7 @@ AActor *P_OldSpawnMissile(AActor *source, AActor *owner, AActor *dest, PClassAct
 	}
 
 	P_CheckMissileSpawn(th, source->radius);
+	Net_RegisterInvasionReplicatedMissile(th, source);
 	return th;
 }
 
@@ -8087,7 +8092,10 @@ AActor *P_SpawnMissileAngleZSpeed (AActor *source, double z,
 		mo->SetFriendPlayer(owner->player);
 	}
 
-	return (!checkspawn || P_CheckMissileSpawn(mo, source->radius)) ? mo : NULL;
+	if (checkspawn && !P_CheckMissileSpawn(mo, source->radius))
+		return NULL;
+	Net_RegisterInvasionReplicatedMissile(mo, source);
+	return mo;
 }
 
 DEFINE_ACTION_FUNCTION(AActor, SpawnMissileAngleZSpeed)
@@ -8132,6 +8140,7 @@ AActor *P_SpawnSubMissile(AActor *source, PClassActor *type, AActor *target)
 	{
 		DAngle pitch = P_AimLineAttack(source, source->Angles.Yaw, 1024.);
 		other->Vel.Z = -other->Speed * pitch.Sin();
+		Net_RegisterInvasionReplicatedMissile(other, source);
 		return other;
 	}
 	return NULL;

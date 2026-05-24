@@ -1556,9 +1556,18 @@ static int DamageMobj (AActor *target, AActor *inflictor, AActor *source, int da
 
 static int DoDamageMobj(AActor *target, AActor *inflictor, AActor *source, int damage, FName mod, int flags, DAngle angle)
 {
+	if (Net_IsInvasionClientMirrorActor(target)
+		|| Net_IsInvasionClientMirrorActor(inflictor)
+		|| Net_IsInvasionClientMirrorActor(source))
+	{
+		return 0;
+	}
+
 	// [ZZ] event handlers need the result.
 	bool needevent = true;
 	int realdamage = DamageMobj(target, inflictor, source, damage, mod, flags, angle, needevent);
+	if (realdamage > 0)
+		Net_RecordInvasionActorAttack(source, target);
 	if (realdamage >= 0) //Keep this check separated. Mods relying upon negative numbers may break otherwise.
 		CallReactToDamage(target, inflictor, source, realdamage, mod, flags, damage);
 
@@ -1585,6 +1594,13 @@ DEFINE_ACTION_FUNCTION(AActor, DamageMobj)
 
 int P_DamageMobj(AActor *target, AActor *inflictor, AActor *source, int damage, FName mod, int flags, DAngle angle)
 {
+	if (Net_IsInvasionClientMirrorActor(target)
+		|| Net_IsInvasionClientMirrorActor(inflictor)
+		|| Net_IsInvasionClientMirrorActor(source))
+	{
+		return 0;
+	}
+
 	IFVIRTUALPTR(target, AActor, DamageMobj)
 	{
 		VMValue params[7] = { target, inflictor, source, damage, mod.GetIndex(), flags, angle.Degrees() };
@@ -1592,6 +1608,8 @@ int P_DamageMobj(AActor *target, AActor *inflictor, AActor *source, int damage, 
 		int retval;
 		ret.IntAt(&retval);
 		VMCall(func, params, 7, &ret, 1);
+		if (retval > 0)
+			Net_RecordInvasionActorAttack(source, target);
 		return retval;
 	}
 	else
@@ -1603,6 +1621,13 @@ int P_DamageMobj(AActor *target, AActor *inflictor, AActor *source, int damage, 
 
 void P_PoisonMobj (AActor *target, AActor *inflictor, AActor *source, int damage, int duration, int period, FName type)
 {
+	if (Net_IsInvasionClientMirrorActor(target)
+		|| Net_IsInvasionClientMirrorActor(inflictor)
+		|| Net_IsInvasionClientMirrorActor(source))
+	{
+		return;
+	}
+
 	// Check for invulnerability.
 	if (!(inflictor->flags6 & MF6_POISONALWAYS))
 	{
