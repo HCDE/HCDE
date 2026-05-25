@@ -3482,6 +3482,25 @@ static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skip
 			continue;
 		}
 
+		// If the mirror is in an attack/pain animation but the server has
+		// stopped refreshing its visual target, do not advance the state
+		// machine. Otherwise a missed actor-delta or despawn event leaves
+		// the mirror endlessly firing at nothing while the server has
+		// already moved on. Freezing the current frame is much less
+		// distracting than a looped attack pose; the next server update
+		// will reset the actor cleanly.
+		const bool attackingMirror = ref.VisualActionState == HCDEInvasionActorActionMelee
+			|| ref.VisualActionState == HCDEInvasionActorActionMissile
+			|| ref.VisualActionState == HCDEInvasionActorActionPain;
+		const int visualTargetAgeTics = gametic - ref.VisualTargetTic;
+		const bool visualTargetStale = ref.VisualTargetTic > 0
+			&& visualTargetAgeTics > TICRATE; // 1s without an update
+		if (attackingMirror && visualTargetStale)
+		{
+			++updated;
+			continue;
+		}
+
 		if (actor->tics > 0)
 			--actor->tics;
 		if (actor->tics <= 0)
@@ -10800,6 +10819,39 @@ static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, 
 		InvasionLastAppliedSpawnEventId = 0u;
 		InvasionMirrorNextVisualDiagnosticTic = 0;
 		InvasionMirrorNextPurgeTic = 0;
+	}
+	else if (InvasionReplicatedActiveMonsterCount == 0
+		&& InvasionState != INVS_SPAWNING
+		&& InvasionState != INVS_DISABLED
+		&& InvasionState != INVS_COUNTDOWN)
+	{
+		// Server reports zero active monsters during a non-spawning phase
+		// (cleanup/intermission/victory/failure) but the client still has live
+		// mirrors. A dropped despawn or death event will otherwise leave them
+		// frozen mid-attack until the next wave clears them. Retire any live,
+		// non-projectile mirror as if it died so the death animation plays and
+		// the actor stops shooting at nothing.
+		unsigned reconciled = 0u;
+		for (auto& ref : InvasionReplicatedActors)
+		{
+			AActor* actor = ref.Actor;
+			if (actor == nullptr
+				|| (actor->ObjectFlags & OF_EuthanizeMe) != 0
+				|| ref.IsProjectile
+				|| Net_IsInvasionActorCorpseLike(actor))
+			{
+				continue;
+			}
+			Net_RetireInvasionMirrorActor(ref, 0);
+			++reconciled;
+		}
+		if (reconciled > 0)
+		{
+			DebugTrace::Warningf("net",
+				"HCDE invasion mirror reconcile state=%s wave=%d retired=%u tracked=%u reason=server-active=0",
+				Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave,
+				reconciled, unsigned(InvasionReplicatedActors.Size()));
+		}
 	}
 
 	InvasionSpawnDirectory.Spots.Clear();
