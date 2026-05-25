@@ -2475,13 +2475,31 @@ static void CheckCmdLine()
 		if (gameinfo.gametype != GAME_Hexen)
 			flags3 |= DF3_LOCAL_ITEMS;
 	}
-	else if (!launchingServer && !explicitMultiplayerMode)
+	else if (!explicitMultiplayerMode)
 	{
-		// Local startup should not inherit an archived server mode from a previous
-		// session. If no multiplayer mode was requested on the command line, force
-		// the live game mode back to single-player defaults.
-		deathmatch = 0;
-		teamplay = 0;
+		// No explicit mode flag (-coop / -deathmatch / -altdeath) was given.
+		// Check whether +sv_gametype was provided on the command line (already
+		// executed by this point via C_ParseCmdLineParams / ExecCommands).
+		// If so, honour that value; otherwise reset to cooperative defaults
+		// so a stale CVAR_ARCHIVE value from a previous invasion/DM session
+		// does not bleed into a fresh server or local game.
+		bool hasExplicitGametype = false;
+		for (int i = 1; i < Args->NumArgs(); i++)
+		{
+			const char* a = Args->GetArg(i);
+			if (*a == '+' && !stricmp(a + 1, "sv_gametype"))
+			{
+				hasExplicitGametype = true;
+				break;
+			}
+		}
+
+		if (!hasExplicitGametype)
+		{
+			deathmatch = 0;
+			teamplay = 0;
+			sv_gametype = 0;
+		}
 	}
 
 	dmflags = flags;

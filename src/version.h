@@ -28,11 +28,11 @@
 
 /** Lots of different version numbers **/
 
-#define VERSIONSTR "0.4.5"
+#define VERSIONSTR "0.4.5-hotfix1"
 
 // The version as seen in the Windows resource
-#define RC_FILEVERSION 0,4,5,0
-#define RC_PRODUCTVERSION 0,4,5,0
+#define RC_FILEVERSION 0,4,5,1
+#define RC_PRODUCTVERSION 0,4,5,1
 #define RC_PRODUCTVERSION2 VERSIONSTR
 // These are for content versioning.
 #define VER_MAJOR 5
@@ -47,7 +47,7 @@
 // Version stored in the ini's [LastRun] section.
 // Bump it if you made some configuration change that you want to
 // be able to migrate in FGameConfigFile setup routines.
-#define LASTRUNVERSION "233"
+#define LASTRUNVERSION "234"
 
 // Protocol version used in demos.
 // Bump it if you change existing DEM_ commands or add new ones.

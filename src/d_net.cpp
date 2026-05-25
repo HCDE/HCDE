@@ -16298,8 +16298,13 @@ void TryRunTics()
 	}
 
 	// If the lowest confirmed tic matches the server gametic or greater, allow the client
-	// to run some of them.
-	const int availableTics = (lowestSequence - gametic / TicDup) + 1;
+	// to run some of them. Dedicated server clients have an inherent 1-frame roundtrip
+	// in the ack pipeline (send → server process → ack back → client read) that keeps
+	// availableTics pinned at 0-1 even on localhost. Grant them one extra tic of
+	// prediction headroom so the playsim doesn't starve while waiting for the ack.
+	const int dedicatedPipelineBonus =
+		(I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority()) ? 1 : 0;
+	const int availableTics = (lowestSequence - gametic / TicDup) + 1 + dedicatedPipelineBonus;
 
 	// Sample sub-fault prediction health every frame. Cheap when off
 	// (single compare in Net_PredictionDebugTick); when on it captures the
