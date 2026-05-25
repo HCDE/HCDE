@@ -37,6 +37,7 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 #include "d_player.h"
 #include "doomdef.h"
 #include "doomstat.h"
@@ -993,7 +994,7 @@ bool player_t::Resurrect()
 {
 	if (mo == nullptr || mo->IsKindOf(NAME_PlayerChunk)) return false;
 	mo->Revive();
-	playerstate = PST_LIVE;
+	SET_PLAYER_STATE(this, this - players, PST_LIVE, "player_t::Resurrect");
 	health = mo->health = mo->GetDefault()->health;
 	viewheight = DefaultViewHeight();
 	mo->renderflags &= ~RF_INVISIBLE;

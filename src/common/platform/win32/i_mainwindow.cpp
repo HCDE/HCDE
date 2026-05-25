@@ -235,9 +235,11 @@ static const ServerGuiSettingDefinition ServerGuiAdvancedSettings[] =
 	{ L"Invasion Cleanup Time", "sv_invasioncleanuptime", ServerGuiSettingKind::Decimal, L"4", 0, 600, false, 8 },
 	{ L"Invasion Intermission", "sv_invasionintermissiontime", ServerGuiSettingKind::Decimal, L"6", 0, 600, false, 8 },
 	{ L"Invasion Result Time", "sv_invasionresulttime", ServerGuiSettingKind::Decimal, L"8", 0, 600, false, 8 },
-	{ L"Invasion Waves", "sv_invasionwaves", ServerGuiSettingKind::Integer, L"8", 1, 255, false, 3 },
+	{ L"Invasion Exit Victory", "sv_invasionexitonvictory", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
+	{ L"Invasion Debug", "sv_invasiondebug", ServerGuiSettingKind::Integer, L"0", 0, 3, false, 1 },
+	{ L"Invasion Waves", "sv_invasionwaves", ServerGuiSettingKind::Integer, L"8", 1, 3000, false, 4 },
 	{ L"Invasion Map Waves", "sv_usemapsettingswavelimit", ServerGuiSettingKind::Choice, L"1", 0, 1, false, 1, ServerGuiBoolChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiBoolChoices) },
-	{ L"Legacy Wave Limit", "wavelimit", ServerGuiSettingKind::Integer, L"0", 0, 255, false, 3 },
+	{ L"Legacy Wave Limit", "wavelimit", ServerGuiSettingKind::Integer, L"0", 0, 3000, false, 4 },
 	{ L"Invasion Base Budget", "sv_invasionbasebudget", ServerGuiSettingKind::Integer, L"24", 1, 4096, false, 4 },
 	{ L"Invasion Budget Step", "sv_invasionbudgetstep", ServerGuiSettingKind::Integer, L"8", 0, 4096, false, 4 },
 	{ L"Invasion Per Player", "sv_invasionperplayer", ServerGuiSettingKind::Integer, L"6", 0, 4096, false, 4 },
@@ -339,7 +341,7 @@ static const char* const ServerGuiPresetTeamDeathmatch[] =
 	"sv_forcerespawn 1"
 };
 
-static const char* const ServerGuiPresetInvasionStandard[] =
+static const char* const ServerGuiPresetInvasion[] =
 {
 	"sv_gametype 4",
 	"skill 2",
@@ -351,6 +353,8 @@ static const char* const ServerGuiPresetInvasionStandard[] =
 	"sv_invasioncleanuptime 4",
 	"sv_invasionintermissiontime 6",
 	"sv_invasionresulttime 8",
+	"sv_invasionexitonvictory 1",
+	"sv_invasiondebug 0",
 	"sv_invasionwaves 8",
 	"sv_usemapsettingswavelimit 1",
 	"wavelimit 0",
@@ -383,7 +387,7 @@ static const ServerGuiPresetDefinition ServerGuiPresets[] =
 	{ L"Classic Deathmatch", "Classic Deathmatch", ServerGuiPresetClassicDeathmatch, sizeof(ServerGuiPresetClassicDeathmatch) / sizeof(ServerGuiPresetClassicDeathmatch[0]) },
 	{ L"Alt Deathmatch", "Alt Deathmatch", ServerGuiPresetAltDeathmatch, sizeof(ServerGuiPresetAltDeathmatch) / sizeof(ServerGuiPresetAltDeathmatch[0]) },
 	{ L"Team Deathmatch", "Team Deathmatch", ServerGuiPresetTeamDeathmatch, sizeof(ServerGuiPresetTeamDeathmatch) / sizeof(ServerGuiPresetTeamDeathmatch[0]) },
-	{ L"Invasion Standard", "Invasion Standard", ServerGuiPresetInvasionStandard, sizeof(ServerGuiPresetInvasionStandard) / sizeof(ServerGuiPresetInvasionStandard[0]) },
+	{ L"Invasion", "Invasion", ServerGuiPresetInvasion, sizeof(ServerGuiPresetInvasion) / sizeof(ServerGuiPresetInvasion[0]) },
 	{ L"Private Debug", "Private Debug", ServerGuiPresetPrivateDebug, sizeof(ServerGuiPresetPrivateDebug) / sizeof(ServerGuiPresetPrivateDebug[0]) },
 };
 

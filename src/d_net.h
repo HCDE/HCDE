@@ -148,8 +148,26 @@ struct FClientNetState
 	uint64_t MalformedWindowStartMS = 0u;		// Start time for strike coalescing.
 };
 
+extern FClientNetState ClientStates[MAXPLAYERS];
+
 // Create any new ticcmds and broadcast to other players.
 void NetUpdate(int tics);
+
+EXTERN_CVAR(Int, net_echo_debug)
+EXTERN_CVAR(Int, net_self_test_run_client)
+
+void HCDERecordLiveLaneTx(uint8_t lane, int client, size_t bytes);
+void HCDERecordLiveLaneRx(uint8_t lane, int client, size_t bytes);
+void HCDERecordLiveLaneDeferred(uint8_t lane, int client);
+void HCDERecordLiveLaneBudgetClamp(uint8_t lane, int client);
+
+bool HCDEAppendByte(uint8_t* output, size_t outputCapacity, size_t& cursor, uint8_t value);
+bool HCDEAppendBE16(uint8_t* output, size_t outputCapacity, size_t& cursor, uint16_t value);
+bool HCDEAppendBE32(uint8_t* output, size_t outputCapacity, size_t& cursor, uint32_t value);
+bool HCDEAppendBytes(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t size);
+bool HCDEReadByteField(const uint8_t* data, size_t dataSize, size_t& cursor, uint8_t& value);
+bool HCDEReadBE16Field(const uint8_t* data, size_t dataSize, size_t& cursor, uint16_t& value);
+bool HCDEReadBE32Field(const uint8_t* data, size_t dataSize, size_t& cursor, uint32_t& value);
 
 // Broadcasts special packets to other players
 //	to notify of game exit
@@ -215,6 +233,18 @@ void Net_GetKickableClientList(TArray<int>& clients, TArray<FString>& labels);
 void Net_TraceSetSvGametype(int value, const char* reason);
 void Net_TraceSetDeathmatch(int value, const char* reason);
 void Net_TraceSetTeamplay(int value, const char* reason);
+
+enum EHCDELiveLane : uint8_t
+{
+	HLANE_CONTROL = 0,
+	HLANE_COMMAND,
+	HLANE_AUTHORITY,
+	HLANE_PLAYER_SNAPSHOT,
+	HLANE_ACTOR_DELTA,
+	HLANE_QUERY_REGISTRY,
+	HLANE_PRESENTATION_ECHO,
+	HLANE_COUNT,
+};
 
 struct FHCDELagHUDMetrics
 {

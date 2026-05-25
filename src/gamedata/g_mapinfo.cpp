@@ -1252,7 +1252,7 @@ DEFINE_MAP_OPTION(wavelimit, true)
 {
 	parse.ParseAssign();
 	parse.sc.MustGetNumber();
-	info->InvasionWaveLimit = clamp<int>(parse.sc.Number, 0, 255);
+	info->InvasionWaveLimit = clamp<int>(parse.sc.Number, 0, 3000);
 }
 
 DEFINE_MAP_OPTION(duellimit, true)
@@ -2900,7 +2900,7 @@ static void HCDE_ParseCMPGNINF()
 				else if (property.CompareNoCase("wavelimit") == 0)
 				{
 					scanner.MustGetValue(false);
-					waveLimit = clamp<int>(scanner.Number, 0, 255);
+					waveLimit = clamp<int>(scanner.Number, 0, 3000);
 					hasWaveLimit = true;
 				}
 				else if (property.CompareNoCase("duellimit") == 0)

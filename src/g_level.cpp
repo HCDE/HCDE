@@ -27,6 +27,7 @@
 #include "d_main.h"
 #include "g_level.h"
 #include "g_game.h"
+#include "playsim/playerstate_trace.h"
 #include "s_sound.h"
 #include "d_event.h"
 #include "m_random.h"
@@ -498,7 +499,7 @@ void G_NewInit ()
 		::new(p) player_t;
 		p->settings_controller = settings_controller;
 		p->cheats |= chasecam;
-		p->playerstate = PST_DEAD;
+		SET_PLAYER_STATE(p, i, PST_DEAD, "G_InitPregame_reset");
 		p->userinfo.TransferFrom(saved_ui);
 		playeringame[i] = false;
 	}
@@ -655,7 +656,7 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 
 		// force players to be initialized upon first level load
 		for (i = 0; i < MAXPLAYERS; i++)
-			players[i].playerstate = PST_ENTER;	// [BC]
+			SET_PLAYER_STATE(&players[i], i, PST_ENTER, "G_InitNew_force_init");
 
 		STAT_StartNewGame(mapname);
 		GameUUID = GenerateUUID();
@@ -864,7 +865,7 @@ void FLevelLocals::ChangeLevel(const char *levelname, int position, int inflags,
 			{
 				// Copied from the end of P_DeathThink [[
 				player->cls = NULL;		// Force a new class if the player is using a random class
-				player->playerstate = PST_REBORN;
+				SET_PLAYER_STATE(player, i, PST_REBORN, "G_ExitLevel_respawn_coop");
 				if (player->mo->special1 > 2)
 				{
 					player->mo->special1 = 0;
@@ -1463,7 +1464,7 @@ void FLevelLocals::DoLoadLevel(const FString &nextmapname, int position, bool au
 	for (i = 0; i < MAXPLAYERS; i++)
 	{
 		if (PlayerInGame(i) && (deathmatch || Players[i]->playerstate == PST_DEAD))
-			Players[i]->playerstate = PST_ENTER;	// [BC]
+			SET_PLAYER_STATE(Players[i], i, PST_ENTER, "FLevelLocals_Enter_level");
 		memset (Players[i]->frags,0,sizeof(Players[i]->frags));
 		if (!(dmflags2 & DF2_YES_KEEPFRAGS) && (alwaysapplydmflags || deathmatch))
 			Players[i]->fragcount = 0;

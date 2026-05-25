@@ -95,9 +95,6 @@ class FatShot : Actor
 		Damage 8;
 		Projectile;
 		+RANDOMIZE
-		+SEEKERMISSILE
-		+CANTSEEK
-		+DONTSEEKINVISIBLE
 		+ZDOOMTRANS
 		RenderStyle "Add";
 		Alpha 1;
@@ -107,9 +104,7 @@ class FatShot : Actor
 	States
 	{
 	Spawn:
-		// Keep the old monster-fireball wobble, but let it home in like the
-		// classic old-school seeker projectiles the user wants.
-		MANF AB 4 BRIGHT A_SeekerMissile(9999, 9999, SMF_LOOK, 255, 10);
+		MANF AB 4 BRIGHT;
 		Loop;
 	Death:
 		MISL B 8 BRIGHT;

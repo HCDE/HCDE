@@ -1374,6 +1374,12 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 	if ((thing->ThruBits & tm.thing->ThruBits) && ((thing->flags8 | tm.thing->flags8) & MF8_ALLOWTHRUBITS))
 		return true;
 
+	// HCDE: Invasion client mirrors currently never block the local player -
+	// Net_IsInvasionClientMirrorBlockingActor() returns false for now (see
+	// d_net.cpp). The hook is intentionally kept here so a future opt-in
+	// mode can re-enable mirror-vs-player collision without re-plumbing this
+	// codepath. Until then `mirrorBlocksPlayer` evaluates to false and this
+	// branch falls back to vanilla MF_SOLID/SPECIAL/SHOOTABLE/TOUCHY gating.
 	const bool mirrorBlocksPlayer = tm.thing->player != nullptr
 		&& Net_IsInvasionClientMirrorBlockingActor(thing);
 
@@ -6236,6 +6242,11 @@ int P_RadiusAttack(AActor *bombspot, AActor *bombsource, int bombdamage, double 
 		bombsource = bombspot;
 	}
 
+	if (Net_IsInvasionClientMirrorActor(bombspot) || Net_IsInvasionClientMirrorActor(bombsource))
+	{
+		return 0;
+	}
+
 	P_GeometryRadiusAttack(bombspot, bombsource, bombdamage, bombdistance, bombmod, fulldamagedistance);
 
 	TArray<AActor*> targets;
@@ -6243,6 +6254,9 @@ int P_RadiusAttack(AActor *bombspot, AActor *bombsource, int bombdamage, double 
 	while ((it.Next(&cres)))
 	{
 		AActor *thing = cres.thing;
+		if (Net_IsInvasionClientMirrorActor(thing))
+			continue;
+
 		// Vulnerable actors can be damaged by radius attacks even if not shootable
 		// Used to emulate MBF's vulnerability of non-missile bouncers to explosions.
 		if (!((thing->flags & MF_SHOOTABLE) || (thing->flags6 & MF6_VULNERABLE)))

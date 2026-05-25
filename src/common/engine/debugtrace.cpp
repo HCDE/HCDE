@@ -106,6 +106,13 @@ static std::mutex TraceMutex;
 static uint32_t SessionId = 0u;
 static char ProcessTag[ProcessTagSize] = "hcde";
 static bool SessionInitialized = false;
+// Guards the once-only init of SessionId / ProcessTag / stream paths against
+// concurrent first-callers from background threads. The trace API is mostly
+// invoked from the main thread, but the engine's net/asset workers can race
+// to log a startup line before the main thread reaches D_DoomMain's explicit
+// InitSession(). Without this lock two callers could each generate a fresh
+// SessionId and the later writers would see the loser's value.
+static std::mutex SessionInitMutex;
 
 static FString StreamPath;
 static FString LatestStreamPath;
@@ -329,10 +336,26 @@ static void RotateStreamFiles()
 
 static void RebuildStreamPaths();
 
+// Called from inside StoreEntry -> WriteStreamLine -> OpenStreamFileIfNeeded
+// to lazy-init the session for the very first trace line. The caller already
+// holds TraceMutex; we additionally take SessionInitMutex with double-checked
+// locking so a concurrent worker-thread trace cannot race the main thread's
+// explicit InitSession() call and produce two different SessionIds.
+//
+// Lock-order discipline: TraceMutex -> SessionInitMutex is the only place
+// these two locks nest. Public InitSession() / SetProcessTag() acquire
+// SessionInitMutex first and release it BEFORE taking TraceMutex, so the
+// pair is never held in the opposite order anywhere. The two orderings
+// (T+S vs S only / S then T) are deadlock-free.
 static void EnsureSessionForStream()
 {
 	if (SessionInitialized)
 		return;
+
+	std::lock_guard<std::mutex> lock(SessionInitMutex);
+	if (SessionInitialized)
+		return;
+
 	if (SessionId == 0u)
 		SessionId = GenerateSessionId();
 	RebuildStreamPaths();
@@ -535,6 +558,15 @@ namespace DebugTrace
 {
 void InitSession()
 {
+	// Fast path: already initialized. Reading the plain bool here is racy in
+	// theory, but if a concurrent first-caller is still inside the slow path
+	// we will simply contend on SessionInitMutex below instead of double
+	// initing. Once `SessionInitialized` has been observed as true under the
+	// lock it stays true for the lifetime of the process.
+	if (SessionInitialized)
+		return;
+
+	std::lock_guard<std::mutex> lock(SessionInitMutex);
 	if (SessionInitialized)
 		return;
 
@@ -556,6 +588,11 @@ void SetProcessTag(const char* tag)
 	if (std::strncmp(ProcessTag, tag, sizeof(ProcessTag)) == 0)
 		return;
 
+	// Lock order: TraceMutex only. SessionInitMutex is never held alongside
+	// TraceMutex anywhere - the public init/setter entry points (this one
+	// included) finish their SessionInitMutex critical section before they
+	// take TraceMutex, and the trace-time EnsureSessionForStream path never
+	// touches SessionInitMutex. This avoids any AB/BA deadlock possibility.
 	std::lock_guard<std::mutex> lock(TraceMutex);
 	CloseStreamFile();
 	std::snprintf(ProcessTag, sizeof(ProcessTag), "%.15s", tag);
@@ -564,29 +601,25 @@ void SetProcessTag(const char* tag)
 
 uint32_t GetSessionId()
 {
-	if (!SessionInitialized)
-		InitSession();
+	InitSession();
 	return SessionId;
 }
 
 const char* GetProcessTag()
 {
-	if (!SessionInitialized)
-		InitSession();
+	InitSession();
 	return ProcessTag;
 }
 
 const char* GetStreamPath()
 {
-	if (!SessionInitialized)
-		InitSession();
+	InitSession();
 	return StreamPath.GetChars();
 }
 
 const char* GetLatestStreamPath()
 {
-	if (!SessionInitialized)
-		InitSession();
+	InitSession();
 	return LatestStreamPath.GetChars();
 }
 

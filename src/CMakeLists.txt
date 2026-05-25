@@ -802,6 +802,7 @@ set (PCH_SOURCES
 	d_defcvars.cpp
 	d_anonstats.cpp
 	d_net.cpp
+	d_net_diag.cpp
 	d_netinfo.cpp
 	d_protocol.cpp
 	d_steam.cpp

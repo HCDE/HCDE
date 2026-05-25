@@ -90,16 +90,11 @@ class CyberRocket : Rocket
 {
 	Default
 	{
-		+SEEKERMISSILE
-		+CANTSEEK
-		+DONTSEEKINVISIBLE
 	}
 	States
 	{
 	Spawn:
-		// Keep the old monster-fireball wobble, but let it home in like the
-		// classic old-school seeker projectiles the user wants.
-		MISL A 1 Bright A_SeekerMissile(9999, 9999, SMF_LOOK, 255, 10);
+		MISL A 1 Bright;
 		Loop;
 	}
 }

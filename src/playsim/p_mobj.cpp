@@ -40,6 +40,7 @@
 #include "cmdlib.h"
 #include "d_event.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 #include "d_player.h"
 #include "decallib.h"
 #include "doomdef.h"
@@ -4594,11 +4595,9 @@ void AActor::Tick ()
 
 		if (!Vel.isZero() || !(flags & MF_NOBLOCKMAP))
 		{
-			// HCDE invasion client mirrors must remain blockmap-linked so the
-			// local player's P_TryMove can collide with the server-replicated
-			// monster. The mirror's authoritative pose is driven via SetOrigin
-			// in Net_TickInvasionMirrorVisualActors, so we don't need the
-			// NOBLOCKMAP relink here.
+			// HCDE invasion client mirrors are visual-only. Keep this hook so a
+			// future opt-in blocker can stay linked, but default mirrors should
+			// leave the blockmap and never affect local prediction.
 			const bool keepMirrorBlockmap = Net_IsInvasionClientMirrorBlockingActor(this);
 			if (!keepMirrorBlockmap)
 			{
@@ -6400,7 +6399,7 @@ AActor *FLevelLocals::SpawnPlayer (FPlayerStart *mthing, int playernum, int flag
 
 	p->DesiredFOV = p->FOV = fov;
 	p->camera = p->mo;
-	p->playerstate = PST_LIVE;
+	SET_PLAYER_STATE(p, p - players, PST_LIVE, "P_SpawnPlayer_mobj");
 	p->refire = 0;
 	p->damagecount = 0;
 	p->bonuscount = 0;

@@ -32,6 +32,7 @@
 #include "s_sound.h"
 #include "doomstat.h"
 #include "p_pspr.h"
+#include "common/engine/debugtrace.h"
 
 #include "g_level.h"
 #include "d_player.h"
@@ -278,7 +279,12 @@ void P_SetPsprite(player_t *player, PSPLayers id, FState *state, bool pending)
 {
 	if (player == nullptr) return;
 	auto psp = player->GetPSprite(id);
-	if (psp) psp->SetState(state, pending);
+	if (psp)
+	{
+		const char* stateName = state != nullptr ? FState::StaticGetStateName(state).GetChars() : "<null>";
+		DebugTrace::Debugf("playsim.psprite", "P_SetPsprite layer=%d state=%s player=%d", int(id), stateName, int(player - players));
+		psp->SetState(state, pending);
+	}
 }
 
 DEFINE_ACTION_FUNCTION(_PlayerInfo, SetPSprite)	// the underscore is needed to get past the name mangler which removes the first clas name character to match the class representation (needs to be fixed in a later commit)
@@ -596,6 +602,14 @@ void DPSprite::SetState(FState *newstate, bool pending)
 		newstate = State->GetNextState();
 	} while (!Tics); // An initial state of 0 could cycle through.
 
+	if (State != nullptr)
+	{
+		const char* stateName = FState::StaticGetStateName(State).GetChars();
+		int ownerNum = Owner != nullptr ? int(Owner - players) : -1;
+		DebugTrace::Debugf("playsim.psprite", "DPSprite::SetState final state=%s sprite=%d frame=%d tics=%d ID=%d owner=%d",
+			stateName, int(Sprite), int(Frame), int(Tics), int(ID), ownerNum);
+	}
+
 	return;
 }
 
@@ -619,11 +633,18 @@ DEFINE_ACTION_FUNCTION(DPSprite, SetState)
 
 void P_BringUpWeapon (player_t *player)
 {
+	const char* weapName = player->ReadyWeapon != nullptr ? player->ReadyWeapon->GetClass()->TypeName.GetChars() : "None";
+	const char* pendingWeapName = player->PendingWeapon != nullptr && player->PendingWeapon != WP_NOCHANGE ? player->PendingWeapon->GetClass()->TypeName.GetChars() : (player->PendingWeapon == WP_NOCHANGE ? "WP_NOCHANGE" : "None");
+	DebugTrace::Debugf("playsim.psprite", "P_BringUpWeapon ENTER player=%d ReadyWeapon=%s PendingWeapon=%s",
+		int(player - players), weapName, pendingWeapName);
+
 	IFVM(PlayerPawn, BringUpWeapon)
 	{
 		VMValue param = player->mo;
 		VMCall(func, &param, 1, nullptr, 0);
 	}
+
+	DebugTrace::Debugf("playsim.psprite", "P_BringUpWeapon EXIT player=%d", int(player - players));
 }
 
 //============================================================================
@@ -1299,6 +1320,11 @@ DEFINE_ACTION_FUNCTION(AActor, BulletSlope)
 
 void P_SetupPsprites(player_t *player, bool startweaponup)
 {
+	const char* readyName = player->ReadyWeapon != nullptr ? player->ReadyWeapon->GetClass()->TypeName.GetChars() : "None";
+	const char* pendingName = player->PendingWeapon != nullptr && player->PendingWeapon != WP_NOCHANGE ? player->PendingWeapon->GetClass()->TypeName.GetChars() : (player->PendingWeapon == WP_NOCHANGE ? "WP_NOCHANGE" : "None");
+	DebugTrace::Debugf("playsim.psprite", "P_SetupPsprites player=%d startweaponup=%d ReadyWeapon=%s PendingWeapon=%s",
+		int(player - players), startweaponup ? 1 : 0, readyName, pendingName);
+
 	// Remove all psprites
 	player->DestroyPSprites();
 

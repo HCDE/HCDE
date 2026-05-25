@@ -52,6 +52,7 @@
 #include "s_music.h"
 #include "model.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 
 EXTERN_CVAR(Bool, save_formatted)
 
@@ -893,7 +894,7 @@ void FLevelLocals::SpawnExtraPlayers()
 	{
 		if (PlayerInGame(i) && Players[i]->mo == NULL)
 		{
-			Players[i]->playerstate = PST_ENTER;
+			SET_PLAYER_STATE(Players[i], i, PST_ENTER, "G_SpawnDeadPlayers");
 			SpawnPlayer(&playerstarts[i], i, (flags2 & LEVEL2_PRERAISEWEAPON) ? SPF_WEAPONFULLYUP : 0);
 		}
 	}

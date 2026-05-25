@@ -3012,6 +3012,7 @@ struct PlayerInfo native play	// self is what internally is known as player_t
 	native ui EFullbrightMode GetFullbrightMode() const;
 
 	native clearscope int GetAverageLatency() const;
+	native clearscope int GetLeadTics() const;
 
 	native clearscope static PlayerInfo GetNextPlayer(PlayerInfo p, bool noBots = false);
 	native clearscope static int GetNextPlayerNumber(int pNum, bool noBots = false);

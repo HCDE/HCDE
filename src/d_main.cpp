@@ -57,6 +57,7 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "options.h"
 #include "decallib.h"
@@ -1491,7 +1492,7 @@ void D_ErrorCleanup (const char* reason = nullptr)
 	if (consoleplayer != -1)
 	{
 		playeringame[0] = 1;
-		players[0].playerstate = PST_LIVE;
+		SET_PLAYER_STATE(&players[0], 0, PST_LIVE, "D_QuitNetGame_fallback");
 	}
 	gameaction = ga_fullconsole;
 	if (gamestate == GS_DEMOSCREEN)
@@ -1806,7 +1807,7 @@ void D_DoAdvanceDemo (void)
 		return;
 	}
 
-	players[consoleplayer].playerstate = PST_LIVE;	// not reborn
+	SET_PLAYER_STATE(&players[consoleplayer], consoleplayer, PST_LIVE, "Title_screen_start");
 	usergame = false;				// no save / end game here
 	paused = 0;
 

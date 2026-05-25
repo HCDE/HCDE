@@ -42,6 +42,7 @@
 #include "b_bot.h"	//Added by MC:
 
 #include "d_player.h"
+#include "playsim/playerstate_trace.h"
 #include "gi.h"
 #include "sbar.h"
 #include "d_net.h"
@@ -647,7 +648,7 @@ void AActor::Die (AActor *source, AActor *inflictor, int dmgflags, FName MeansOf
 		}
 
 		flags &= ~MF_SOLID;
-		player->playerstate = PST_DEAD;
+		SET_PLAYER_STATE(player, player - players, PST_DEAD, "P_DamageMobj_died");
 
 		IFVM(PlayerPawn, DropWeapon)
 		{

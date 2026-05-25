@@ -159,10 +159,19 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 
 ### `sv_invasioncountdowntime`
 
-- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown).
+- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown). Positive values below 10 seconds are raised to a stable 10-second effective floor during invasion.
 - Source default: `30.0f`
 - Valid range/shape: `>= 0`
 - Source: `src/d_net.cpp:9538`
+- Present in runtime snapshot: No (not in this runtime snapshot)
+- Runtime snapshot value: `n/a`
+
+### `sv_invasiondebug`
+
+- Description: Invasion-specific debugger level. 0 is off, 1 prints important state/spawn/result events, 2 adds timing safety warnings, 3 is reserved for noisy phase tracing.
+- Source default: `0`
+- Valid range/shape: `0..3`
+- Source: `src/d_net.cpp`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -199,6 +208,15 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Source default: `8.0f`
 - Valid range/shape: `>= 0`
 - Source: `src/d_net.cpp:9561`
+- Present in runtime snapshot: No (not in this runtime snapshot)
+- Runtime snapshot value: `n/a`
+
+### `sv_invasionexitonvictory`
+
+- Description: If enabled, final invasion victory exits the current map after `sv_invasionresulttime`.
+- Source default: `true`
+- Valid range/shape: `bool`
+- Source: `src/d_net.cpp`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -294,16 +312,16 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 
 ### `sv_invasionwaves`
 
-- Description: Maximum number of invasion waves in a run.
+- Description: Maximum number of invasion waves in a run. Valid range is 1..3000.
 - Source default: `8`
-- Valid range/shape: `1..255`
+- Valid range/shape: `1..3000`
 - Source: `src/d_net.cpp:9566`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `sv_usemapsettingswavelimit`
 
-- Description: If enabled, map-defined invasion wavelimit metadata overrides sv_invasionwaves when present.
+- Description: If enabled, map-defined invasion wavelimit metadata overrides `sv_invasionwaves` when present. An explicit multiplayer `wavelimit` value still wins over map metadata.
 - Source default: `true`
 - Valid range/shape: `bool`
 - Source: `src/d_net.cpp:9587`
@@ -312,9 +330,9 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 
 ### `wavelimit`
 
-- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..255 forces that wave count.
+- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..3000 forces that wave count and overrides map metadata in multiplayer.
 - Source default: `0`
-- Valid range/shape: `0..255`
+- Valid range/shape: `0..3000`
 - Source: `src/d_net.cpp:9573`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
@@ -10117,13 +10135,25 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 ### `sv_invasioncountdowntime`
 
-- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown).
+- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown). Positive values below 10 seconds are raised to a stable 10-second effective floor during invasion.
 - Type: `Float`
 - Source default: `30.0f`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
 - Source: `src/d_net.cpp:9538`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `sv_invasiondebug`
+
+- Description: Invasion-specific debugger level. 0 is off, 1 prints important state/spawn/result events, 2 adds timing safety warnings, 3 is reserved for noisy phase tracing.
+- Type: `Int`
+- Source default: `0`
+- Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10172,6 +10202,18 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
 - Source: `src/d_net.cpp:9561`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `sv_invasionexitonvictory`
+
+- Description: If enabled, final invasion victory exits the current map after `sv_invasionresulttime`.
+- Type: `Bool`
+- Source default: `true`
+- Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10873,7 +10915,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 ### `sv_usemapsettingswavelimit`
 
-- Description: If enabled, map-defined invasion wavelimit metadata overrides sv_invasionwaves when present.
+- Description: If enabled, map-defined invasion wavelimit metadata overrides `sv_invasionwaves` when present. An explicit multiplayer `wavelimit` value still wins over map metadata.
 - Type: `Bool`
 - Source default: `true`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
@@ -12145,7 +12187,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 ### `wavelimit`
 
-- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..255 forces that wave count.
+- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..3000 forces that wave count and overrides map metadata in multiplayer.
 - Type: `Int`
 - Source default: `0`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`

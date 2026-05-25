@@ -228,6 +228,20 @@ DEFINE_ACTION_FUNCTION(_PlayerInfo, GetAverageLatency)
 	ACTION_RETURN_INT(ClientStates[self - players].AverageLatency);
 }
 
+DEFINE_ACTION_FUNCTION(_PlayerInfo, GetLeadTics)
+{
+	PARAM_SELF_STRUCT_PROLOGUE(player_t);
+	const int playerNum = int(self - players);
+	if (playerNum == consoleplayer)
+	{
+		ACTION_RETURN_INT(max<int>((ClientTic - gametic) / TicDup, 0));
+	}
+	else
+	{
+		ACTION_RETURN_INT(max<int>(ClientStates[playerNum].CurrentSequence - (gametic / TicDup), 0));
+	}
+}
+
 // Find out which teams are present. If there is only one,
 // then another team should be chosen at random.
 //

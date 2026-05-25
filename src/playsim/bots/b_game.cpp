@@ -64,6 +64,7 @@ Everything that is changed is marked (maybe commented) with "Added by MC"
 #include "b_bot.h"
 #include "cmdlib.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "d_player.h"
 #include "doomstat.h"
@@ -372,7 +373,7 @@ bool FCajunMaster::DoAddBot (FLevelLocals *Level, TArrayView<uint8_t> info, bots
 	players[bnum].Bot->skill = skill;
 	playeringame[bnum] = true;
 	players[bnum].mo = NULL;
-	players[bnum].playerstate = PST_ENTER;
+	SET_PLAYER_STATE(&players[bnum], bnum, PST_ENTER, "B_AddBot");
 
 	if (teamplay)
 		Printf ("%s joined the %s team\n", players[bnum].userinfo.GetName(), Teams[players[bnum].userinfo.GetTeam()].GetName());

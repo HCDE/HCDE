@@ -37,6 +37,7 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "d_protocol.h"
 #include "dobjgc.h"
@@ -1622,7 +1623,7 @@ void FLevelLocals::PlayerReborn (int player)
 
 	p->oldbuttons = ~0, p->attackdown = true; p->usedown = true; // don't do anything immediately
 	p->original_oldbuttons = ~0;
-	p->playerstate = PST_LIVE;
+	SET_PLAYER_STATE(p, p - players, PST_LIVE, "G_SpawnPlayer");
 	NetworkEntityManager::SetClientNetworkEntity(p->mo, p - players);
 
 	if (gamestate != GS_TITLELEVEL)
@@ -1998,7 +1999,7 @@ void FLevelLocals::DoReborn (int playernum, bool force)
 		// Check if the player should be allowed to actually respawn first.
 		if (!force && players[playernum].playerstate == PST_REBORN && !localEventManager->PlayerRespawning(playernum))
 		{
-			players[playernum].playerstate = PST_DEAD;
+			SET_PLAYER_STATE(&players[playernum], playernum, PST_DEAD, "G_DoReborn_respawn_denied");
 			return;
 		}
 

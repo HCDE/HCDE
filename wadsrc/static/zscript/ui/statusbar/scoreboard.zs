@@ -212,10 +212,13 @@ extend class BaseStatusBar
 		String nameHeader = StringTable.Localize("$SCORE_NAME");
 
 		String scoreHeader = StringTable.Localize(deathmatch ? "$SCORE_FRAGS" : "$SCORE_KILLS");
-		int scoreOfs = int(scoreboardWidth * 0.6);
+		int scoreOfs = int(scoreboardWidth * 0.55);
 
-		String latencyHeader = StringTable.Localize("$SCORE_DELAY");
-		int latencyOfs = int(scoreboardWidth * 0.8);
+		String leadHeader = "Lead";
+		int leadOfs = int(scoreboardWidth * 0.72);
+
+		String pingHeader = "Ping";
+		int pingOfs = int(scoreboardWidth * 0.86);
 
 		// Start drawing.
 		int x = (Screen.GetWidth() - scoreboardWidth) / 2;
@@ -223,14 +226,16 @@ extend class BaseStatusBar
 
 		Color borderCol = Color(144, 144, 144);
 		DrawScoreboardText(ScoreboardFont, col, x + scoreOfs / 2, y, nameHeader, -0.5, -1.0);
-		DrawScoreboardText(ScoreboardFont, col, x + scoreOfs + (latencyOfs - scoreOfs) / 2, y, scoreHeader, -0.5, -1.0);
-		DrawScoreboardText(ScoreboardFont, col, x + latencyOfs + (scoreboardWidth - latencyOfs) / 2, y, latencyHeader, -0.5, -1.0);
+		DrawScoreboardText(ScoreboardFont, col, x + scoreOfs + (leadOfs - scoreOfs) / 2, y, scoreHeader, -0.5, -1.0);
+		DrawScoreboardText(ScoreboardFont, col, x + leadOfs + (pingOfs - leadOfs) / 2, y, leadHeader, -0.5, -1.0);
+		DrawScoreboardText(ScoreboardFont, col, x + pingOfs + (scoreboardWidth - pingOfs) / 2, y, pingHeader, -0.5, -1.0);
 		Screen.DrawThickLine(x, y, x + scoreboardWidth, y, CleanXFac_1, borderCol);
 
 		int top = y - ScoreboardFont.GetHeight() * CleanYFac_1;
 		int bottom = y + rowHeight * Min(sortedPlayers.Size(), MAX_SCOREBOARD_ROWS);
 		Screen.DrawThickLine(x + scoreOfs, top, x + scoreOfs, bottom, CleanYFac_1, borderCol);
-		Screen.DrawThickLine(x + latencyOfs, top, x + latencyOfs, bottom, CleanYFac_1, borderCol);
+		Screen.DrawThickLine(x + leadOfs, top, x + leadOfs, bottom, CleanYFac_1, borderCol);
+		Screen.DrawThickLine(x + pingOfs, top, x + pingOfs, bottom, CleanYFac_1, borderCol);
 
 		int curRow = 1;
 		int colBoxSize = 6 * CleanXFac_1;
@@ -273,7 +278,10 @@ extend class BaseStatusBar
 				DrawScoreboardImage(player.Mo.ScoreIcon, x - xPadding - iconWidth / 2, y);
 
 			text = String.Format("%d", deathmatch ? player.FragCount : player.KillCount);
-			DrawScoreboardText(ScoreboardFont, Font.CR_WHITE, x + latencyOfs - xPadding, y, text, -1.0, -0.5);
+			DrawScoreboardText(ScoreboardFont, Font.CR_WHITE, x + leadOfs - xPadding, y, text, -1.0, -0.5);
+
+			text = String.Format("%d", player.GetLeadTics());
+			DrawScoreboardText(ScoreboardFont, Font.CR_WHITE, x + pingOfs - xPadding, y, text, -1.0, -0.5);
 
 			text = String.Format("%dms", player.GetAverageLatency());
 			DrawScoreboardText(ScoreboardFont, Font.CR_WHITE, x + scoreboardWidth - xPadding, y, text, -1.0, -0.5);
