@@ -25,7 +25,6 @@
 
 #include "c_cvars.h"
 #include "i_net.h"
-#include "i_soundinternal.h"
 #include "debugtrace.h"
 #include "printf.h"
 
@@ -86,7 +85,6 @@
 #include "hwrenderer/scene/hw_drawinfo.h"
 #include "i_interface.h"
 #include "i_sound.h"
-#include "i_soundinternal.h"
 #include "i_system.h"
 #include "i_time.h"
 #include "i_video.h"
@@ -1090,11 +1088,66 @@ static void DrawRateStuff()
 	}
 }
 
+static void DrawHCDELagHUD()
+{
+	if (!Net_ShouldDrawLagHUD())
+		return;
+
+	FHCDELagHUDMetrics metrics = {};
+	Net_GetLagHUDMetrics(metrics);
+
+	const int textScale = active_con_scale(twod);
+	int y = NewConsoleFont->GetHeight() + 2;
+	const int lineH = NewConsoleFont->GetHeight() + 1;
+	int color = CR_GREEN;
+	if (metrics.TicGateStalled || metrics.CommandBacklog > TICRATE)
+		color = CR_RED;
+	else if (metrics.CommandBacklog > TicDup * 2)
+		color = CR_GOLD;
+
+	auto drawLine = [&](const char* text, int col)
+	{
+		ClearRect(twod, 0, y * textScale, screen->GetWidth(), lineH * textScale, GPalette.BlackIndex, 0);
+		DrawText(twod, NewConsoleFont, col, 0, y, text,
+			DTA_VirtualWidth, screen->GetWidth() / textScale,
+			DTA_VirtualHeight, screen->GetHeight() / textScale,
+			DTA_KeepRatio, true, TAG_DONE);
+		y += lineH;
+	};
+
+	char line[256];
+	mysnprintf(line, countof(line), "HCDE lag: %s | backlog %d | avail %d run %d stale %d%s",
+		metrics.LagState, metrics.CommandBacklog, metrics.AvailableTics, metrics.RunTics, metrics.SimStaleTics,
+		metrics.TicGateStalled ? " STALL" : "");
+	drawLine(line, color);
+
+	if (metrics.InvasionState != nullptr && strcmp(metrics.InvasionState, "disabled") == 0)
+	{
+		mysnprintf(line, countof(line), "invasion: idle (disabled = not started yet)");
+	}
+	else
+	{
+		mysnprintf(line, countof(line), "invasion: %s wave %d",
+			metrics.InvasionState != nullptr ? metrics.InvasionState : "?",
+			metrics.InvasionWave);
+	}
+	drawLine(line, CR_WHITE);
+
+	mysnprintf(line, countof(line), "mirrors %d | pending spawn/event %d/%d | world steps %d",
+		metrics.TrackedMirrors, metrics.PendingSpawns, metrics.PendingEvents, metrics.WorldSteps);
+	drawLine(line, CR_WHITE);
+
+	mysnprintf(line, countof(line), "perf mirror %.2f/%.2f ms | world %.2f/%.2f ms",
+		metrics.LastMirrorMS, metrics.AvgMirrorMS, metrics.AvgWorldMS, metrics.MaxWorldMS);
+	drawLine(line, CR_WHITE);
+}
+
 static void DrawOverlays()
 {
 	C_DrawConsole ();
 	M_Drawer ();
 	DrawRateStuff();
+	DrawHCDELagHUD();
 	if (!hud_toggled)
 		FStat::PrintStat (twod);
 }
@@ -3810,7 +3863,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 		StartWindow = new FStartupScreen(0);
 	}
 
-	if (!nostartscreen)
+	if (!nostartscreen && !dedicatedserver)
 	{
 		// HCDE shows the visible loader before resource-heavy startup so
 		// progress, ETA, and early mod failures are visible to the user.

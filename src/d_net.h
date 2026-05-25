@@ -144,6 +144,8 @@ struct FClientNetState
 	int CurrentNetConsistency = -1;				// Last consistency we got from this client.
 	int16_t NetConsistency[BACKUPTICS] = {};	// Consistencies we got from this client.
 	int16_t LocalConsistency[BACKUPTICS] = {};	// Local consistency of the client to check against.
+	uint32_t MalformedPacketStrikes = 0u;		// Recent malformed gameplay packets observed from this client.
+	uint64_t MalformedWindowStartMS = 0u;		// Start time for strike coalescing.
 };
 
 // Create any new ticcmds and broadcast to other players.
@@ -209,6 +211,37 @@ double Net_ModifyObjectFrac(DObject* obj, double ticFrac);
 double Net_ModifyParticleFrac(particle_t* part, double ticFrac);
 const char* Net_GetClientName(int client, unsigned int charLimit = 0u);
 void Net_GetKickableClientList(TArray<int>& clients, TArray<FString>& labels);
+
+struct FHCDELagHUDMetrics
+{
+	int Gametic = 0;
+	int ClientTic = 0;
+	int CommandBacklog = 0;
+	int AvailableTics = 0;
+	int RunTics = 0;
+	int TotalTics = 0;
+	int WorldSteps = 0;
+	int StabilityBuffer = 0;
+	int SimStaleTics = 0;
+	bool TicGateStalled = false;
+	bool DedicatedClient = false;
+	bool InvasionAuthority = false;
+	const char* LagState = "none";
+	const char* InvasionState = "disabled";
+	int InvasionWave = 0;
+	int TrackedMirrors = 0;
+	int PendingSpawns = 0;
+	int PendingEvents = 0;
+	double LastMirrorMS = 0.0;
+	double AvgMirrorMS = 0.0;
+	double MaxMirrorMS = 0.0;
+	double AvgWorldMS = 0.0;
+	double MaxWorldMS = 0.0;
+};
+
+void Net_GetLagHUDMetrics(FHCDELagHUDMetrics& out);
+bool Net_ShouldDrawLagHUD();
+void Net_DrawLagHUD(F2DDrawer* drawer);
 
 // Netgame stuff (buffers and pointers, i.e. indices).
 

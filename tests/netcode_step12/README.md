@@ -27,6 +27,10 @@ Script:
 12. Query-health floor checks with `--min-queries`.
 13. Optional migration health checks with `--require-migration` and
    migration threshold flags.
+14. Optional native live gameplay checks with `--require-native-live`, which
+   parses final `net_profile` output and fails on missing native `HCIN`/`HCSN`
+   traffic, encode failures, capability rejects, replay storms, or legacy
+   gameplay rejects.
 
 ## Usage
 
@@ -57,6 +61,20 @@ python C:\Users\user\DoomConnector6\HCDE\tests\netcode_step12\netcode_step12_str
   --cases invasion coop dm `
   --client-count 2 `
   --duration 60
+```
+
+Run a native gameplay cutover smoke:
+
+```powershell
+python C:\Users\user\DoomConnector6\HCDE\tests\netcode_step12\netcode_step12_stress.py `
+  --server C:\Users\user\DoomConnector6\HCDE\build\Debug\hcdeserv.exe `
+  --client C:\Users\user\DoomConnector6\HCDE\build\Debug\hcde.exe `
+  --iwad C:\Games\DOOM2.WAD `
+  --cases coop `
+  --client-count 1 `
+  --duration 20 `
+  --require-native-live `
+  --summary-dir C:\Users\user\DoomConnector6\HCDE\traces\step12-native
 ```
 
 Run against a heavy mod or projectile torture map:
@@ -102,6 +120,29 @@ python C:\Users\user\DoomConnector6\HCDE\tests\netcode_step12\netcode_step12_str
 
 Available pressure presets are `custom`, `smoke`, `broad`, `heavy-invasion`,
 `projectile-storm`, and `competitive-highping`.
+
+### Step F6 runtime soak helpers
+
+`netcode_step12_stress.py` relies on `hcde.exe +wait <tics> +quit` to keep
+synthetic clients alive. On release builds we have observed `+wait` quitting at
+clienttic=17 (before the live capability handshake completes), which makes
+`--require-native-live` look like a netcode failure. For Step F6 runtime
+validation, two simpler drivers in this folder bypass `+wait` entirely and
+keep clients alive via process lifetime:
+
+- `f6_runtime_soak.py` -- single-server, N-client soak with explicit
+  `--duration`, optional `--server-cvar`/`--periodic-server-command` (used for
+  `net_extratic`, `net_ticbalance`, periodic `net_stressreport`, etc.). Writes
+  `server.log`, `client_*.log`, and `summary.json` under
+  `--trace-dir/<label>_<ts>_<rand>/`.
+- `f6_disconnect_probe.py` -- three-phase probe (steady, abrupt SIGKILL of one
+  client, late-join of another) used to confirm the native pipeline survives an
+  ungraceful drop and a reconnect without escalating replay storms or leaking
+  legacy NCMD.
+
+Both drivers parse the server's final `net_profile` and emit a JSON summary,
+which is the source of the Step F6 numbers in
+`docs/HCDE_NETCODE_OVERHAUL.md`.
 
 ## Reading Results
 
@@ -149,3 +190,14 @@ migration thresholds are used).
 - `--min-migration-considered N`: fail if migration considered count is below `N`.
 - `--min-migration-touched N`: fail if migration touched/registered count is below `N`.
 - `--min-migration-source-invasion|coop|dm N`: fail if per-mode migration source count is below `N`.
+- `--require-native-live`: after the final `net_stressreport`, run `net_profile`
+  and require native live gameplay counters to prove the cutover path is healthy.
+  This requires `--client-count >= 1` and a valid `--client`.
+- `--min-native-client-input-applied N` (default `1`): minimum server-side
+  `client-input native-apply` count required by `--require-native-live`.
+- `--min-native-server-snapshot-built N` (default `1`): minimum server-side
+  `snapshots native-built` count required by `--require-native-live`.
+- `--max-native-replay-requests N` (default `0`): maximum accepted final
+  `replay-req` counter.
+- `--max-native-legacy-rejects N` (default `0`): maximum accepted final
+  `legacy-gameplay-reject` counter.

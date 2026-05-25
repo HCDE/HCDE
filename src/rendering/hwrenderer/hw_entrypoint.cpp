@@ -58,10 +58,6 @@ EXTERN_CVAR(Int, hcde_shadow_autobudget_step)
 // them as shadowmapped during link-time heuristics.
 CVAR(Bool, hcde_shadow_forcealllights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
-// Optional diagnostics for shadowmap gating. Keep disabled by default to avoid
-// per-frame console noise.
-CVAR(Bool, hcde_shadow_debuggate, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
-
 extern bool NoInterpolateView;
 
 static SWSceneDrawer *swdrawer;
@@ -427,55 +423,12 @@ sector_t* RenderViewpoint(FRenderViewpoint& mainvp, AActor* camera, IntRect* bou
 			CollectLights(camera->Level, viewPos, viewPortalGroup);
 		});
 		screen->UpdateShadowMap();
-
-		// Optional one-line diagnostics while the shadowmap pass is active.
-		// Useful for validating candidate selection and per-light quality gating.
-		if (hcde_shadow_debuggate && mainview && toscreen && camera != nullptr && camera->Level != nullptr)
-		{
-			static uint64_t nextActiveLogMs = 0;
-			const uint64_t nowMs = I_msTime();
-			if (nowMs >= nextActiveLogMs)
-			{
-				nextActiveLogMs = nowMs + 1500;
-				Printf("HCDE shadow active: quality=%d processed=%d eligible=%d shadowmapped=%d dropped=%d rows=%d cap=%d/%d adaptive=%s\n",
-					int(gl_shadowmap_quality),
-					IShadowMap::LightsProcessed,
-					IShadowMap::LightsEligible,
-					IShadowMap::LightsShadowmapped,
-					IShadowMap::LightsBudgetedOut,
-					IShadowMap::LightRowsUpdated,
-					IShadowMap::BudgetRuntimeCap,
-					IShadowMap::BudgetHardCap,
-					IShadowMap::BudgetAdaptiveEnabled ? "on" : "off");
-				Printf("HCDE shadow gate detail: quality_gated=%d\n",
-					gShadowLightsGatedByQuality);
-			}
-		}
 	}
 	else
 	{
 		// null all references to the level if we do not need a shadowmap. This will shortcut all internal calculations without further checks.
 		screen->SetAABBTree(nullptr);
 		screen->mShadowMap.SetCollectLights(nullptr);
-
-		// Optional one-line diagnostics that explain exactly why the shadow pass
-		// was skipped in a playable scene.
-		if (hcde_shadow_debuggate && mainview && toscreen && camera != nullptr && camera->Level != nullptr)
-		{
-			static uint64_t nextGateLogMs = 0;
-			const uint64_t nowMs = I_msTime();
-			if (nowMs >= nextGateLogMs)
-			{
-				nextGateLogMs = nowMs + 1500;
-				Printf("HCDE shadow gate: enabled=%d mapNoShadow=%d lightsFlag=%d lightsList=%d ssbo=%d hwcap=%d\n",
-					gl_light_shadowmap ? 1 : 0,
-					mapDisablesShadowmaps ? 1 : 0,
-					camera->Level->HasDynamicLights ? 1 : 0,
-					camera->Level->lights != nullptr ? 1 : 0,
-					screen->allowSSBO() ? 1 : 0,
-					(screen->hwcaps & RFL_SHADER_STORAGE_BUFFER) ? 1 : 0);
-			}
-		}
 	}
 
 	screen->SetLevelMesh(camera->Level->levelMesh);

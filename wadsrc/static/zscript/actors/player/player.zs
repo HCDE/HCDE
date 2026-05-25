@@ -799,10 +799,12 @@ class PlayerPawn : Actor
 			}
 		}
 
-		if ((player.cmd.buttons & BT_USE ||
+		// Accept use or fire (many players expect the attack key; classic Doom used use/space).
+		uint wantRespawnButtons = BT_USE | BT_ATTACK | BT_ALTATTACK;
+		if (((player.cmd.buttons & wantRespawnButtons) != 0 ||
 			((deathmatch || alwaysapplydmflags) && sv_forcerespawn)) && !sv_norespawn)
 		{
-			if (Level.maptime >= player.respawn_time || ((player.cmd.buttons & BT_USE) && player.Bot == NULL))
+			if (Level.maptime >= player.respawn_time || (((player.cmd.buttons & wantRespawnButtons) != 0) && player.Bot == NULL))
 			{
 				player.cls = NULL;		// Force a new class if the player is using a random class
 				player.playerstate = (multiplayer || level.AllowRespawn || sv_singleplayerrespawn || G_SkillPropertyInt(SKILLP_PlayerRespawn)) ? PST_REBORN : PST_ENTER;
@@ -1094,33 +1096,42 @@ class PlayerPawn : Actor
 	virtual bool CheckFrozen()
 	{
 		let player = self.player;
-		UserCmd cmd = player.cmd;
 		bool totallyfrozen = player.IsTotallyFrozen();
 
 		// [RH] Being totally frozen zeros out most input parameters.
+		// Apply to player.cmd directly so netplay / prediction see the same masked input.
 		if (totallyfrozen)
 		{
 			if (gamestate == GS_TITLELEVEL)
 			{
-				cmd.buttons = 0;
+				player.cmd.buttons = 0;
 			}
 			else
 			{
-				cmd.buttons &= BT_USE;
+				// Dead: allow use + fire keys to signal coop respawn (see DeathThink).
+				// Other totally-frozen states only keep BT_USE like classic ZDoom.
+				if (player.playerstate == PST_DEAD)
+				{
+					player.cmd.buttons &= BT_USE | BT_ATTACK | BT_ALTATTACK;
+				}
+				else
+				{
+					player.cmd.buttons &= BT_USE;
+				}
 			}
-			cmd.pitch = 0;
-			cmd.yaw = 0;
-			cmd.roll = 0;
-			cmd.forwardmove = 0;
-			cmd.sidemove = 0;
-			cmd.upmove = 0;
+			player.cmd.pitch = 0;
+			player.cmd.yaw = 0;
+			player.cmd.roll = 0;
+			player.cmd.forwardmove = 0;
+			player.cmd.sidemove = 0;
+			player.cmd.upmove = 0;
 			player.turnticks = 0;
 		}
 		else if (player.cheats & CF_FROZEN)
 		{
-			cmd.forwardmove = 0;
-			cmd.sidemove = 0;
-			cmd.upmove = 0;
+			player.cmd.forwardmove = 0;
+			player.cmd.sidemove = 0;
+			player.cmd.upmove = 0;
 		}
 		return totallyfrozen;
 	}
@@ -1179,11 +1190,10 @@ class PlayerPawn : Actor
 	virtual void CheckCrouch(bool totallyfrozen)
 	{
 		let player = self.player;
-		UserCmd cmd = player.cmd;
 
-		if (cmd.buttons & BT_JUMP)
+		if (player.cmd.buttons & BT_JUMP)
 		{
-			cmd.buttons &= ~BT_CROUCH;
+			player.cmd.buttons &= ~BT_CROUCH;
 		}
 		if (CanCrouch() && player.health > 0 && level.IsCrouchingAllowed())
 		{
@@ -1193,9 +1203,9 @@ class PlayerPawn : Actor
 
 				if (crouchdir == 0)
 				{
-					crouchdir = (cmd.buttons & BT_CROUCH) ? -1 : 1;
+					crouchdir = (player.cmd.buttons & BT_CROUCH) ? -1 : 1;
 				}
-				else if (cmd.buttons & BT_CROUCH)
+				else if (player.cmd.buttons & BT_CROUCH)
 				{
 					player.crouching = 0;
 				}
@@ -1515,22 +1525,21 @@ class PlayerPawn : Actor
 	virtual void CheckMoveUpDown()
 	{
 		let player = self.player;
-		UserCmd cmd = player.cmd;
 
-		if (cmd.upmove == -32768)
+		if (player.cmd.upmove == -32768)
 		{ // Only land if in the air
 			if (bNoGravity && waterlevel < 2)
 			{
 				bNoGravity = false;
 			}
 		}
-		else if (cmd.upmove != 0)
+		else if (player.cmd.upmove != 0)
 		{
 			// Clamp the speed to some reasonable maximum.
-			cmd.upmove = clamp(cmd.upmove, -0x300, 0x300);
+			player.cmd.upmove = clamp(player.cmd.upmove, -0x300, 0x300);
 			if (waterlevel >= 2 ||  bFly || (player.cheats & CF_NOCLIP2))
 			{
-				Vel.Z = Speed * cmd.upmove / 128.;
+				Vel.Z = Speed * player.cmd.upmove / 128.;
 				if (waterlevel < 2 && !bNoGravity)
 				{
 					bFly = true;
@@ -1541,7 +1550,7 @@ class PlayerPawn : Actor
 					}
 				}
 			}
-			else if (cmd.upmove > 0 && !(player.cheats & CF_PREDICTING))
+			else if (player.cmd.upmove > 0 && !(player.cheats & CF_PREDICTING))
 			{
 				let fly = FindInventory("ArtiFly");
 				if (fly != NULL)
@@ -1680,7 +1689,6 @@ class PlayerPawn : Actor
 	virtual void PlayerThink()
 	{
 		let player = self.player;
-		UserCmd cmd = player.cmd;
 
 		// [RL0] Mark players that became zombies (this stays even if they 'revive' by healing, until a level change)
 		if((Level.compatflags2 & COMPATF2_VOODOO_ZOMBIES) && player.health <= 0 && player.mo.health > 0)
@@ -1694,9 +1702,10 @@ class PlayerPawn : Actor
 
 		if (bJustAttacked)
 		{ // Chainsaw/Gauntlets attack auto forward motion
-			cmd.yaw = 0;
-			cmd.forwardmove = 0xc800/2;
-			cmd.sidemove = 0;
+			// Write into player.cmd: UserCmd locals are snapshots; mutating a copy won't reach netcmds.
+			player.cmd.yaw = 0;
+			player.cmd.forwardmove = 0xc800/2;
+			player.cmd.sidemove = 0;
 			bJustAttacked = false;
 		}
 

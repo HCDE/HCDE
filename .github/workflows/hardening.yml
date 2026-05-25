@@ -1,0 +1,161 @@
+name: Hardening Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  sanitizer-build:
+    name: Sanitizer Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang-19 \
+            cmake \
+            jq \
+            libbz2-dev \
+            libopenal-dev \
+            libomp-dev \
+            libvpx-dev \
+            libwebp-dev \
+            ninja-build \
+            p7zip-full \
+            pkg-config \
+            cppcheck \
+            clang-tools-19 \
+            libsdl2-dev \
+            waylandpp-dev
+
+      - name: Configure
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cmake -S . -B build-sanitizer -G Ninja \
+            -DNO_GTK=ON \
+            -DDYN_GTK=OFF \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_FLAGS_DEBUG="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" \
+            -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" \
+            -DCMAKE_EXE_LINKER_FLAGS_DEBUG="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS_DEBUG="-fsanitize=address,undefined"
+
+      - name: Build
+        run: |
+          cmake --build build-sanitizer --target zdoom hcdeserv --parallel 2
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang-19 \
+            clang-tools-19 \
+            cmake \
+            cppcheck \
+            jq \
+            libbz2-dev \
+            libopenal-dev \
+            libomp-dev \
+            libvpx-dev \
+            libwebp-dev \
+            ninja-build \
+            p7zip-full \
+            pkg-config \
+            libsdl2-dev \
+            waylandpp-dev
+
+      - name: Configure
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cmake -S . -B build-analysis -G Ninja \
+            -DNO_GTK=ON \
+            -DDYN_GTK=OFF \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19
+
+      - name: Build
+        run: |
+          cmake --build build-analysis --target zdoom hcdeserv --parallel 2
+
+      - name: Cppcheck
+        run: |
+          cppcheck \
+            --project=build-analysis/compile_commands.json \
+            --enable=warning,performance,portability,style \
+            --inline-suppr \
+            --suppress=missingIncludeSystem \
+            --error-exitcode=1 \
+            --force \
+            --quiet
+
+      - name: Clang Tidy
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          build_dir = workspace / "build-analysis"
+          compile_db = json.loads((build_dir / "compile_commands.json").read_text())
+
+          files = []
+          for entry in compile_db:
+              file_path = pathlib.Path(entry["file"]).resolve()
+              try:
+                  rel = file_path.relative_to(workspace)
+              except ValueError:
+                  continue
+
+              if not rel.parts or rel.parts[0] not in {"src", "tools"}:
+                  continue
+
+              if file_path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx", ".m", ".mm"}:
+                  continue
+
+              files.append(str(file_path))
+
+          files = sorted(set(files))
+          print(f"clang-tidy translation units: {len(files)}")
+
+          header_filter = "^" + str(workspace).replace("\\", "/") + r"/(src|tools)/"
+          tidy_base = [
+              "clang-tidy-19",
+              "-p",
+              str(build_dir),
+              "--quiet",
+              f"--header-filter={header_filter}",
+              "--checks=clang-analyzer-*,bugprone-*,performance-*",
+              "--warnings-as-errors=*",
+          ]
+
+          for file_path in files:
+              print(f"clang-tidy: {file_path}")
+              result = subprocess.run(tidy_base + [file_path], cwd=workspace)
+              if result.returncode != 0:
+                  sys.exit(result.returncode)
+          PY

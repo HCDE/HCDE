@@ -4594,12 +4594,21 @@ void AActor::Tick ()
 
 		if (!Vel.isZero() || !(flags & MF_NOBLOCKMAP))
 		{
-			FLinkContext ctx;
-			UnlinkFromWorld(&ctx);
-			flags |= MF_NOBLOCKMAP;
-			SetXYZ(Vec3Offset(Vel));
-			CheckPortalTransition(false);
-			LinkToWorld(&ctx);
+			// HCDE invasion client mirrors must remain blockmap-linked so the
+			// local player's P_TryMove can collide with the server-replicated
+			// monster. The mirror's authoritative pose is driven via SetOrigin
+			// in Net_TickInvasionMirrorVisualActors, so we don't need the
+			// NOBLOCKMAP relink here.
+			const bool keepMirrorBlockmap = Net_IsInvasionClientMirrorBlockingActor(this);
+			if (!keepMirrorBlockmap)
+			{
+				FLinkContext ctx;
+				UnlinkFromWorld(&ctx);
+				flags |= MF_NOBLOCKMAP;
+				SetXYZ(Vec3Offset(Vel));
+				CheckPortalTransition(false);
+				LinkToWorld(&ctx);
+			}
 		}
 		flags8 &= ~MF8_INSCROLLSEC;
 	}

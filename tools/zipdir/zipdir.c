@@ -293,7 +293,8 @@ dir_tree_t *alloc_dir_tree(const char *dir)
 	tree = malloc(sizeof(dir_tree_t) + dirlen + 2);
 	if (tree != NULL)
 	{
-		strcpy(tree->path, dir);
+		memcpy(tree->path, dir, dirlen);
+		tree->path[dirlen] = '\0';
 		tree->path_size = dirlen;
 		if (dir[dirlen - 1] != '/')
 		{
@@ -317,11 +318,14 @@ file_entry_t *alloc_file_entry(const char *prefix, const char *path, time_t last
 {
 	file_entry_t *entry;
 
-	entry = malloc(sizeof(file_entry_t) + strlen(prefix) + strlen(path) + 1);
+	size_t plen = strlen(prefix);
+	size_t slen = strlen(path);
+	entry = malloc(sizeof(file_entry_t) + plen + slen + 1);
 	if (entry != NULL)
 	{
-		strcpy(entry->path, prefix);
-		strcat(entry->path, path);
+		memcpy(entry->path, prefix, plen);
+		memcpy(entry->path + plen, path, slen);
+		entry->path[plen + slen] = '\0';
 		entry->next = NULL;
 		entry->time_write = last_written;
 	}
@@ -380,14 +384,18 @@ void recurse_dir(dir_tree_t *tree, const char *dirpath)
 	intptr_t handle;
 	char *dirmatch;
 
-	dirmatch = malloc(strlen(dirpath) + 2);
-	if (dirmatch == NULL)
 	{
-		no_mem = 1;
-		return;
+		size_t dlen = strlen(dirpath);
+		dirmatch = malloc(dlen + 2);
+		if (dirmatch == NULL)
+		{
+			no_mem = 1;
+			return;
+		}
+		memcpy(dirmatch, dirpath, dlen);
+		dirmatch[dlen] = '*';
+		dirmatch[dlen + 1] = '\0';
 	}
-	strcpy(dirmatch, dirpath);
-	strcat(dirmatch, "*");
 	if ((handle = _findfirst(dirmatch, &fileinfo)) == -1)
 	{
 		fprintf(stderr, "Could not scan '%s': %s\n", dirpath, strerror(errno));
@@ -413,11 +421,22 @@ void recurse_dir(dir_tree_t *tree, const char *dirpath)
 					// Do not record . and .. directories.
 					continue;
 				}
-				newdir = malloc(strlen(dirpath) + strlen(fileinfo.name) + 2);
-				strcpy(newdir, dirpath);
-				strcat(newdir, fileinfo.name);
-				strcat(newdir, "/");
+				{
+					size_t dp = strlen(dirpath);
+					size_t np = strlen(fileinfo.name);
+					newdir = malloc(dp + np + 2);
+					if (newdir == NULL)
+					{
+						no_mem = 1;
+						continue;
+					}
+					memcpy(newdir, dirpath, dp);
+					memcpy(newdir + dp, fileinfo.name, np);
+					newdir[dp + np] = '/';
+					newdir[dp + np + 1] = '\0';
+				}
 				recurse_dir(tree, newdir);
+				free(newdir);
 			}
 			else
 			{
@@ -675,7 +694,7 @@ void write_zip(const char *zipname, dir_tree_t *trees, int update)
 	}
 	if (update)
 	{
-		sprintf(tempname, "%s.temp", zipname);
+		snprintf(tempname, sizeof(tempname), "%s.temp", zipname);
 		ozip = fopen(zipname, "rb");
 		if (ozip == NULL)
 		{
@@ -1101,7 +1120,7 @@ const char *method_name(int method)
 	{
 		return "BZip2";
 	}
-	sprintf(unkn, "Unk:%03d", method);
+	snprintf(unkn, sizeof(unkn), "Unk:%03d", method);
 	return unkn;
 }
 

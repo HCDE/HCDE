@@ -340,7 +340,9 @@ int DoMain (HINSTANCE hInstance)
 		x = y = 0;
 	}
 
-	bool createWindow = !Args->CheckParm(FArg_server) && !Args->CheckParm(FArg_norun);
+	// Dedicated server builds should still open their visible server window.
+	// Only explicit -norun should suppress the native window entirely.
+	bool createWindow = !Args->CheckParm(FArg_norun);
 	if (createWindow)
 	{
 		/* create window */

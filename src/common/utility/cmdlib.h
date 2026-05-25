@@ -71,6 +71,34 @@ extern	FString progdir;
 void	FixPathSeperator (char *path);
 static void	inline FixPathSeperator (FString &path) { path.ReplaceChars('\\', '/'); }
 
+// Returns true if the given path contains a `..` path segment (i.e. ".." at
+// the start, between slashes, or at the end of the string). Embedded ".." that
+// is part of a longer identifier (e.g. "save..bak") is allowed since it is
+// not a parent-directory traversal. Callers should run FixPathSeperator first
+// so backslashes are normalized to forward slashes.
+inline bool FName_HasParentDirSegment(const char* path)
+{
+	if (path == nullptr) return false;
+	const char* p = path;
+	while (*p != '\0')
+	{
+		// Find a candidate ".." sequence.
+		if (p[0] == '.' && p[1] == '.')
+		{
+			const bool leftBoundary  = (p == path) || p[-1] == '/' || p[-1] == '\\';
+			const char after = p[2];
+			const bool rightBoundary = after == '\0' || after == '/' || after == '\\';
+			if (leftBoundary && rightBoundary)
+				return true;
+			// not a parent-segment; skip past these two dots to avoid re-matching
+			p += 2;
+			continue;
+		}
+		++p;
+	}
+	return false;
+}
+
 void 	DefaultExtension (FString &path, const char *extension, bool forcebackslash = false);
 void NormalizeFileName(FString &str);
 

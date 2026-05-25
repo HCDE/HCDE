@@ -19,8 +19,8 @@
 
 extend class ScreenJobRunner
 {
-	protected native static void ReadyPlayer();
-	protected native static void ResetReadyTimer();
+	native static void ReadyPlayer();
+	native static void ResetReadyTimer();
 
 	native static int GetReadyTimer();
 	native static bool IsPlayerReady(int pNum);
@@ -32,10 +32,12 @@ extend class ScreenJobRunner
 			&& (evt.KeyScan == InputEvent.Key_Space || evt.KeyScan == InputEvent.Key_Mouse1
 				|| evt.KeyScan == InputEvent.Key_Pad_A || evt.KeyScan == InputEvent.Key_Joy1))
 		{
-			ReadyPlayer();
-			return true;
+			if (!IsPlayerReady(consoleplayer))
+				ReadyPlayer();
 		}
 
+		// Never consume: let the event flow through to the active screen
+		// job so it can also advance the visual intermission state.
 		return false;
 	}
 
@@ -148,7 +150,7 @@ class DoomCutscenes ui
 	//
 	//---------------------------------------------------------------------------
 
-	static void BuildMapTransition(ScreenJobRunner runner, IntermissionController inter, StatusScreen status)
+	static void BuildMapTransition(ScreenJobRunner runner, IntermissionController inter, ScreenJob status)
 	{
 		if (status)
 		{

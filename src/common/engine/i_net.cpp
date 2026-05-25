@@ -1949,6 +1949,19 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 
 	RemoteClient = client;
 	NetBufferLength = max<int>(msgSize, 0);
+	if (NetBufferLength > MAX_MSGLEN)
+	{
+		// Track silent truncation so soak/stress tools can see when peers
+		// are sending payloads beyond the configured ceiling. Without this
+		// telemetry, a misbehaving peer or buggy mod can flood the buffer
+		// and the only symptom is mysterious parse failures downstream.
+		++HCDEPregameServiceProfile.PacketOversized;
+		DebugTrace::Markf("net",
+			"clamped oversized packet from %s:%u length=%d max=%u client=%d",
+			inet_ntoa(fromAddress.sin_addr), unsigned(ntohs(fromAddress.sin_port)),
+			NetBufferLength, unsigned(MAX_MSGLEN), client);
+		NetBufferLength = MAX_MSGLEN;
+	}
 	if (from != nullptr)
 		*from = fromAddress;
 }
@@ -2477,7 +2490,7 @@ static void DriveRuntimeSetupStateForClient(int client, int connectedPlayers)
 
 void HandleIncomingConnection()
 {
-	if (!I_IsLocalHCDEServiceAuthority() || RemoteClient == -1)
+	if (!I_IsLocalHCDEServiceAuthority() || RemoteClient < 0 || RemoteClient >= MaxClients)
 		return;
 
 	auto& con = Connected[RemoteClient];
@@ -2689,6 +2702,8 @@ static bool Host_CheckForConnections(void* connected)
 		}
 		else if (NetBuffer[1] == PRE_USER_INFO)
 		{
+			if (RemoteClient < 0 || RemoteClient >= MaxClients)
+				continue;
 			if (Connected[RemoteClient].Status == CSTAT_CONNECTING)
 			{
 				if (NetBufferLength < 6u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host userinfo"))
@@ -2702,6 +2717,8 @@ static bool Host_CheckForConnections(void* connected)
 		}
 			else if (NetBuffer[1] == PRE_USER_INFO_ACK)
 			{
+				if (RemoteClient < 0 || RemoteClient >= MaxClients)
+					continue;
 				if (NetBufferLength < 7u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host userinfo ack"))
 					continue;
 
@@ -2716,6 +2733,8 @@ static bool Host_CheckForConnections(void* connected)
 			}
 		else if (NetBuffer[1] == PRE_GAME_INFO_ACK)
 		{
+			if (RemoteClient < 0 || RemoteClient >= MaxClients)
+				continue;
 			if (NetBufferLength < 6u || !CheckSessionToken(Connected[RemoteClient], ReadSessionToken(NetBuffer, 2u), "host gameinfo ack"))
 				continue;
 
@@ -2723,7 +2742,7 @@ static bool Host_CheckForConnections(void* connected)
 		}
 		else if (NetBuffer[1] == PRE_HCDE_SERVICE)
 		{
-			if (RemoteClient <= 0 || !Connected[RemoteClient].bHCDEConnect)
+			if (RemoteClient < 0 || RemoteClient >= MaxClients || !Connected[RemoteClient].bHCDEConnect)
 			{
 				DebugTrace::Markf("net", "ignored HCDE service packet from unnegotiated client %d", RemoteClient);
 				continue;

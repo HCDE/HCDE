@@ -261,6 +261,74 @@ def parse_stress_metrics(log_lines: list[str]) -> dict[str, object]:
     return metrics
 
 
+def parse_native_profile(log_lines: list[str]) -> dict[str, dict[str, object]]:
+    """Extract native live counters from the latest ``net_profile`` block."""
+    profile: dict[str, dict[str, object]] = {}
+    for line in log_lines:
+        stripped = line.strip()
+        if stripped.startswith("live:"):
+            profile["live"] = _parse_key_value_pairs(stripped.split(":", 1)[1])
+        elif stripped.startswith("client-input:"):
+            profile["client_input"] = _parse_key_value_pairs(stripped.split(":", 1)[1])
+        elif stripped.startswith("snapshots:"):
+            profile["snapshots"] = _parse_key_value_pairs(stripped.split(":", 1)[1])
+    return profile
+
+
+def _metric(metrics: dict[str, object], key: str, default: int = 0) -> int:
+    """Return an integer metric value from parsed profile/stress dictionaries."""
+    value = metrics.get(key, default)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def validate_native_profile(args: argparse.Namespace, case_name: str, profile: dict[str, dict[str, object]]) -> None:
+    """Fail the case if native HCDE live gameplay counters do not prove healthy traffic."""
+    live = profile.get("live")
+    client_input = profile.get("client_input")
+    snapshots = profile.get("snapshots")
+    if live is None or client_input is None or snapshots is None:
+        raise Step12Error(f"{case_name}: net_profile did not include live/client-input/snapshots blocks")
+
+    failures: list[str] = []
+    if _metric(live, "encode-fail") != 0:
+        failures.append(f"encode-fail={_metric(live, 'encode-fail')}")
+    if _metric(live, "cap-reject") != 0:
+        failures.append(f"cap-reject={_metric(live, 'cap-reject')}")
+    if _metric(live, "legacy-gameplay-reject") > args.max_native_legacy_rejects:
+        failures.append(
+            f"legacy-gameplay-reject={_metric(live, 'legacy-gameplay-reject')} "
+            f"(max {args.max_native_legacy_rejects})"
+        )
+    if _metric(live, "replay-req") > args.max_native_replay_requests:
+        failures.append(f"replay-req={_metric(live, 'replay-req')} (max {args.max_native_replay_requests})")
+    if _metric(live, "replay-suppress") != 0:
+        failures.append(f"replay-suppress={_metric(live, 'replay-suppress')}")
+    if _metric(live, "replay-escalate") != 0:
+        failures.append(f"replay-escalate={_metric(live, 'replay-escalate')}")
+    if _metric(client_input, "native-apply") < args.min_native_client_input_applied:
+        failures.append(
+            f"client-input.native-apply={_metric(client_input, 'native-apply')} "
+            f"(min {args.min_native_client_input_applied})"
+        )
+    if _metric(snapshots, "native-built") < args.min_native_server_snapshot_built:
+        failures.append(
+            f"snapshots.native-built={_metric(snapshots, 'native-built')} "
+            f"(min {args.min_native_server_snapshot_built})"
+        )
+
+    if failures:
+        raise Step12Error(f"{case_name}: native live profile failed: {', '.join(failures)}")
+
+
 class ServerProcess:
     """Dedicated server process wrapper with async log capture."""
 
@@ -756,6 +824,17 @@ def run_case(args: argparse.Namespace, case: StressCase, ordinal: int) -> dict[s
                     raise Step12Error(f"{case.name}: migration metric {source_key} is missing or invalid")
                 if source_value < source_minimum:
                     raise Step12Error(f"{case.name}: migration {source_key} too low: {source_value} < {source_minimum}")
+        native_profile: dict[str, dict[str, object]] = {}
+        if args.require_native_live:
+            if args.client_count <= 0:
+                raise Step12Error(f"{case.name}: --require-native-live requires --client-count >= 1")
+            profile_start = server.log_count()
+            server.send_command("net_profile")
+            if not server.wait_for_log_substring("HCDE net profile:", timeout_s=args.report_wait, start_index=profile_start):
+                raise Step12Error(f"{case.name}: did not observe net_profile output")
+            profile_lines = server.snapshot_log_lines()[profile_start:]
+            native_profile = parse_native_profile(profile_lines)
+            validate_native_profile(args, case.name, native_profile)
         if args.min_queries and query_count < args.min_queries:
             raise Step12Error(f"{case.name}: insufficient launcher samples {query_count} < {args.min_queries}")
         save_debug_trace(args, server, case)
@@ -775,6 +854,7 @@ def run_case(args: argparse.Namespace, case: StressCase, ordinal: int) -> dict[s
             }
         summary["stress_lines"] = stress_lines[-64:]
         summary["stress_metrics"] = stress_metrics
+        summary["native_profile"] = native_profile
         summary["ok"] = True
 
         if last_snapshot is not None:
@@ -807,6 +887,10 @@ def validate_paths(args: argparse.Namespace) -> None:
             raise Step12Error(f"client-file path not found: {path}")
     if args.client_count > 0 and (args.client is None or not args.client.is_file()):
         raise Step12Error(f"client binary not found: {args.client}")
+    if args.require_native_live and args.client_count <= 0:
+        raise Step12Error("--require-native-live requires --client-count >= 1")
+    if args.require_native_live and (args.client is None or not args.client.is_file()):
+        raise Step12Error("--require-native-live requires a valid --client binary")
     if args.workdir is None:
         args.workdir = args.server.resolve().parent
     if not args.workdir.exists():
@@ -827,6 +911,14 @@ def validate_paths(args: argparse.Namespace) -> None:
         raise Step12Error("--min-migration-source-coop must be zero or positive")
     if args.min_migration_source_dm < 0:
         raise Step12Error("--min-migration-source-dm must be zero or positive")
+    if args.min_native_client_input_applied < 0:
+        raise Step12Error("--min-native-client-input-applied must be zero or positive")
+    if args.min_native_server_snapshot_built < 0:
+        raise Step12Error("--min-native-server-snapshot-built must be zero or positive")
+    if args.max_native_replay_requests < 0:
+        raise Step12Error("--max-native-replay-requests must be zero or positive")
+    if args.max_native_legacy_rejects < 0:
+        raise Step12Error("--max-native-legacy-rejects must be zero or positive")
 
 
 def safe_trace_label(text: str) -> str:
@@ -906,6 +998,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pressure-preset", choices=sorted(PRESSURE_PRESET_COMMANDS), default="custom", help="Named command-pressure preset")
     parser.add_argument("--client-count", type=int, default=0, help="Optional clients to join during each case")
     parser.add_argument("--client-stagger", type=float, default=0.5, help="Seconds between client launches")
+    parser.add_argument(
+        "--require-native-live",
+        action="store_true",
+        help="Require final net_profile to prove native HCIN/HCSN traffic with no failure/replay storm counters",
+    )
+    parser.add_argument(
+        "--min-native-client-input-applied",
+        type=int,
+        default=1,
+        help="Minimum server-side client-input native-apply counter when --require-native-live is enabled",
+    )
+    parser.add_argument(
+        "--min-native-server-snapshot-built",
+        type=int,
+        default=1,
+        help="Minimum server-side snapshot native-built counter when --require-native-live is enabled",
+    )
+    parser.add_argument(
+        "--max-native-replay-requests",
+        type=int,
+        default=0,
+        help="Maximum allowed replay-req counter when --require-native-live is enabled",
+    )
+    parser.add_argument(
+        "--max-native-legacy-rejects",
+        type=int,
+        default=0,
+        help="Maximum allowed legacy-gameplay-reject counter when --require-native-live is enabled",
+    )
     parser.add_argument("--advertise", action="store_true", help="Advertise to configured masters instead of -noadvertise")
     parser.add_argument("--master", action="append", default=[], help="Master endpoint for advertised runs")
     parser.add_argument("--label", default="", help="Free-form label for shaped-network runs")
@@ -966,6 +1087,14 @@ def main() -> int:
                 print(f"  trace_save_dir={args.trace_save_dir}")
             if args.summary_dir is not None:
                 print(f"  summary_dir={args.summary_dir}")
+            if args.require_native_live:
+                print(
+                    "  native_live="
+                    f"min-client-input={args.min_native_client_input_applied} "
+                    f"min-snapshots={args.min_native_server_snapshot_built} "
+                    f"max-replay={args.max_native_replay_requests} "
+                    f"max-legacy-rejects={args.max_native_legacy_rejects}"
+                )
             for index, case in enumerate(cases):
                 print(
                     f"  case={case.name} port={args.base_port + index} mode={case.mode} "

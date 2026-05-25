@@ -165,12 +165,6 @@ void HCDE_ServerMode_InitFromArgs()
 	{
 		I_FatalError("hcdeserv was started without -server <slots>. Dedicated server builds must enter the explicit server runtime.");
 	}
-
-	DebugTrace::Markf("servermode", "init dedicated=%d executable=%d join=%d silent=%d",
-		Runtime.DedicatedServer ? 1 : 0,
-		Runtime.DedicatedExecutable ? 1 : 0,
-		Runtime.DedicatedJoin ? 1 : 0,
-		Runtime.NetWaitSilent ? 1 : 0);
 }
 
 void HCDE_ServerMode_SetSelectedIWAD(const char* iwadName)

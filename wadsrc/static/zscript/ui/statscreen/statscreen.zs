@@ -644,6 +644,12 @@ class StatusScreen : ScreenJob abstract version("2.5")
 	virtual void End ()
 	{
 		CurState = LeavingIntermission;
+
+		// In netgame the dedicated server waits for players to signal
+		// readiness before issuing DEM_ENDSCREENJOB.  Mark us ready now so
+		// that advancing past the stat screen actually triggers the map load.
+		if (netgame && !ScreenJobRunner.IsPlayerReady(consoleplayer))
+			ScreenJobRunner.ReadyPlayer();
 	}
 
 	//====================================================================
@@ -735,7 +741,17 @@ class StatusScreen : ScreenJob abstract version("2.5")
 	protected virtual void updateShowNextLoc ()
 	{
 		if (!--cnt || acceleratestage)
+		{
+			// A manual advance should leave this screen immediately. Falling
+			// through to NoState clears acceleratestage, and a no-autostart map
+			// can then park here forever with no countdown to finish.
+			if (acceleratestage)
+			{
+				End();
+				return;
+			}
 			initNoState();
+		}
 		else
 			snl_pointeron = (cnt & 31) < 20;
 	}
@@ -824,7 +840,35 @@ class StatusScreen : ScreenJob abstract version("2.5")
 	{
 		if (evt.type == InputEvent.Type_KeyDown)
 		{
-			accelerateStage = 1;
+			// Once stat counting is done and the screen is in any "waiting"
+			// stage, additional input should leave immediately. Otherwise the
+			// player has to walk through StatCount -> ShowNextLoc -> NoState
+			// -> End in separate inputs, which feels like the intermission is
+			// not responding at all (especially on no-autostart maps where
+			// NoState never auto-advances on its own).
+			if (CurState == ShowNextLoc || CurState == NoState)
+			{
+				End();
+				return true;
+			}
+
+			// DoomStatusScreen clears acceleratestage when it snaps stats to
+			// sp_state==10, so a single press never reaches initShowNextLoc on
+			// the same input. If stats are already done, jump to the enterpic
+			// (or leave immediately when there is no next map).
+			if (CurState == StatCount && sp_state >= 10)
+			{
+				if (wbs.next == "")
+				{
+					End();
+					return true;
+				}
+				initShowNextLoc();
+				acceleratestage = 1;
+				return true;
+			}
+
+			acceleratestage = 1;
 			return true;
 		}
 		return false;
@@ -832,7 +876,7 @@ class StatusScreen : ScreenJob abstract version("2.5")
 
 	void nextStage()
 	{
-		accelerateStage = 1;
+		acceleratestage = 1;
 	}
 
 	// this one is no longer used, but still needed for old content referencing them.

@@ -692,9 +692,9 @@ UNSAFE_CCMD (load)
 		Printf("saving to an absolute path is not allowed\n");
 		return;
 	}
-	if (fname.IndexOf("..") > 0)
+	if (FName_HasParentDirSegment(fname.GetChars()))
 	{
-		Printf("'..' not allowed in file names\n");
+		Printf("'..' parent-directory segments are not allowed in file names\n");
 		return;
 	}
 #ifdef _WIN32
@@ -731,9 +731,9 @@ UNSAFE_CCMD(save)
 		Printf("saving to an absolute path is not allowed\n");
 		return;
 	}
-	if (fname.IndexOf("..") >= 0)
+	if (FName_HasParentDirSegment(fname.GetChars()))
 	{
-		Printf("'..' not allowed in file names\n");
+		Printf("'..' parent-directory segments are not allowed in file names\n");
 		return;
 	}
 #ifdef _WIN32

@@ -1107,14 +1107,14 @@ CCMD (spycancel)
 //
 bool G_Responder (event_t *ev)
 {
-	// check events
-	if (ev->type != EV_Mouse && primaryLevel->localEventManager->Responder(ev)) // [ZZ] ZScript ate the event // update 07.03.17: mouse events are handled directly
-		return true;
-
 	if (gamestate == GS_INTRO || gamestate == GS_CUTSCENE)
 	{
 		return ScreenJobResponder(ev);
 	}
+
+	// check events
+	if (ev->type != EV_Mouse && primaryLevel->localEventManager->Responder(ev)) // [ZZ] ZScript ate the event // update 07.03.17: mouse events are handled directly
+		return true;
 
 	// any other key pops up menu if in demos
 	// [RH] But only if the key isn't bound to a "special" command
@@ -1235,24 +1235,31 @@ static void G_FullConsole()
 void D_RunCutscene()
 {
 	// Only single player games can cancel out of the screen job via client-side logic.
-	if (ScreenJobTick() && !demoplayback)
+	if (!ScreenJobTick() || demoplayback)
+		return;
+
+	// Single-player has no cutscene vote path; finish immediately so we do not
+	// depend on DEM_ENDSCREENJOB surviving a ticcmd round-trip (a one-tic slip
+	// here is enough to leave the player on "Entering MAPxx" forever if the
+	// command stream resets during the map change).
+	if (!netgame)
 	{
-		if (netgame)
-		{
-			// Only the service authority can determine this.
-			if (!I_IsLocalHCDEServiceAuthority())
-				return;
-
-			int type = ST_VOTE;
-			IFVM(ScreenJobRunner, GetSkipType)
-				type = VMCallSingle<int>(func, cutscene.runner);
-
-			if (type != ST_UNSKIPPABLE)
-				return;
-		}
-
-		Net_WriteInt8(DEM_ENDSCREENJOB);
+		EndScreenJob();
+		return;
 	}
+
+	// Only the service authority can determine this.
+	if (!I_IsLocalHCDEServiceAuthority())
+		return;
+
+	int type = ST_VOTE;
+	IFVM(ScreenJobRunner, GetSkipType)
+		type = VMCallSingle<int>(func, cutscene.runner);
+
+	if (type != ST_UNSKIPPABLE)
+		return;
+
+	Net_WriteInt8(DEM_ENDSCREENJOB);
 }
 
 // This is used to allow the server to check for when players are ready to advance. For singleplayer we can just
@@ -1400,6 +1407,12 @@ void G_Ticker ()
 			Printf("%s is turbo!\n", players[client].userinfo.GetName());
 		}
 	}
+
+	// Ticcmds (including DEM_ENDSCREENJOB from intermissions) can queue a world
+	// action after the top-of-tick gameaction loop already ran. Process it now
+	// so the next map loads on the same tic instead of waiting another frame.
+	if (gameaction == ga_worlddone)
+		G_DoWorldDone();
 
 	C_RunDelayedCommands();
 

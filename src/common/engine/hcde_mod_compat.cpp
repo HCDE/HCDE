@@ -104,6 +104,15 @@ static const char* const MonstersAndAddonsPatterns[] =
 	nullptr
 };
 
+static const char* const BladeOfAgonyPatterns[] =
+{
+	"boa_c31.4*",
+	"boa_c31_4*",
+	"boa.ipk3",
+	"Blade of Agony*",
+	nullptr
+};
+
 static unsigned int ActiveCompatFlags = 0u;
 static const char* ActiveStartupMapOverride = nullptr;
 
@@ -295,6 +304,13 @@ static const HCDEModCompatEntry ModCompatEntries[] =
 		nullptr,
 		MonstersAndAddonsPatterns,
 		HCDE_MODCOMPAT_SETTINGS_CONTROLLER_NONNET_SCRIPTS
+	},
+	{
+		"Blade of Agony compatibility",
+		"hcde_mod_compat_boa_c31_4.pk3",
+		nullptr,
+		BladeOfAgonyPatterns,
+		0u
 	}
 };
 

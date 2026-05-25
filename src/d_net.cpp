@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 #include <chrono>
 
 #define __STDC_FORMAT_MACROS
@@ -61,6 +62,7 @@
 #include "savegamemanager.h"
 #include "sbar.h"
 #include "screenjob.h"
+#include "stats.h"
 #include "statnums.h"
 #include "sv_master.h"
 #include "version.h"
@@ -167,6 +169,15 @@ static int Net_InvasionSecondsToTics(float seconds)
 	const int tics = static_cast<int>(ceil(seconds * TICRATE));
 	return max(tics, 0);
 }
+
+// When true, mirror selected HCDE net/invasion diagnostics to the HUD console so
+// local testers can capture issues without a DebugTrace-aware host/session.
+CVAR(Bool, hcde_hud_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+// Persistent on-screen lag/invasion overlay (top-left). Also enable with `stat hcde_lag`.
+CVAR(Bool, hcde_lag_hud, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+// Native-only gameplay policy. Pregame/setup/control traffic is still accepted,
+// but live gameplay must use HCDE `HCIN`/`HCSN` once the session is in netgame.
+CVAR(Bool, net_hcde_native_only, true, CVAR_SERVERINFO | CVAR_NOSAVE);
 
 // NETWORKING
 //
@@ -400,6 +411,11 @@ constexpr int HCDEInvasionProjectileMirrorMaxAgeTics = TICRATE * 3;
 constexpr double HCDEServerBaselineRepairDistance = 128.0;
 constexpr double HCDEServerReconcileDistance = 20.0;
 constexpr double HCDEServerReconcileHardDistance = 384.0;
+// Pose repair on damage only kicks in once drift exceeds this squared distance.
+// Keeps imp chip damage from constantly snapping the local pawn while still
+// correcting meaningful melee desync.
+constexpr double HCDEServerReconcilePoseDamageDistance = 128.0;
+constexpr int HCDEServerReconcilePoseMinDamage = 10;
 
 enum EHCDELiveMessage : uint8_t
 {
@@ -542,11 +558,24 @@ struct FHCDELivePeerState
 	uint32_t PlayerSnapshotMaxBytes = 0u;
 	uint32_t PlayerSnapshotMaxRecords = 0u;
 	uint32_t SharedActorPlayerRecordsSuppressed = 0u;
+	uint32_t ReplayRequestStrikes = 0u;
+	uint64_t ReplayRequestWindowStartMS = 0u;
+	uint64_t ReplayRequestSuppressedUntilMS = 0u;
 
 	void Clear()
 	{
 		*this = {};
 	}
+};
+
+struct FHCDELiveNativeSendScratch
+{
+	usercmd_t SnapshotCommands[MAXPLAYERS][MAXSENDTICS] = {};
+	const uint8_t* SnapshotEventStreams[MAXPLAYERS][MAXSENDTICS] = {};
+	size_t SnapshotEventSizes[MAXPLAYERS][MAXSENDTICS] = {};
+	usercmd_t ClientCommands[MAXSENDTICS] = {};
+	const uint8_t* ClientEventStreams[MAXSENDTICS] = {};
+	size_t ClientEventSizes[MAXSENDTICS] = {};
 };
 
 static uint8_t	CurrentRoomID = 0u;	// Ignore commands not from this room (useful when transitioning levels).
@@ -565,7 +594,13 @@ static uint64_t	LastHCDELiveControlMS = 0u;
 static uint64_t LastHCDELiveSequenceRejectReportMS = 0u;
 static uint64_t LastHCDELiveSnapshotRejectReportMS = 0u;
 static uint64_t LastHCDELiveTicGateReportMS = 0u;
+static uint64_t LastHCDEPredictionFaultReportMS = 0u;
 static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
+// NetUpdate() runs on the main thread, but its native send path needs sizeable
+// command/event capture arrays while translating the current packet window. Keep
+// that scratch storage at module scope so each inner packet loop does not reserve
+// and zero tens of kilobytes on the stack.
+static FHCDELiveNativeSendScratch HCDELiveNativeSendScratch = {};
 
 static bool HCDEActorBaselineRepairActive(int clientNum)
 {
@@ -596,14 +631,16 @@ struct FHCDELiveProfileCounters
 	uint64_t LegacyControlsReceived = 0u;
 	uint64_t ClientInputPacketsBuilt = 0u;
 	uint64_t ClientInputBytesBuilt = 0u;
-	uint64_t ClientInputLegacyBytes = 0u;
+	uint64_t ClientInputNativeBuilt = 0u;
 	uint64_t ClientInputPacketsReceived = 0u;
 	uint64_t ClientInputBytesReceived = 0u;
+	uint64_t ClientInputNativeApplied = 0u;
 	uint64_t ServerSnapshotPacketsBuilt = 0u;
 	uint64_t ServerSnapshotBytesBuilt = 0u;
-	uint64_t ServerSnapshotLegacyBytes = 0u;
+	uint64_t ServerSnapshotNativeBuilt = 0u;
 	uint64_t ServerSnapshotPacketsReceived = 0u;
 	uint64_t ServerSnapshotBytesReceived = 0u;
+	uint64_t ServerSnapshotNativeApplied = 0u;
 	uint64_t WorldDeltaPacketsBuilt = 0u;
 	uint64_t WorldDeltaBytesBuilt = 0u;
 	uint64_t WorldDeltaRecordsBuilt = 0u;
@@ -713,15 +750,29 @@ struct FHCDELiveProfileCounters
 	uint64_t PredictionLocalStateRepairs = 0u;
 	uint64_t PredictionHardRespawnRepairs = 0u;
 	uint64_t PredictionHardDeathRepairs = 0u;
+	uint64_t PredictionFaultReports = 0u;
+	uint64_t PredictionFaultAttackReports = 0u;
+	uint64_t PredictionFaultMoveReports = 0u;
 	uint64_t RemotePlayerBaselineRepairs = 0u;
 	uint64_t SharedActorPlayerRecordsSuppressed = 0u;
 	uint64_t LivePacketsWrapped = 0u;
 	uint64_t LiveBytesWrapped = 0u;
 	uint64_t LivePayloadBytesWrapped = 0u;
+	uint64_t LiveNativeEncodeFailures = 0u;
+	uint64_t LiveNativeCapabilityRejects = 0u;
+	uint64_t LiveReplayRequests = 0u;
+	uint64_t LiveReplaySuppressions = 0u;
+	uint64_t LiveReplayEscalations = 0u;
+	uint64_t LiveLegacyGameplayRejected = 0u;
 	FHCDELiveLaneStats Lanes[HLANE_COUNT] = {};
 	uint64_t WorldTics = 0u;
 	uint64_t WorldTicMicros = 0u;
 	uint64_t WorldTicMaxMicros = 0u;
+	uint64_t MirrorVisualPasses = 0u;
+	uint64_t MirrorVisualMicros = 0u;
+	uint64_t MirrorVisualMaxMicros = 0u;
+	uint64_t MirrorVisualActorsUpdated = 0u;
+	uint64_t MirrorVisualActorsSkipped = 0u;
 
 	void Clear()
 	{
@@ -745,6 +796,17 @@ static void HCDEProfileRecordWorldTic(uint64_t elapsedUS)
 	HCDELiveProfile.WorldTicMicros += elapsedUS;
 	HCDELiveProfile.WorldTicMaxMicros = max<uint64_t>(HCDELiveProfile.WorldTicMaxMicros, elapsedUS);
 }
+
+static void HCDEProfileRecordMirrorVisualPass(uint64_t elapsedUS, unsigned int updated, unsigned int skipped)
+{
+	++HCDELiveProfile.MirrorVisualPasses;
+	HCDELiveProfile.MirrorVisualMicros += elapsedUS;
+	HCDELiveProfile.MirrorVisualMaxMicros = max<uint64_t>(HCDELiveProfile.MirrorVisualMaxMicros, elapsedUS);
+	HCDELiveProfile.MirrorVisualActorsUpdated += updated;
+	HCDELiveProfile.MirrorVisualActorsSkipped += skipped;
+}
+
+static double HCDEProfileAverage(uint64_t total, uint64_t count);
 
 static const char* HCDELiveLaneName(uint8_t lane)
 {
@@ -937,6 +999,11 @@ struct FHCDEPendingLocalHealthRepair
 	uint32_t ServerTic = 0u;
 	int Health = 0;
 	bool OnGround = false;
+	bool ApplyPose = false;
+	DVector3 Pos = {};
+	DVector3 Vel = {};
+	uint32_t Yaw = 0u;
+	uint32_t Pitch = 0u;
 };
 
 static FHCDEPendingLocalHealthRepair PendingLocalHealthRepair = {};
@@ -1074,6 +1141,7 @@ struct FHCDEAuthorityEvent
 	int Wave = 0;
 	FString ClassName;
 	DVector3 Pos = {};
+	DVector3 Vel = {};
 	DAngle Yaw = nullAngle;
 	int Health = 0;
 };
@@ -1085,6 +1153,7 @@ struct FInvasionReplicatedActorRef
 	bool DeathDeltaSent = false;
 	bool IsProjectile = false;
 	bool ForceDeathDelta = false;
+	bool MirrorVisualArmed = false;
 	uint8_t ServerForcedActionState = HCDEInvasionActorActionNone;
 	int ServerForcedActionTic = 0;
 	bool HasVisualTarget = false;
@@ -1213,7 +1282,15 @@ static uint32_t InvasionSimulationLODSkippedCurrent = 0u;
 static uint32_t InvasionSimulationLODWakeHealthCurrent = 0u;
 static uint32_t InvasionSimulationLODWakeDistanceCurrent = 0u;
 static int InvasionMirrorNextVisualDiagnosticTic = 0;
+static int InvasionMirrorNextPurgeTic = 0;
+static uint64_t LastMirrorVisualPassUS = 0u;
+static FHCDELagHUDMetrics HCDELagHUDLast = {};
+
+static void Net_RefreshLagHUDMetrics(int availableTics, int runTics, int totalTics, int worldSteps, bool ticGateStalled);
 static int InvasionMirrorVisualTickBudget = 0;
+// Client mirror actors only get one visual pass per rendered frame while TryRunTics may
+// advance multiple gametics; scale projectile deltas by gametics consumed so catch-up stays believable.
+static int InvasionMirrorVisualWorldSteps = 1;
 
 static void Net_RebuildInvasionSpawnSpots(int wave);
 static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, int previousWave);
@@ -1241,10 +1318,14 @@ static AActor* Net_SelectInvasionCombatTarget(AActor* actor);
 static int Net_GetInvasionSkillWakeDelayTics();
 static void Net_AwakenInvasionMonster(AActor* actor);
 static bool Net_IsInvasionReplicatedProjectile(const AActor* actor);
+static bool Net_ClassDefaultsSuggestProjectile(PClassActor* cls);
 static bool Net_IsInvasionActorCorpseLike(const AActor* actor);
 static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor);
 static void Net_TickInvasionMirrorVisualActors();
 static void Net_LogInvasionMirrorVisualDiagnostic();
+static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref);
+static void Net_RetireInvasionMirrorProjectile(FInvasionReplicatedActorRef& ref);
+static void Net_PurgeStaleInvasionMirrorActorsOnClient();
 
 static bool Net_IsInvasionRoundActiveState(EInvasionState state)
 {
@@ -1347,6 +1428,33 @@ static bool bCommandsReset = false;		// If true, commands were recently cleared.
 static int	AuthorityWaitGraceUntil = 0;
 static int	LastTicGateStallTrace = 0;
 
+static void Net_RefreshLagHUDMetrics(int availableTics, int runTics, int totalTics, int worldSteps, bool ticGateStalled)
+{
+	HCDELagHUDLast.Gametic = gametic;
+	HCDELagHUDLast.ClientTic = ClientTic;
+	HCDELagHUDLast.CommandBacklog = ClientTic - gametic;
+	HCDELagHUDLast.AvailableTics = availableTics;
+	HCDELagHUDLast.RunTics = runTics;
+	HCDELagHUDLast.TotalTics = totalTics;
+	HCDELagHUDLast.WorldSteps = worldSteps;
+	HCDELagHUDLast.StabilityBuffer = StabilityBuffer;
+	HCDELagHUDLast.SimStaleTics = max<int>(EnterTic - LastGameUpdate, 0);
+	HCDELagHUDLast.TicGateStalled = ticGateStalled;
+	HCDELagHUDLast.DedicatedClient = I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority();
+	HCDELagHUDLast.InvasionAuthority = Net_IsLocalInvasionAuthority();
+	HCDELagHUDLast.LagState = Net_LagStateName(LagState);
+	HCDELagHUDLast.InvasionState = Net_InvasionStateName(InvasionState);
+	HCDELagHUDLast.InvasionWave = InvasionWaveDirector.Wave;
+	HCDELagHUDLast.TrackedMirrors = int(InvasionReplicatedActors.Size());
+	HCDELagHUDLast.PendingSpawns = int(InvasionPendingMirrorSpawns.Size());
+	HCDELagHUDLast.PendingEvents = int(InvasionPendingSpawnEvents.Size());
+	HCDELagHUDLast.LastMirrorMS = double(LastMirrorVisualPassUS) / 1000.0;
+	HCDELagHUDLast.AvgMirrorMS = HCDEProfileAverage(HCDELiveProfile.MirrorVisualMicros, HCDELiveProfile.MirrorVisualPasses) / 1000.0;
+	HCDELagHUDLast.MaxMirrorMS = double(HCDELiveProfile.MirrorVisualMaxMicros) / 1000.0;
+	HCDELagHUDLast.AvgWorldMS = HCDEProfileAverage(HCDELiveProfile.WorldTicMicros, HCDELiveProfile.WorldTics) / 1000.0;
+	HCDELagHUDLast.MaxWorldMS = double(HCDELiveProfile.WorldTicMaxMicros) / 1000.0;
+}
+
 static int	CommandsAhead = 0;		// If too far ahead of the host, slow down to remove built-up latency.
 static int	SkipCommandTimer = 0;	// Tracker for when to check for skipping commands. ~0.5 seconds in a row of being ahead will start skipping.
 static int	SkipCommandAmount = 0;	// Amount of commands to skip. Try and batch skip them all at once since we won't be able to get an update until the full RTT.
@@ -1373,14 +1481,17 @@ static void Net_SetInvasionState(EInvasionState state, int tics, const char* rea
 		Net_InvasionStateName(prevState), Net_InvasionStateName(InvasionState), InvasionStateTics,
 		reason != nullptr ? reason : "none", gametic, unsigned(CurrentRoomID),
 		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-	Printf(PRINT_HIGH, "HCDE invasion state: %s -> %s tics=%d reason=%s wave=%d/%d spawned=%d/%d cleared=%d active=%d participants=%d alive=%d gametic=%d map=%s\n",
-		Net_InvasionStateName(prevState), Net_InvasionStateName(InvasionState), InvasionStateTics,
-		reason != nullptr ? reason : "none",
-		InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves,
-		InvasionWaveDirector.WaveSpawned, InvasionWaveDirector.WaveBudget,
-		InvasionWaveDirector.WaveCleared, int(InvasionWaveDirector.ActiveMonsters.Size()),
-		Net_CountInvasionParticipants(), Net_CountInvasionAliveParticipants(), gametic,
-		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	if (*hcde_hud_debug)
+	{
+		Printf(PRINT_HIGH, "HCDE invasion state: %s -> %s tics=%d reason=%s wave=%d/%d spawned=%d/%d cleared=%d active=%d participants=%d alive=%d gametic=%d map=%s\n",
+			Net_InvasionStateName(prevState), Net_InvasionStateName(InvasionState), InvasionStateTics,
+			reason != nullptr ? reason : "none",
+			InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves,
+			InvasionWaveDirector.WaveSpawned, InvasionWaveDirector.WaveBudget,
+			InvasionWaveDirector.WaveCleared, int(InvasionWaveDirector.ActiveMonsters.Size()),
+			Net_CountInvasionParticipants(), Net_CountInvasionAliveParticipants(), gametic,
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	}
 }
 
 void D_ProcessEvents(void);
@@ -1502,6 +1613,83 @@ static uint64_t HCDELiveNegotiatedCapabilities(int client)
 static bool HCDELivePeerHasCapability(int client, uint64_t capability)
 {
 	return (HCDELiveNegotiatedCapabilities(client) & capability) == capability;
+}
+
+static uint64_t HCDELiveRequiredGameplayCapabilities()
+{
+	return HCDELiveLocalCapabilities();
+}
+
+static bool HCDELivePeerHasRequiredGameplayCapabilities(int client)
+{
+	const uint64_t required = HCDELiveRequiredGameplayCapabilities();
+	return (HCDELiveNegotiatedCapabilities(client) & required) == required;
+}
+
+static bool HCDEEnforcesNativeGameplayForPeer(int client)
+{
+	return netgame
+		&& !demoplayback
+		&& net_hcde_native_only
+		&& client >= 0
+		&& client < MAXPLAYERS
+		&& client != consoleplayer;
+}
+
+// Reject classic NCMD gameplay traffic when the session is configured to require
+// native HCDE gameplay. This intentionally does not touch setup/latency/level-start
+// traffic; callers invoke it only at live gameplay send/receive boundaries.
+static void HCDERejectLegacyGameplayPeer(int client, const char* direction, const char* reason)
+{
+	if (client < 0 || client >= MAXPLAYERS)
+		return;
+
+	auto& peer = HCDELivePeers[client];
+	auto& state = ClientStates[client];
+	++peer.UnsupportedReceived;
+	++HCDELiveProfile.LiveLegacyGameplayRejected;
+	DebugTrace::Warningf("net",
+		"rejected legacy gameplay %s client=%d reason=%s hcde=%d negotiated=0x%llx required=0x%llx seq=%d ack=%d room=%u native-only",
+		direction != nullptr ? direction : "gameplay",
+		client,
+		reason != nullptr ? reason : "unknown",
+		I_ClientUsesHCDEService(client) ? 1 : 0,
+		static_cast<unsigned long long>(peer.NegotiatedCapabilities),
+		static_cast<unsigned long long>(HCDELiveRequiredGameplayCapabilities()),
+		state.CurrentSequence,
+		state.SequenceAck,
+		unsigned(CurrentRoomID));
+
+	if (I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(client))
+	{
+		Printf(PRINT_HIGH,
+			"NetGame:: Disconnecting client %d '%s' for legacy gameplay while HCDE native-only mode is enabled (reason=%s)\n",
+			client, players[client].userinfo.GetName(), reason != nullptr ? reason : "unknown");
+		state.Flags |= CF_QUIT;
+	}
+}
+
+// Record + trace a capability-gated rejection of a native HCDE gameplay packet.
+// Used by both the receive (HandleHCDELivePacket) and send (HSendNative*Packet,
+// HSendLiveGameplayPacket) paths so a peer that hasn't completed the HCDE live
+// capability handshake never speaks native gameplay traffic. `inbound` increments
+// the per-peer UnsupportedReceived diagnostic so capability flaps show up next to
+// other malformed-packet counters.
+static void HCDERejectLiveGameplayForCapabilities(int client, EHCDELiveMessage type, const char* direction, bool inbound)
+{
+	if (client < 0 || client >= MAXPLAYERS)
+		return;
+
+	auto& peer = HCDELivePeers[client];
+	if (inbound)
+		++peer.UnsupportedReceived;
+	++HCDELiveProfile.LiveNativeCapabilityRejects;
+	DebugTrace::Warningf("net",
+		"rejected HCDE live %s %s client=%d negotiated=0x%llx required=0x%llx native-only",
+		HCDELiveMessageName(uint8_t(type)), direction != nullptr ? direction : "gameplay",
+		client,
+		static_cast<unsigned long long>(peer.NegotiatedCapabilities),
+		static_cast<unsigned long long>(HCDELiveRequiredGameplayCapabilities()));
 }
 
 static size_t HCDELiveLaneDefaultBudgetBytes(uint8_t lane)
@@ -1717,6 +1905,35 @@ static void AcceptHCDELiveSequence(int clientNum, uint8_t type, uint32_t sequenc
 		peer.RxSequence = sequence;
 }
 
+static void ClearHCDELiveReplayPressure(int clientNum, const char* reason)
+{
+	if (clientNum < 0 || clientNum >= MAXPLAYERS)
+		return;
+
+	auto& peer = HCDELivePeers[clientNum];
+	if (peer.ReplayRequestStrikes == 0u
+		&& peer.ReplayRequestWindowStartMS == 0u
+		&& peer.ReplayRequestSuppressedUntilMS == 0u)
+	{
+		return;
+	}
+
+	DebugTrace::Markf("net", "cleared HCDE live replay pressure client=%d reason=%s strikes=%u suppressed-until=%llu room=%u",
+		clientNum, reason != nullptr ? reason : "unknown",
+		unsigned(peer.ReplayRequestStrikes),
+		static_cast<unsigned long long>(peer.ReplayRequestSuppressedUntilMS),
+		unsigned(CurrentRoomID));
+	peer.ReplayRequestStrikes = 0u;
+	peer.ReplayRequestWindowStartMS = 0u;
+	peer.ReplayRequestSuppressedUntilMS = 0u;
+}
+
+// Native gameplay decode/build failures request retransmit instead of falling back
+// to classic NCMD. This guard prevents a persistent native failure from becoming
+// an infinite replay loop: repeated requests inside a short window either mark a
+// locally-owned remote client for disconnect or, for authority/not-locally-kickable
+// peers, temporarily suppress further replay pressure so diagnostics can surface
+// the real failure without flooding the peer.
 static void RequestHCDELiveReplay(int clientNum, const char* reason)
 {
 	if (clientNum < 0 || clientNum >= MAXPLAYERS)
@@ -1724,10 +1941,69 @@ static void RequestHCDELiveReplay(int clientNum, const char* reason)
 
 	auto& state = ClientStates[clientNum];
 	auto& peer = HCDELivePeers[clientNum];
+	const uint64_t now = I_msTime();
+	constexpr uint64_t ReplayStrikeWindowMS = 5000u;
+	constexpr uint64_t ReplaySuppressionMS = 5000u;
+	constexpr uint32_t ReplayStrikeLimit = 6u;
+
+	if (peer.ReplayRequestSuppressedUntilMS != 0u && now < peer.ReplayRequestSuppressedUntilMS)
+	{
+		++HCDELiveProfile.LiveReplaySuppressions;
+		DebugTrace::Warningf("net",
+			"suppressed HCDE live replay request client=%d reason=%s strikes=%u suppress-ms-left=%llu seq=%d ack=%d room=%u",
+			clientNum, reason != nullptr ? reason : "unknown",
+			unsigned(peer.ReplayRequestStrikes),
+			static_cast<unsigned long long>(peer.ReplayRequestSuppressedUntilMS - now),
+			state.CurrentSequence, state.SequenceAck, unsigned(CurrentRoomID));
+		return;
+	}
+
+	if (peer.ReplayRequestWindowStartMS == 0u || now < peer.ReplayRequestWindowStartMS
+		|| now - peer.ReplayRequestWindowStartMS > ReplayStrikeWindowMS)
+	{
+		peer.ReplayRequestWindowStartMS = now;
+		peer.ReplayRequestStrikes = 0u;
+		peer.ReplayRequestSuppressedUntilMS = 0u;
+	}
+
+	++peer.ReplayRequestStrikes;
+	++HCDELiveProfile.LiveReplayRequests;
+	if (peer.ReplayRequestStrikes >= ReplayStrikeLimit)
+	{
+		++HCDELiveProfile.LiveReplayEscalations;
+		if (I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(clientNum))
+		{
+			Printf(PRINT_HIGH,
+				"NetGame:: Disconnecting client %d '%s' for repeated HCDE live replay requests reason=%s strikes=%u at gametic=%d clienttic=%d room=%u\n",
+				clientNum, players[clientNum].userinfo.GetName(), reason != nullptr ? reason : "unknown",
+				unsigned(peer.ReplayRequestStrikes), gametic, ClientTic, unsigned(CurrentRoomID));
+			DebugTrace::Warningf("net",
+				"disconnecting replay-loop source client=%d name=%s reason=%s strikes=%u seq=%d ack=%d rx-snapshot=%u rx-command=%u room=%u",
+				clientNum, players[clientNum].userinfo.GetName(), reason != nullptr ? reason : "unknown",
+				unsigned(peer.ReplayRequestStrikes), state.CurrentSequence, state.SequenceAck,
+				peer.RxServerSnapshotSequence, peer.RxClientCommandSequence, unsigned(CurrentRoomID));
+			state.Flags |= CF_QUIT;
+			peer.ReplayRequestStrikes = 0u;
+			peer.ReplayRequestWindowStartMS = now;
+			peer.ReplayRequestSuppressedUntilMS = 0u;
+			return;
+		}
+
+		peer.ReplayRequestSuppressedUntilMS = now + ReplaySuppressionMS;
+		DebugTrace::Warningf("net",
+			"HCDE live replay strike limit reached but peer is authority/not locally kickable client=%d reason=%s strikes=%u suppress-ms=%llu seq=%d ack=%d rx-snapshot=%u rx-command=%u room=%u",
+			clientNum, reason != nullptr ? reason : "unknown", unsigned(peer.ReplayRequestStrikes),
+			static_cast<unsigned long long>(ReplaySuppressionMS), state.CurrentSequence, state.SequenceAck,
+			peer.RxServerSnapshotSequence, peer.RxClientCommandSequence, unsigned(CurrentRoomID));
+		return;
+	}
+
 	state.Flags |= CF_MISSING_SEQ;
-	DebugTrace::Warningf("net", "requested HCDE live replay client=%d reason=%s seq=%d ack=%d rx-snapshot=%u rx-command=%u room=%u",
+	DebugTrace::Warningf("net", "requested HCDE live replay client=%d reason=%s strikes=%u window-ms=%llu seq=%d ack=%d rx-snapshot=%u rx-command=%u room=%u",
 		clientNum,
 		reason != nullptr ? reason : "unknown",
+		unsigned(peer.ReplayRequestStrikes),
+		static_cast<unsigned long long>(now - peer.ReplayRequestWindowStartMS),
 		state.CurrentSequence,
 		state.SequenceAck,
 		peer.RxServerSnapshotSequence,
@@ -1915,13 +2191,6 @@ static bool UnwrapHCDEGameplayEnvelope(int clientNum, size_t payloadSize, const 
 	payload = &envelope[HCDEGameplayHeaderSize];
 	gameplayPayloadSize = payloadSize - HCDEGameplayHeaderSize;
 	return true;
-}
-
-static bool RejectHCDEServerSnapshotBuild(int client, const char* reason, size_t legacySize, size_t cursor)
-{
-	DebugTrace::Markf("net", "refused legacy server snapshot for client=%d reason=%s size=%zu cursor=%zu",
-		client, reason != nullptr ? reason : "unknown", legacySize, cursor);
-	return false;
 }
 
 static bool HCDEAppendByte(uint8_t* output, size_t outputCapacity, size_t& cursor, uint8_t value)
@@ -2350,7 +2619,54 @@ static void HCDEApplyLocalHealthFields(player_t& player, int serverHealth, bool 
 		player.damagecount = clamp<int>(player.damagecount + previousHealth - serverHealth, 0, 100);
 }
 
-static void HCDEQueuePredictedLocalHealthRepair(uint32_t serverTic, int serverHealth, bool onGround)
+static void HCDEApplyLocalPoseRepair(player_t& player, const DVector3& serverPos, const DVector3& serverVel,
+	uint32_t yawBam, uint32_t pitchBam, bool onGround, bool clearPrediction)
+{
+	AActor* mo = player.mo;
+	if (mo == nullptr)
+		return;
+
+	const DVector3 oldPos = mo->Pos();
+	const int oldPortalGroup = mo->Sector != nullptr ? mo->Sector->PortalGroup : mo->PrevPortalGroup;
+	mo->SetOrigin(serverPos, false);
+	mo->Vel = serverVel;
+	mo->SetAngle(DAngle::fromBam(yawBam), 0);
+	mo->SetPitch(DAngle::fromBam(pitchBam), 0);
+	player.onground = onGround;
+	if (player.viewheight > 0.0)
+		player.viewz = serverPos.Z + player.viewheight;
+	else
+		player.viewz = serverPos.Z + (player.viewz - oldPos.Z);
+	mo->Prev = oldPos;
+	mo->PrevPortalGroup = oldPortalGroup;
+	mo->renderflags |= RF_NOINTERPOLATEVIEW;
+	mo->ClearInterpolation();
+	if (clearPrediction)
+		P_ClearPredictionData();
+}
+
+static bool HCDELocalPlayerNeedsPoseRepair(const player_t& player, int serverHealth, double driftSq)
+{
+	if (player.mo == nullptr)
+		return false;
+
+	if (driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance)
+		return true;
+
+	const int previousHealth = max<int>(player.health, player.mo->health);
+	if (serverHealth >= previousHealth)
+		return false;
+
+	const int damage = previousHealth - serverHealth;
+	if (driftSq <= HCDEServerReconcilePoseDamageDistance * HCDEServerReconcilePoseDamageDistance)
+		return false;
+
+	return damage >= HCDEServerReconcilePoseMinDamage;
+}
+
+static void HCDEQueuePredictedLocalHealthRepair(uint32_t serverTic, int serverHealth, bool onGround,
+	const DVector3* serverPos = nullptr, const DVector3* serverVel = nullptr,
+	uint32_t yawBam = 0u, uint32_t pitchBam = 0u, bool applyPose = false)
 {
 	if (PendingLocalHealthRepair.Valid && serverTic < PendingLocalHealthRepair.ServerTic)
 		return;
@@ -2359,9 +2675,30 @@ static void HCDEQueuePredictedLocalHealthRepair(uint32_t serverTic, int serverHe
 	PendingLocalHealthRepair.ServerTic = serverTic;
 	PendingLocalHealthRepair.Health = serverHealth;
 	PendingLocalHealthRepair.OnGround = onGround;
+	PendingLocalHealthRepair.ApplyPose = applyPose;
+	if (applyPose && serverPos != nullptr && serverVel != nullptr)
+	{
+		PendingLocalHealthRepair.Pos = *serverPos;
+		PendingLocalHealthRepair.Vel = *serverVel;
+		PendingLocalHealthRepair.Yaw = yawBam;
+		PendingLocalHealthRepair.Pitch = pitchBam;
+	}
+	else
+	{
+		PendingLocalHealthRepair.ApplyPose = false;
+	}
 
 	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
-		HCDEApplyLocalHealthFields(players[consoleplayer], serverHealth, onGround);
+	{
+		player_t& player = players[consoleplayer];
+		HCDEApplyLocalHealthFields(player, serverHealth, onGround);
+		if (applyPose && serverPos != nullptr && serverVel != nullptr && player.mo != nullptr)
+		{
+			const double driftSq = (player.mo->Pos() - *serverPos).LengthSquared();
+			HCDEApplyLocalPoseRepair(player, *serverPos, *serverVel, yawBam, pitchBam, onGround,
+				driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+		}
+	}
 }
 
 static void HCDEApplyPendingLocalHealthRepair()
@@ -2371,12 +2708,27 @@ static void HCDEApplyPendingLocalHealthRepair()
 
 	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
 	{
-		HCDEApplyLocalHealthFields(players[consoleplayer],
+		player_t& player = players[consoleplayer];
+		if (PendingLocalHealthRepair.ApplyPose)
+		{
+			const double driftSq = player.mo != nullptr
+				? (player.mo->Pos() - PendingLocalHealthRepair.Pos).LengthSquared()
+				: 0.0;
+			HCDEApplyLocalPoseRepair(player,
+				PendingLocalHealthRepair.Pos,
+				PendingLocalHealthRepair.Vel,
+				PendingLocalHealthRepair.Yaw,
+				PendingLocalHealthRepair.Pitch,
+				PendingLocalHealthRepair.OnGround,
+				driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+		}
+		HCDEApplyLocalHealthFields(player,
 			PendingLocalHealthRepair.Health,
 			PendingLocalHealthRepair.OnGround);
-		DebugTrace::Markf("net", "HCDE pending local health repair applied tic=%u health=%d",
+		DebugTrace::Markf("net", "HCDE pending local health repair applied tic=%u health=%d pose=%d",
 			PendingLocalHealthRepair.ServerTic,
-			PendingLocalHealthRepair.Health);
+			PendingLocalHealthRepair.Health,
+			PendingLocalHealthRepair.ApplyPose ? 1 : 0);
 	}
 
 	PendingLocalHealthRepair.Valid = false;
@@ -2498,11 +2850,15 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				&& !localNeedsRespawnRepair
 				&& !localNeedsDeathRepair)
 			{
-				HCDEQueuePredictedLocalHealthRepair(serverTic, serverHealth, serverReportsOnGround);
+				const bool applyPose = HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift);
+				HCDEQueuePredictedLocalHealthRepair(serverTic, serverHealth, serverReportsOnGround,
+					applyPose ? &serverPos : nullptr,
+					applyPose ? &serverVel : nullptr,
+					yaw, pitch, applyPose);
 				++HCDELiveProfile.PredictionLocalHealthRepairs;
 				++peer.Reconciliations;
-				DebugTrace::Markf("net", "HCDE client local health repair queued from=%d player=%u drift=%.2f health=%d reconciliations=%u",
-					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations);
+				DebugTrace::Markf("net", "HCDE client local health repair queued from=%d player=%u drift=%.2f health=%d pose=%d reconciliations=%u",
+					clientNum, unsigned(playerNum), sqrt(drift), serverHealth, applyPose ? 1 : 0, peer.Reconciliations);
 				continue;
 			}
 
@@ -2565,6 +2921,10 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 			if (localNeedsDeathRepair)
 			{
 				const int previousHealth = max<int>(player.health, mo->health);
+				HCDEApplyLocalPoseRepair(player, serverPos, serverVel, yaw, pitch, serverReportsOnGround, true);
+				mo = player.mo;
+				if (mo == nullptr)
+					continue;
 				mo->health = min<int>(serverHealth, 0);
 				player.health = mo->health;
 				player.onground = serverReportsOnGround;
@@ -2582,15 +2942,22 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 			}
 
 			// Local clients own prediction for their own pawn. Do not apply
-			// server-authored position, velocity, yaw, or pitch here; doing so
-			// can pin movement if the dedicated input route lags or is stale.
-			// Health and grounded state are safe compact corrections.
+			// server-authored position during normal movement; doing so can pin
+			// movement if the dedicated input route lags. When the server reports
+			// damage with meaningful drift, snap to the authoritative pose so melee
+			// and other hitscan/contact deaths line up with what the player sees.
+			const bool applyPose = HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift);
+			if (applyPose)
+			{
+				HCDEApplyLocalPoseRepair(player, serverPos, serverVel, yaw, pitch, serverReportsOnGround,
+					drift > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+			}
 			HCDEApplyLocalHealthFields(player, serverHealth, serverReportsOnGround);
 			PendingLocalHealthRepair.Valid = false;
 			++peer.Reconciliations;
 			++HCDELiveProfile.PredictionLocalStateRepairs;
-			DebugTrace::Markf("net", "HCDE client local state repair from=%d player=%u drift=%.2f health=%d reconciliations=%u",
-				clientNum, unsigned(playerNum), sqrt(drift), serverHealth, peer.Reconciliations);
+			DebugTrace::Markf("net", "HCDE client local state repair from=%d player=%u drift=%.2f health=%d pose=%d reconciliations=%u",
+				clientNum, unsigned(playerNum), sqrt(drift), serverHealth, applyPose ? 1 : 0, peer.Reconciliations);
 			continue;
 		}
 
@@ -2874,6 +3241,10 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 		return;
 	}
 
+	auto* ref = Net_FindInvasionReplicatedActor(id);
+	if (ref != nullptr && ref->MirrorVisualArmed)
+		return;
+
 	const bool wasThinking = actor->GetStatNum() >= STAT_FIRST_THINKING;
 	const bool projectileMirror = Net_IsInvasionReplicatedProjectile(actor);
 	const bool blockmapMirror = !projectileMirror;
@@ -2882,7 +3253,7 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 			|| (actor->flags & (MF_SOLID | MF_SHOOTABLE)) != 0)
 		: blockmapMirror
 		? ((actor->flags & MF_NOBLOCKMAP) != 0
-			|| (actor->flags & MF_SOLID) != 0
+			|| (actor->flags & MF_SOLID) == 0
 			|| (actor->flags & MF_NOCLIP) == 0
 			|| (actor->flags & MF_SHOOTABLE) == 0)
 		: ((actor->flags & MF_NOBLOCKMAP) == 0);
@@ -2898,8 +3269,13 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 		}
 		else if (blockmapMirror)
 		{
-			actor->flags &= ~(MF_NOBLOCKMAP | MF_SOLID);
-			actor->flags |= MF_NOCLIP | MF_SHOOTABLE;
+			// Monster mirrors must remain MF_SOLID locally so the client's
+			// P_TryMove blocks the player against them. MF5_NOINTERACTION +
+			// MF4_STANDSTILL still keep them from running AI / damage thinkers,
+			// and SetOrigin-driven position updates bypass blockmap checks so
+			// the server-authoritative pose still propagates cleanly.
+			actor->flags &= ~MF_NOBLOCKMAP;
+			actor->flags |= MF_NOCLIP | MF_SHOOTABLE | MF_SOLID;
 		}
 		else
 		{
@@ -2917,8 +3293,7 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 		}
 		else if (blockmapMirror)
 		{
-			actor->flags &= ~MF_SOLID;
-			actor->flags |= MF_NOCLIP | MF_SHOOTABLE;
+			actor->flags |= MF_NOCLIP | MF_SHOOTABLE | MF_SOLID;
 		}
 		else
 		{
@@ -2933,7 +3308,9 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 	actor->target = nullptr;
 	actor->lastenemy = nullptr;
 	actor->goal = nullptr;
-	actor->Vel = DVector3(0, 0, 0);
+
+	if (!projectileMirror)
+		actor->Vel = DVector3(0, 0, 0);
 
 	if (!projectileMirror && actor->state == actor->SpawnState && actor->SeeState != nullptr)
 		actor->SetState(actor->SeeState, true);
@@ -2955,6 +3332,9 @@ static void Net_SetInvasionMirrorVisualOnly(uint32_t id, AActor* actor)
 			actor->Y(),
 			actor->Z());
 	}
+
+	if (ref != nullptr)
+		ref->MirrorVisualArmed = true;
 }
 
 static void Net_SeedInvasionMirrorVisualTarget(FInvasionReplicatedActorRef& ref, AActor* actor)
@@ -2993,10 +3373,22 @@ static double Net_GetInvasionMirrorVisualStepCap(const AActor* actor)
 	return clamp<double>(baseSpeed * HCDEInvasionMirrorVisualSpeedMultiplier, 2.0, HCDEInvasionMirrorVisualMaxStepPerTic);
 }
 
-static void Net_TickInvasionMirrorVisualActors()
+static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skipped)
 {
+	updated = 0u;
+	skipped = 0u;
 	if (Net_IsLocalInvasionAuthority() || InvasionReplicatedActors.Size() == 0)
 		return;
+
+	AActor* camera = nullptr;
+	if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+	{
+		camera = players[consoleplayer].camera;
+		if (camera == nullptr)
+			camera = players[consoleplayer].mo;
+	}
+	const DVector3 cameraPos = camera != nullptr ? camera->Pos() : DVector3(0, 0, 0);
+	const double farUpdateDistanceSq = 2048.0 * 2048.0;
 
 	for (auto& ref : InvasionReplicatedActors)
 	{
@@ -3008,7 +3400,15 @@ static void Net_TickInvasionMirrorVisualActors()
 			continue;
 		}
 
-		Net_SetInvasionMirrorVisualOnly(ref.Id, actor);
+		const bool farFromCamera = camera != nullptr
+			&& !ref.IsProjectile
+			&& (actor->Pos() - cameraPos).LengthSquared() > farUpdateDistanceSq;
+		if (farFromCamera)
+		{
+			++skipped;
+			continue;
+		}
+
 		if (ref.HasVisualTarget)
 		{
 			actor->health = ref.VisualTargetHealth;
@@ -3019,47 +3419,66 @@ static void Net_TickInvasionMirrorVisualActors()
 			const DVector3 delta = ref.VisualTargetPos - oldPos;
 			const double distSq = delta.LengthSquared();
 			const double snapDistanceSq = HCDEInvasionMirrorVisualSnapDistance * HCDEInvasionMirrorVisualSnapDistance;
-			if (distSq > snapDistanceSq)
+			const bool combatVisual = ref.VisualActionState == HCDEInvasionActorActionMelee
+				|| ref.VisualActionState == HCDEInvasionActorActionMissile;
+			if (distSq > snapDistanceSq || combatVisual)
 			{
 				actor->SetOrigin(ref.VisualTargetPos, false);
 				actor->Prev = ref.VisualTargetPos;
 				actor->PrevPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
 				actor->ClearInterpolation();
-				DebugTrace::Markf("invasion", "mirror visual snap id=%u class=%s dist=%.1f pos=(%.1f,%.1f,%.1f)",
-					unsigned(ref.Id),
-					actor->GetClass() != nullptr ? actor->GetClass()->TypeName.GetChars() : "<unknown>",
-					sqrt(distSq),
-					ref.VisualTargetPos.X,
-					ref.VisualTargetPos.Y,
-					ref.VisualTargetPos.Z);
 			}
-			else if (distSq > 0.01 || (ref.IsProjectile && ref.VisualTargetVel.LengthSquared() > 0.01))
+			else if (ref.IsProjectile)
+			{
+				// Authoritative pos deltas can coincide with extrapolated poses while replicated vel stays ~0,
+				// which previously skipped extrapolation entirely and glued fireballs at spawn.
+				DVector3 pv = ref.VisualTargetVel;
+				if (pv.LengthSquared() < 1e-4 && actor != nullptr && actor->Speed > 0.0)
+				{
+					pv.X = actor->Speed * ref.VisualTargetYaw.Cos();
+					pv.Y = actor->Speed * ref.VisualTargetYaw.Sin();
+					pv.Z = actor->Speed * ref.VisualTargetPitch.Sin();
+					ref.VisualTargetVel = pv;
+				}
+				const int mirrorSteps = clamp<int>(InvasionMirrorVisualWorldSteps, 1, 24);
+				const DVector3 oldRenderPos = actor->Pos();
+				const int oldPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
+				actor->SetOrigin(oldRenderPos + pv * double(mirrorSteps), false);
+				actor->Prev = oldRenderPos;
+				actor->PrevPortalGroup = oldPortalGroup;
+				actor->Vel = pv;
+			}
+			else if (distSq > 0.01)
 			{
 				const DVector3 oldRenderPos = actor->Pos();
 				const int oldPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
-				DVector3 nextPos;
-				if (ref.IsProjectile)
-				{
-					const DVector3 drift = ref.VisualTargetVel + delta * 0.25;
-					nextPos = oldRenderPos + drift;
-				}
-				else
-				{
-					const double dist = sqrt(distSq);
-					const double step = min(dist, Net_GetInvasionMirrorVisualStepCap(actor));
-					nextPos = oldRenderPos + delta * (step / dist);
-				}
+				const double dist = sqrt(distSq);
+				const double step = min(dist, Net_GetInvasionMirrorVisualStepCap(actor));
+				const DVector3 nextPos = oldRenderPos + delta * (step / dist);
 				actor->SetOrigin(nextPos, false);
 				actor->Prev = oldRenderPos;
 				actor->PrevPortalGroup = oldPortalGroup;
+				actor->Vel = DVector3(0, 0, 0);
 			}
-			actor->Vel = ref.IsProjectile ? ref.VisualTargetVel : DVector3(0, 0, 0);
+			else
+			{
+				actor->Vel = DVector3(0, 0, 0);
+			}
+		}
+
+		// Projectile mirrors are pose-driven above; ticking their state machine every
+		// frame just burns CPU and can fight the extrapolated origin.
+		if (ref.IsProjectile)
+		{
+			++updated;
+			continue;
 		}
 
 		if (actor->state == nullptr
 			|| actor->tics == -1
 			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
 		{
+			++updated;
 			continue;
 		}
 
@@ -3067,11 +3486,14 @@ static void Net_TickInvasionMirrorVisualActors()
 			--actor->tics;
 		if (actor->tics <= 0)
 			actor->SetState(actor->state->GetNextState(), true);
+		++updated;
 	}
+
 }
 
 static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& className,
-	const DVector3& pos, DAngle yaw, DAngle pitch, int health, const char* source, bool markApplied)
+	const DVector3& pos, const DVector3& vel, DAngle yaw, DAngle pitch, int health, const char* source, bool markApplied,
+	uint8_t authorityCategoryHint = HREP_ACTOR_UNKNOWN)
 {
 	if (Net_IsLocalInvasionAuthority())
 		return true;
@@ -3082,7 +3504,27 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 
 	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && existing->Actor != nullptr)
 	{
-		Net_SetInvasionMirrorVisualTarget(*existing, pos, DVector3(0, 0, 0), yaw, pitch, health);
+		AActor* eact = existing->Actor.Get();
+		if (authorityCategoryHint == HREP_ACTOR_PROJECTILE)
+			existing->IsProjectile = true;
+		else if (eact != nullptr && Net_ClassDefaultsSuggestProjectile(eact->GetClass()))
+			existing->IsProjectile = true;
+		if (eact != nullptr && Net_IsInvasionReplicatedProjectile(eact))
+			existing->IsProjectile = true;
+
+		DVector3 useVel = existing->IsProjectile ? vel : DVector3(0, 0, 0);
+		if (existing->IsProjectile && useVel.LengthSquared() < 1.0 && eact != nullptr)
+		{
+			useVel = eact->Vel;
+			if (useVel.LengthSquared() < 1.0 && eact->Speed > 0.0)
+			{
+				useVel.X = eact->Speed * yaw.Cos();
+				useVel.Y = eact->Speed * yaw.Sin();
+				useVel.Z = eact->Speed * pitch.Sin();
+			}
+		}
+
+		Net_SetInvasionMirrorVisualTarget(*existing, pos, useVel, yaw, pitch, health);
 		if (markApplied && id > InvasionLastAppliedSpawnEventId)
 			InvasionLastAppliedSpawnEventId = id;
 		return true;
@@ -3114,13 +3556,34 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 		actor->health = health;
 	Net_ApplyInvasionMonsterSkillTuning(actor);
 	actor->ClearInterpolation();
+	const DVector3 spawnVel = actor->Vel;
 	Net_SetInvasionMirrorVisualOnly(id, actor);
 	Net_RegisterInvasionReplicatedActor(id, actor);
 	if (auto ref = Net_FindInvasionReplicatedActor(id); ref != nullptr)
 	{
+		if (authorityCategoryHint == HREP_ACTOR_PROJECTILE
+			|| Net_ClassDefaultsSuggestProjectile(cls))
+		{
+			ref->IsProjectile = true;
+		}
+		if (Net_IsInvasionReplicatedProjectile(actor))
+			ref->IsProjectile = true;
+
 		if (!ref->IsProjectile)
 			InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(actor));
-		Net_SetInvasionMirrorVisualTarget(*ref, pos, actor->Vel, yaw, pitch, actor->health);
+		DVector3 visualVel = ref->IsProjectile ? vel : DVector3(0, 0, 0);
+		if (ref->IsProjectile && visualVel.LengthSquared() < 1.0)
+			visualVel = spawnVel;
+		if (ref->IsProjectile && visualVel.LengthSquared() < 1.0 && actor->Speed > 0.0)
+		{
+			// Client-side projectile mirrors spawn without the server's launch
+			// velocity. Seed motion from the replicated facing until the first
+			// actor delta arrives so imp fireballs are visible in flight.
+			visualVel.X = actor->Speed * yaw.Cos();
+			visualVel.Y = actor->Speed * yaw.Sin();
+			visualVel.Z = actor->Speed * pitch.Sin();
+		}
+		Net_SetInvasionMirrorVisualTarget(*ref, pos, visualVel, yaw, pitch, actor->health);
 	}
 	for (int i = 0; i < MAXPLAYERS; ++i)
 	{
@@ -3150,6 +3613,19 @@ static void Net_DrainPendingInvasionMirrorSpawns()
 		return;
 	}
 
+	// Cap how many mirror spawns may be materialized per drain call so a large
+	// pending burst (typical at the start of a wave, where the authority emits
+	// dozens of monsters in a single tic) doesn't construct them all in one
+	// frame. Each Spawn() runs P_SpawnMobj + thing initialization, so 50+ in a
+	// tick is the dominant source of the "invasion lag" the player sees. The
+	// remainder is retained and applied across subsequent frames. Scale the cap
+	// with backlog so wave starts drain faster instead of leaving a long tail of
+	// invisible monsters that still cost network + visual work every frame.
+	const unsigned int pendingBacklog = unsigned(InvasionPendingMirrorSpawns.Size());
+	const unsigned int MaxMirrorSpawnsPerCall = clamp<unsigned int>(
+		max<unsigned int>(8u, pendingBacklog / 3u), 8u, 24u);
+	unsigned int applied = 0u;
+
 	TArray<FInvasionPendingMirrorSpawn> retained;
 	for (const auto& pending : InvasionPendingMirrorSpawns)
 	{
@@ -3171,16 +3647,30 @@ static void Net_DrainPendingInvasionMirrorSpawns()
 			continue;
 		}
 
+		if (applied >= MaxMirrorSpawnsPerCall)
+		{
+			// Defer the rest of the backlog to the next drain so we keep the
+			// per-frame actor construction cost bounded.
+			retained.Push(pending);
+			continue;
+		}
+
 		if (!Net_SpawnInvasionMirrorActor(pending.Id, pending.Wave, pending.ClassName,
-			pending.Pos, pending.Yaw, pending.Pitch, pending.Health,
-			"delta-repair-queued", pending.MarkApplied))
+			pending.Pos, pending.Vel, pending.Yaw, pending.Pitch, pending.Health,
+			"delta-repair-queued", pending.MarkApplied, HREP_ACTOR_UNKNOWN))
 		{
 			retained.Push(pending);
 			continue;
 		}
 
+		++applied;
 		if (auto ref = Net_FindInvasionReplicatedActor(pending.Id); ref != nullptr && ref->Actor != nullptr)
 		{
+			if (Net_ClassDefaultsSuggestProjectile(ref->Actor->GetClass())
+				|| Net_IsInvasionReplicatedProjectile(ref->Actor.Get()))
+			{
+				ref->IsProjectile = true;
+			}
 			ref->Actor->Vel = pending.Vel;
 			Net_SetInvasionMirrorVisualTarget(*ref, pending.Pos, pending.Vel, pending.Yaw, pending.Pitch, pending.Health);
 		}
@@ -3217,8 +3707,8 @@ static bool Net_ApplyInvasionSpawnEvent(const FHCDEAuthorityEvent& event)
 		return true;
 	}
 
-	return Net_SpawnInvasionMirrorActor(event.Id, event.Wave, event.ClassName, event.Pos,
-		event.Yaw, nullAngle, event.Health, "spawn-event", true);
+	return Net_SpawnInvasionMirrorActor(event.Id, event.Wave, event.ClassName, event.Pos, event.Vel,
+		event.Yaw, nullAngle, event.Health, "spawn-event", true, event.Category);
 }
 
 static void Net_DrainPendingInvasionSpawnEvents()
@@ -3230,38 +3720,87 @@ static void Net_DrainPendingInvasionSpawnEvents()
 		return;
 	}
 
-	TArray<FHCDEAuthorityEvent> retained;
-	const uint32_t previousAppliedSpawnEventId = InvasionLastAppliedSpawnEventId;
-	for (const auto& event : InvasionPendingSpawnEvents)
+	// Spread monster spawns across frames, but drain projectile spawn events
+	// more aggressively so imp fireballs and other missiles appear promptly
+	// instead of waiting behind wave-start monster bursts.
+	const unsigned int pendingEvents = unsigned(InvasionPendingSpawnEvents.Size());
+	const unsigned int MaxMonsterSpawnEventsPerCall = clamp<unsigned int>(
+		max<unsigned int>(4u, pendingEvents / 4u), 4u, 16u);
+	constexpr unsigned int MaxProjectileSpawnEventsPerCall = 24u;
+	unsigned int monsterApplied = 0u;
+	unsigned int projectileApplied = 0u;
+
+	auto tryApplyEvent = [&](const FHCDEAuthorityEvent& event, bool projectileEvent) -> bool
 	{
 		if (event.Id <= InvasionLastAppliedSpawnEventId)
-			continue;
+			return true;
 
 		if (event.Wave < InvasionWaveDirector.Wave || InvasionState == INVS_DISABLED)
-			continue;
+			return true;
 
 		if (event.Wave != InvasionWaveDirector.Wave
 			|| !Net_IsInvasionRoundActiveState(InvasionState)
 			|| primaryLevel == nullptr
 			|| gamestate != GS_LEVEL)
 		{
-			retained.Push(event);
-			continue;
+			return false;
 		}
 
+		const unsigned int cap = projectileEvent ? MaxProjectileSpawnEventsPerCall : MaxMonsterSpawnEventsPerCall;
+		const unsigned int applied = projectileEvent ? projectileApplied : monsterApplied;
+		if (applied >= cap)
+			return false;
+
+		const uint32_t beforeId = InvasionLastAppliedSpawnEventId;
 		Net_ApplyInvasionSpawnEvent(event);
-		if (event.Id > InvasionLastAppliedSpawnEventId)
+		if (InvasionLastAppliedSpawnEventId > beforeId)
+		{
+			if (projectileEvent)
+				++projectileApplied;
+			else
+				++monsterApplied;
+			return true;
+		}
+
+		return event.Id > InvasionLastAppliedSpawnEventId ? false : true;
+	};
+
+	TArray<FHCDEAuthorityEvent> retained;
+	const uint32_t previousAppliedSpawnEventId = InvasionLastAppliedSpawnEventId;
+	for (const auto& event : InvasionPendingSpawnEvents)
+	{
+		if (event.Category == HREP_ACTOR_PROJECTILE)
+		{
+			if (!tryApplyEvent(event, true))
+				retained.Push(event);
+		}
+	}
+	for (const auto& event : InvasionPendingSpawnEvents)
+	{
+		if (event.Category == HREP_ACTOR_PROJECTILE)
+			continue;
+
+		if (!tryApplyEvent(event, false))
 			retained.Push(event);
 	}
 
 	InvasionPendingSpawnEvents.Swap(retained);
 	if (InvasionLastAppliedSpawnEventId != previousAppliedSpawnEventId)
 	{
-		Printf(PRINT_HIGH, "HCDE invasion mirror drained spawn events through %u active=%d wave=%d pending=%u\n",
+		DebugTrace::Markf("invasion", "mirror drained spawn events through %u active=%d wave=%d pending=%u",
 			unsigned(InvasionLastAppliedSpawnEventId),
 			Net_GetInvasionActiveMonsterCount(),
 			Net_GetInvasionWave(),
 			unsigned(InvasionPendingSpawnEvents.Size()));
+		if (*hcde_hud_debug)
+		{
+			Printf(PRINT_HIGH,
+				"HCDE invasion mirror drained spawn events through %u active=%d wave=%d pending=%u\n",
+				unsigned(InvasionLastAppliedSpawnEventId),
+				Net_GetInvasionActiveMonsterCount(),
+				Net_GetInvasionWave(),
+				unsigned(InvasionPendingSpawnEvents.Size()));
+		}
 	}
 }
 
@@ -3337,8 +3876,8 @@ static void Net_LogInvasionMirrorVisualDiagnostic()
 	if (nearest != nullptr)
 	{
 		const double dist = sqrt(nearestDistSq);
-		Printf(PRINT_HIGH,
-			"HCDE invasion mirror visual: state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=(%.1f, %.1f, %.1f) nearest=%u:%s pos=(%.1f, %.1f, %.1f) dist=%.1f health=%d speed=%.2f stepcap=%.2f stat=%d flags=0x%x flags2=0x%x rflags=0x%x style=0x%x alpha=%.2f\n",
+		DebugTrace::Debugf("invasion",
+			"mirror visual state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=(%.1f, %.1f, %.1f) nearest=%u:%s pos=(%.1f, %.1f, %.1f) dist=%.1f health=%d speed=%.2f stepcap=%.2f stat=%d flags=0x%x flags2=0x%x rflags=0x%x style=0x%x alpha=%.2f",
 			Net_InvasionStateName(InvasionState),
 			InvasionWaveDirector.Wave,
 			unsigned(InvasionReplicatedActors.Size()),
@@ -3366,11 +3905,43 @@ static void Net_LogInvasionMirrorVisualDiagnostic()
 			nearest->renderflags.GetValue(),
 			unsigned(nearest->RenderStyle.AsDWORD),
 			nearest->Alpha);
+		if (*hcde_hud_debug)
+		{
+			Printf(PRINT_HIGH,
+				"HCDE invasion mirror visual state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=(%.1f, %.1f, %.1f) nearest=%u:%s pos=(%.1f, %.1f, %.1f) dist=%.1f health=%d speed=%.2f stepcap=%.2f stat=%d flags=0x%x flags2=0x%x rflags=0x%x style=0x%x alpha=%.2f\n",
+				Net_InvasionStateName(InvasionState),
+				InvasionWaveDirector.Wave,
+				unsigned(InvasionReplicatedActors.Size()),
+				live,
+				drawable,
+				hidden,
+				dormant,
+				visualOnly,
+				euthanized,
+				cameraPos.X,
+				cameraPos.Y,
+				cameraPos.Z,
+				unsigned(nearestId),
+				nearest->GetClass()->TypeName.GetChars(),
+				nearest->X(),
+				nearest->Y(),
+				nearest->Z(),
+				dist,
+				nearest->health,
+				nearest->Speed,
+				Net_GetInvasionMirrorVisualStepCap(nearest),
+				nearest->GetStatNum(),
+				nearest->flags.GetValue(),
+				nearest->flags2.GetValue(),
+				nearest->renderflags.GetValue(),
+				unsigned(nearest->RenderStyle.AsDWORD),
+				nearest->Alpha);
+		}
 	}
 	else
 	{
-		Printf(PRINT_HIGH,
-			"HCDE invasion mirror visual: state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=%s\n",
+		DebugTrace::Debugf("invasion",
+			"mirror visual state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=%s",
 			Net_InvasionStateName(InvasionState),
 			InvasionWaveDirector.Wave,
 			unsigned(InvasionReplicatedActors.Size()),
@@ -3381,6 +3952,21 @@ static void Net_LogInvasionMirrorVisualDiagnostic()
 			visualOnly,
 			euthanized,
 			camera != nullptr ? "ready" : "missing");
+		if (*hcde_hud_debug)
+		{
+			Printf(PRINT_HIGH,
+				"HCDE invasion mirror visual state=%s wave=%d tracked=%u live=%d drawable=%d hidden=%d dormant=%d visualonly=%d euth=%d camera=%s\n",
+				Net_InvasionStateName(InvasionState),
+				InvasionWaveDirector.Wave,
+				unsigned(InvasionReplicatedActors.Size()),
+				live,
+				drawable,
+				hidden,
+				dormant,
+				visualOnly,
+				euthanized,
+				camera != nullptr ? "ready" : "missing");
+		}
 	}
 }
 
@@ -3390,10 +3976,22 @@ static bool Net_IsInvasionActorCorpseLike(const AActor* actor)
 		&& (actor->health <= 0 || (actor->flags & MF_CORPSE) != 0);
 }
 
+static bool Net_ClassDefaultsSuggestProjectile(PClassActor* cls)
+{
+	if (cls == nullptr)
+		return false;
+	const AActor* def = GetDefaultByType(cls);
+	return def != nullptr
+		&& ((def->flags & MF_MISSILE) != 0 || (def->BounceFlags & BOUNCE_MBF) != 0);
+}
+
 static bool Net_IsInvasionReplicatedProjectile(const AActor* actor)
 {
-	return actor != nullptr
-		&& ((actor->flags & MF_MISSILE) != 0 || (actor->BounceFlags & BOUNCE_MBF) != 0);
+	if (actor == nullptr)
+		return false;
+	if ((actor->flags & MF_MISSILE) != 0 || (actor->BounceFlags & BOUNCE_MBF) != 0)
+		return true;
+	return Net_ClassDefaultsSuggestProjectile(actor->GetClass());
 }
 
 static void Net_PrepareInvasionMirrorCorpsePhysics(AActor* actor, bool snapToFloor)
@@ -3748,6 +4346,9 @@ static FHCDEActorInterestResult HCDEComputeInvasionActorInterest(int clientNum, 
 	if (liveProjectile)
 		interest.Protected = deadOrForced || projectilePolicy.Protected;
 
+	if (liveProjectile && !interest.HasBaseline)
+		interest.Score += 50000;
+
 	if (liveProjectile)
 		interest.Tier = projectilePolicy.Tier;
 	else if (interest.Protected)
@@ -4015,6 +4616,70 @@ static void Net_RetireInvasionMirrorProjectile(FInvasionReplicatedActorRef& ref)
 	ref.DeathDeltaSent = true;
 }
 
+static void Net_PurgeStaleInvasionMirrorActorsOnClient()
+{
+	if (Net_IsLocalInvasionAuthority() || InvasionReplicatedActors.Size() == 0)
+		return;
+
+	size_t writeIdx = 0u;
+	unsigned purged = 0u;
+	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
+	{
+		auto& ref = InvasionReplicatedActors[i];
+		AActor* actor = ref.Actor;
+		if (ref.Id == 0u
+			|| actor == nullptr
+			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+		{
+			if (actor != nullptr)
+			{
+				actor->ClearCounters();
+				actor->Destroy();
+			}
+			Net_SetInvasionReplicatedActorPtr(ref, nullptr);
+			++purged;
+			continue;
+		}
+
+		if (ref.IsProjectile)
+		{
+			const bool projectileExpired = ref.SpawnTic > 0
+				&& gametic - ref.SpawnTic > HCDEInvasionProjectileMirrorMaxAgeTics;
+			if (!Net_IsInvasionReplicatedProjectile(actor) || projectileExpired || ref.ForceDeathDelta)
+			{
+				Net_RetireInvasionMirrorProjectile(ref);
+				++purged;
+				continue;
+			}
+		}
+		else if (Net_IsInvasionActorCorpseLike(actor) && ref.DeathDeltaSent)
+		{
+			Net_DetachInvasionMirrorCorpse(ref);
+			++purged;
+			continue;
+		}
+
+		if (writeIdx != i)
+			InvasionReplicatedActors[writeIdx] = ref;
+		++writeIdx;
+	}
+
+	if (writeIdx < InvasionReplicatedActors.Size())
+	{
+		InvasionReplicatedActors.Resize(unsigned(writeIdx));
+		Net_RebuildInvasionReplicatedActorIndexes();
+	}
+
+	if (purged > 0 && *hcde_hud_debug)
+	{
+		Printf(PRINT_HIGH, "HCDE invasion mirror purge removed=%u tracked=%u pending-spawns=%u pending-events=%u\n",
+			purged,
+			unsigned(InvasionReplicatedActors.Size()),
+			unsigned(InvasionPendingMirrorSpawns.Size()),
+			unsigned(InvasionPendingSpawnEvents.Size()));
+	}
+}
+
 static void Net_RetireInvasionMirrorActor(FInvasionReplicatedActorRef& ref, int serverHealth)
 {
 	AActor* actor = ref.Actor;
@@ -4234,7 +4899,7 @@ static void Net_ForceInvasionActorAction(const AActor* actor, uint8_t actionStat
 
 bool Net_IsInvasionClientMirrorActor(const AActor* actor)
 {
-	if (actor == nullptr || !I_UsesDedicatedServerSlot() || I_IsLocalHCDEServiceAuthority())
+	if (actor == nullptr || I_IsLocalHCDEServiceAuthority())
 		return false;
 
 	return Net_FindInvasionReplicatedActorByActor(actor) != nullptr;
@@ -4243,7 +4908,6 @@ bool Net_IsInvasionClientMirrorActor(const AActor* actor)
 bool Net_IsInvasionClientMirrorBlockingActor(const AActor* actor)
 {
 	if (actor == nullptr
-		|| !I_UsesDedicatedServerSlot()
 		|| I_IsLocalHCDEServiceAuthority()
 		|| (actor->ObjectFlags & OF_EuthanizeMe) != 0
 		|| Net_IsInvasionActorCorpseLike(actor))
@@ -5131,7 +5795,7 @@ static bool HCDEAppendAuthorityEvents(int clientNum, uint8_t* output, size_t out
 			? sharedRef->Source
 			: (event.Source <= HREP_SOURCE_DM ? event.Source : HREP_SOURCE_INVASION);
 		const uint8_t actorFlags = despawnEvent ? 0u : (sharedRef != nullptr ? sharedRef->Flags : event.ActorFlags);
-		constexpr size_t fixedRecordBytes = 1u + 1u + 1u + 1u + 4u + 4u + 2u + 2u + 2u + 1u + 3u * sizeof(double) + 4u + 4u;
+		constexpr size_t fixedRecordBytes = 1u + 1u + 1u + 1u + 4u + 4u + 2u + 2u + 2u + 1u + 6u * sizeof(double) + 4u + 4u;
 		const size_t recordBytes = fixedRecordBytes + classNameLen;
 		const size_t actorDeltaReserve = !HCDELivePeerHasCapability(clientNum, HCDELiveCapLaneBudgetsV1) && InvasionReplicatedActors.Size() > 0
 			? HCDEAuthorityEventActorDeltaReserveBytes
@@ -5162,6 +5826,9 @@ static bool HCDEAppendAuthorityEvents(int clientNum, uint8_t* output, size_t out
 			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Pos.X)
 			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Pos.Y)
 			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Pos.Z)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Vel.X)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Vel.Y)
+			|| !HCDEAppendDouble(output, outputCapacity, cursor, event.Vel.Z)
 			|| !HCDEAppendBE32(output, outputCapacity, cursor, event.Yaw.BAMs())
 			|| !HCDEAppendBE32(output, outputCapacity, cursor, 0u))
 		{
@@ -5397,6 +6064,9 @@ static bool HCDEApplyAuthorityEvents(int clientNum, const uint8_t* body, size_t 
 		double x = 0.0;
 		double y = 0.0;
 		double z = 0.0;
+		double vx = 0.0;
+		double vy = 0.0;
+		double vz = 0.0;
 		uint32_t yaw = 0u;
 		uint32_t pitch = 0u;
 		if (!HCDEReadByteField(body, bodyBytes, cursor, eventType)
@@ -5430,6 +6100,9 @@ static bool HCDEApplyAuthorityEvents(int clientNum, const uint8_t* body, size_t 
 		if (!HCDEReadDoubleField(body, bodyBytes, cursor, x)
 			|| !HCDEReadDoubleField(body, bodyBytes, cursor, y)
 			|| !HCDEReadDoubleField(body, bodyBytes, cursor, z)
+			|| !HCDEReadDoubleField(body, bodyBytes, cursor, vx)
+			|| !HCDEReadDoubleField(body, bodyBytes, cursor, vy)
+			|| !HCDEReadDoubleField(body, bodyBytes, cursor, vz)
 			|| !HCDEReadBE32Field(body, bodyBytes, cursor, yaw)
 			|| !HCDEReadBE32Field(body, bodyBytes, cursor, pitch))
 		{
@@ -5445,8 +6118,10 @@ static bool HCDEApplyAuthorityEvents(int clientNum, const uint8_t* body, size_t 
 			event.Wave = int(wave);
 			event.ClassName = className;
 			event.Pos = DVector3(x, y, z);
+			event.Vel = DVector3(vx, vy, vz);
 			event.Yaw = DAngle::fromBam(yaw);
 			event.Health = int(int16_t(healthBits));
+			event.Category = category;
 			if (Net_ApplyInvasionSpawnEvent(event))
 				++applied;
 			else
@@ -5622,6 +6297,25 @@ void Net_RegisterInvasionReplicatedMissile(AActor* missile, const AActor* source
 	const uint32_t projectileId = InvasionNextSpawnEventId++;
 	if (InvasionNextSpawnEventId == 0u)
 		InvasionNextSpawnEventId = 1u;
+
+	FHCDEAuthorityEvent event;
+	event.EventType = HCDEAuthorityEventSpawn;
+	event.Source = HREP_SOURCE_INVASION;
+	event.Category = HREP_ACTOR_PROJECTILE;
+	event.ActorFlags = HCDEActorDeltaFlagLive;
+	event.ClassId = Net_GetHCDEReplicatedActorClassId(missile->GetClass());
+	event.EventSeq = InvasionNextAuthorityEventSeq++;
+	if (InvasionNextAuthorityEventSeq == 0u)
+		InvasionNextAuthorityEventSeq = 1u;
+	event.Id = projectileId;
+	event.Tic = gametic;
+	event.Wave = InvasionWaveDirector.Wave;
+	event.ClassName = missile->GetClass()->TypeName.GetChars();
+	event.Pos = missile->Pos();
+	event.Vel = missile->Vel;
+	event.Yaw = missile->Angles.Yaw;
+	event.Health = missile->health;
+	HCDEPushRecentAuthorityEvent(event);
 	Net_RegisterInvasionReplicatedActor(projectileId, missile);
 
 	DebugTrace::Markf("invasion", "missile replicated id=%u class=%s source=%s pos=(%.1f,%.1f,%.1f) vel=(%.1f,%.1f,%.1f)",
@@ -6279,14 +6973,23 @@ static bool HCDEApplyActorDeltasV2(int clientNum, const uint8_t* body, size_t bo
 			&& health > 0)
 		{
 			const PClassActor* actorClass = Net_GetHCDEReplicatedActorClass(classId);
-			if (actorClass != nullptr
-				&& Net_SpawnInvasionMirrorActor(id, InvasionWaveDirector.Wave, actorClass->TypeName.GetChars(),
-					pos, targetYaw, targetPitch, health, "actor-delta-v2", false))
+			if (actorClass != nullptr)
 			{
-				invasionRef = Net_FindInvasionReplicatedActor(id);
-				actor = invasionRef != nullptr ? invasionRef->Actor.Get() : nullptr;
-				sharedRef = Net_FindHCDEReplicatedActor(id);
-				state = sharedRef != nullptr ? &sharedRef->ClientState[clientNum] : state;
+				if (NetworkEntityManager::IsPredicting())
+				{
+					// Mirror spawn events: applying invasion actors inside the
+					// prediction window lets rollback delete them before render.
+					Net_QueueInvasionMirrorSpawn(id, InvasionWaveDirector.Wave, actorClass->TypeName.GetChars(),
+						pos, vel, targetYaw, targetPitch, health, false);
+				}
+				else if (Net_SpawnInvasionMirrorActor(id, InvasionWaveDirector.Wave, actorClass->TypeName.GetChars(),
+					pos, vel, targetYaw, targetPitch, health, "actor-delta-v2", false, category))
+				{
+					invasionRef = Net_FindInvasionReplicatedActor(id);
+					actor = invasionRef != nullptr ? invasionRef->Actor.Get() : nullptr;
+					sharedRef = Net_FindHCDEReplicatedActor(id);
+					state = sharedRef != nullptr ? &sharedRef->ClientState[clientNum] : state;
+				}
 			}
 		}
 
@@ -6321,6 +7024,11 @@ static bool HCDEApplyActorDeltasV2(int clientNum, const uint8_t* body, size_t bo
 
 		if (invasionRef == nullptr || actor == nullptr)
 		{
+			if (Net_HasPendingInvasionMirrorSpawn(id))
+			{
+				++applied;
+				continue;
+			}
 			++missing;
 			continue;
 		}
@@ -6333,6 +7041,12 @@ static bool HCDEApplyActorDeltasV2(int clientNum, const uint8_t* body, size_t bo
 
 		const DVector3 oldPos = actor->Pos();
 		const bool firstVisualTarget = !invasionRef->HasVisualTarget;
+		if (category == HREP_ACTOR_PROJECTILE)
+			invasionRef->IsProjectile = true;
+		else if (Net_ClassDefaultsSuggestProjectile(actor->GetClass()))
+			invasionRef->IsProjectile = true;
+		if (Net_IsInvasionReplicatedProjectile(actor))
+			invasionRef->IsProjectile = true;
 		Net_SetInvasionMirrorVisualTarget(*invasionRef, pos, vel, targetYaw, targetPitch, health);
 		actor->health = health;
 		actor->Angles.Yaw = targetYaw;
@@ -6342,7 +7056,9 @@ static bool HCDEApplyActorDeltasV2(int clientNum, const uint8_t* body, size_t bo
 			Net_ApplyInvasionMirrorActionState(*invasionRef, actor, actionState);
 		const double distSq = (pos - oldPos).LengthSquared();
 		const double snapDistanceSq = HCDEInvasionMirrorVisualSnapDistance * HCDEInvasionMirrorVisualSnapDistance;
-		if (firstVisualTarget || invasionRef->IsProjectile || distSq > snapDistanceSq)
+		const bool combatAction = actionState == HCDEInvasionActorActionMelee
+			|| actionState == HCDEInvasionActorActionMissile;
+		if (firstVisualTarget || invasionRef->IsProjectile || distSq > snapDistanceSq || combatAction)
 		{
 			actor->SetOrigin(pos, false);
 			actor->Prev = pos;
@@ -6579,62 +7295,6 @@ static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t
 	// messages in sync with the authoritative state.
 	Net_TickInvasionAnnouncements();
 	return true;
-}
-
-static bool HCDEDecodeLegacyUserCmdRecord(int playerNum, uint32_t sequence, const uint8_t* data, size_t dataSize, size_t& eventBytes, usercmd_t& command)
-{
-	eventBytes = 0u;
-	size_t inputCursor = 0u;
-	bool sawEventCommand = false;
-	while (inputCursor < dataSize)
-	{
-		const size_t eventStart = inputCursor;
-		uint8_t type = 0u;
-		if (!HCDEReadByteField(data, dataSize, inputCursor, type))
-			return false;
-
-		if (type == DEM_USERCMD)
-		{
-			TArrayView<uint8_t> stream = TArrayView(const_cast<uint8_t*>(&data[inputCursor]), dataSize - inputCursor);
-			UnpackUserCmd(command, HCDEBuildUserCmdBasis(playerNum, sequence), stream);
-			eventBytes = eventStart;
-			return stream.Size() == 0u;
-		}
-		if (type == DEM_EMPTYUSERCMD)
-		{
-			if (const usercmd_t* basis = HCDEBuildUserCmdBasis(playerNum, sequence))
-				memcpy(&command, basis, sizeof(command));
-			else
-				memset(&command, 0, sizeof(command));
-			eventBytes = eventStart;
-			return inputCursor == dataSize;
-		}
-
-		uint8_t canonicalScratch[MAX_MSGLEN];
-		size_t canonicalCursor = 0u;
-		if (!HCDEIsAllowedTicEventType(type)
-			|| !HCDEAppendCanonicalEventPayload(type, canonicalScratch, sizeof(canonicalScratch), canonicalCursor, data, dataSize, inputCursor))
-		{
-			return false;
-		}
-		sawEventCommand = true;
-	}
-
-	// Some transition tics may contain only event commands and no explicit
-	// DEM_USERCMD/DEM_EMPTYUSERCMD marker. Preserve the events and synthesize
-	// an empty command from the rolling basis so map/teleport transitions do not
-	// get rejected as malformed.
-	if (sawEventCommand)
-	{
-		if (const usercmd_t* basis = HCDEBuildUserCmdBasis(playerNum, sequence))
-			memcpy(&command, basis, sizeof(command));
-		else
-			memset(&command, 0, sizeof(command));
-		eventBytes = dataSize;
-		return true;
-	}
-
-	return false;
 }
 
 static bool HCDEIsAllowedTicEventType(uint8_t type)
@@ -7011,7 +7671,14 @@ static bool HCDEAppendCanonicalEventPayload(uint8_t eventType, uint8_t* output, 
 	}
 }
 
-static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t dataSize)
+// Convert a raw NCMD-style DEM_* event stream into the canonical HCDE event-record
+// format. When `clientInput` is true, the narrower HCDEIsAllowedClientInputEventType
+// allow-list is enforced and disallowed events are silently dropped (parsed into a
+// throw-away region of the output and then rewound) so the receiver -- which only
+// accepts client-input events from that same narrow list -- never has to reject the
+// whole packet on account of a stray locally-queued admin/cheat event. Server
+// snapshot builds (`clientInput == false`) keep the strict-fail behaviour.
+static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_t& cursor, const uint8_t* data, size_t dataSize, bool clientInput)
 {
 	if (cursor >= outputCapacity)
 	{
@@ -7046,6 +7713,8 @@ static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_
 			DebugTrace::Markf("net", "HCDE append event records failed: eventCount=%u reason=event_count_overflow", unsigned(eventCount));
 			return false;
 		}
+		// Snapshot cursor so we can rewind if the event is filtered out below.
+		const size_t eventRecordStart = cursor;
 		if (!HCDEAppendByte(output, outputCapacity, cursor, eventType))
 		{
 			DebugTrace::Markf("net", "HCDE append event records failed: cursor=%zu outputCapacity=%zu eventType=%u reason=EventType_append_failed", cursor, outputCapacity, eventType);
@@ -7077,6 +7746,18 @@ static bool HCDEAppendEventRecords(uint8_t* output, size_t outputCapacity, size_
 			DebugTrace::Markf("net", "HCDE append event records failed: payloadBytes=%zu reason=payload_too_large", payloadBytes);
 			return false;
 		}
+
+		// Drop client-input events that fall outside the narrow allow-list: parsing
+		// already advanced inputCursor past the legacy form so the next iteration
+		// stays in sync with the input stream, but we rewind `cursor` so the wire
+		// payload omits the disallowed record entirely.
+		if (clientInput && !HCDEIsAllowedClientInputEventType(eventType))
+		{
+			cursor = eventRecordStart;
+			DebugTrace::Markf("net", "HCDE append event records: dropped client-input event type=%u (not in client-input allow-list)", eventType);
+			continue;
+		}
+
 		HCDELiveWriteBE16(&output[payloadSizeOffset], uint16_t(payloadBytes));
 		++eventCount;
 	}
@@ -7376,79 +8057,52 @@ static bool HCDEAppendLegacyEventPayload(uint8_t eventType, const uint8_t* data,
 	return ok && inputCursor == dataSize;
 }
 
-static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPacket, size_t legacySize, uint8_t* output, size_t outputCapacity, size_t& outputSize)
+// Build a native HLIVE_SERVER_SNAPSHOT body directly from authoritative gameplay
+// state. The output buffer holds the full snapshot payload (header + quitters +
+// records + world deltas + actor deltas + invasion snapshot). The header bytes are
+// fixed up at the end once `bodyBytes` is known. Returns false (with outputSize=0)
+// on any encoding failure, leaving the caller to invoke HCDEAbortLiveGameplaySend
+// instead of falling back to a legacy NCMD encoder.
+static bool HCDEBuildNativeServerSnapshotPayload(int client, uint8_t controlFlags, uint8_t routingByte,
+	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
+	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, const int* playerNums, uint8_t playerCount,
+	const int* quitNums, uint8_t quitterCount, const usercmd_t (*commands)[MAXSENDTICS],
+	const uint8_t* const (*eventStreams)[MAXSENDTICS], const size_t (*eventSizes)[MAXSENDTICS],
+	uint8_t* output, size_t outputCapacity, size_t& outputSize, const char*& failureReason)
 {
 	outputSize = 0u;
-	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
-	if (legacySize < 13u || legacySize > MAX_MSGLEN)
-		return RejectHCDEServerSnapshotBuild(client, "malformed-size", legacySize, 0u);
-
-	const uint8_t controlFlags = legacyPacket[0];
-	if (controlFlags & disallowedControlFlags)
+	failureReason = nullptr;
+	auto fail = [&](const char* reason) -> bool
 	{
-		DebugTrace::Markf("net", "refused legacy server snapshot for client=%d control flags=%u",
-			client, unsigned(controlFlags & disallowedControlFlags));
+		failureReason = reason;
 		return false;
-	}
-
-	size_t cursor = 10u;
-	size_t quitterBytes = 0u;
-	if (controlFlags & NCMD_QUITTERS)
+	};
+	if (playerCount > MAXPLAYERS
+		|| commandTics > MAXSENDTICS
+		|| consistencyTics > MAXSENDTICS
+		|| (playerCount > 0u && playerNums == nullptr)
+		|| (quitterCount > 0u && quitNums == nullptr)
+		|| (commandTics > 0u && (commands == nullptr || eventStreams == nullptr || eventSizes == nullptr)))
 	{
-		if (cursor >= legacySize)
-			return RejectHCDEServerSnapshotBuild(client, "missing-quitter-count", legacySize, cursor);
-		quitterBytes = size_t(legacyPacket[cursor]) + 1u;
-		if (quitterBytes > legacySize - cursor)
-			return RejectHCDEServerSnapshotBuild(client, "truncated-quitters", legacySize, cursor);
-		cursor += quitterBytes;
+		return fail("server-snapshot-invalid-build-input");
 	}
 
-	if (cursor > legacySize || legacySize - cursor < 3u)
-		return RejectHCDEServerSnapshotBuild(client, "missing-snapshot-counts", legacySize, cursor);
-
-	const uint8_t playerCount = legacyPacket[cursor++];
-	const uint8_t commandTics = legacyPacket[cursor++];
-	uint32_t baseSequence = 0u;
-	if (commandTics > 0u)
+	const size_t quitterBytes = (controlFlags & NCMD_QUITTERS) != 0u ? size_t(quitterCount) + 1u : 0u;
+	if (((controlFlags & NCMD_QUITTERS) == 0u && quitterCount != 0u)
+		|| ((controlFlags & NCMD_QUITTERS) != 0u && quitterCount == 0u)
+		|| HCDEServerSnapshotHeaderSize + quitterBytes > outputCapacity)
 	{
-		if (commandTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
-			return RejectHCDEServerSnapshotBuild(client, "invalid-command-tics", legacySize, cursor);
-		baseSequence = HCDELiveReadBE32(&legacyPacket[cursor]);
-		cursor += 4u;
+		return fail("server-snapshot-invalid-quitter-header");
 	}
-
-	if (cursor >= legacySize)
-		return RejectHCDEServerSnapshotBuild(client, "missing-consistency-count", legacySize, cursor);
-
-	const uint8_t consistencyTics = legacyPacket[cursor++];
-	uint32_t baseConsistency = 0u;
-	if (consistencyTics > 0u)
+	// Validate quitter slots before we spend any work serialising the body so a bad
+	// caller list is rejected up front instead of mid-build (which would otherwise
+	// leave partial data in `output` even though we never advertise it via outputSize).
+	for (uint8_t i = 0u; i < quitterCount; ++i)
 	{
-		if (consistencyTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
-			return RejectHCDEServerSnapshotBuild(client, "invalid-consistency-tics", legacySize, cursor);
-		baseConsistency = HCDELiveReadBE32(&legacyPacket[cursor]);
-		cursor += 4u;
+		if (quitNums[i] < 0 || quitNums[i] >= MAXPLAYERS)
+			return fail("server-snapshot-invalid-quitter-slot");
 	}
 
-	if (cursor >= legacySize)
-		return RejectHCDEServerSnapshotBuild(client, "missing-stability-byte", legacySize, cursor);
-
-	const uint8_t stabilityBuffer = legacyPacket[cursor++];
-	const size_t rawSnapshotBytes = legacySize - cursor;
-	if (playerCount > MAXPLAYERS)
-		return RejectHCDEServerSnapshotBuild(client, "too-many-players", legacySize, cursor);
-	if (quitterBytes > 0xffffu)
-		return RejectHCDEServerSnapshotBuild(client, "too-many-quitter-bytes", legacySize, cursor);
-	if ((controlFlags & NCMD_QUITTERS) == 0u && quitterBytes != 0u)
-		return RejectHCDEServerSnapshotBuild(client, "unexpected-quitter-bytes", legacySize, cursor);
-	if ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes == 0u)
-		return RejectHCDEServerSnapshotBuild(client, "missing-quitter-bytes", legacySize, cursor);
-	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u || rawSnapshotBytes != 0u))
-		return RejectHCDEServerSnapshotBuild(client, "invalid-empty-snapshot", legacySize, cursor);
-	if (HCDEServerSnapshotHeaderSize + quitterBytes > outputCapacity)
-		return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, cursor);
-
-	size_t recordCursor = cursor;
 	size_t bodyCursor = HCDEServerSnapshotHeaderSize + quitterBytes;
 	uint64_t playersSeen = 0u;
 	uint64_t worldDeltaPlayersSeen = 0u;
@@ -7467,96 +8121,54 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		worldDeltaPlayers[worldDeltaPlayerCount++] = playerNum;
 		return true;
 	};
+
 	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsMagic, sizeof(HCDEServerSnapshotRecordsMagic))
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEServerSnapshotRecordsProtocolVersion)
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
 	{
-		return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+		return fail("server-snapshot-record-header-overflow");
 	}
 
 	for (uint8_t p = 0u; p < playerCount; ++p)
 	{
-		if (recordCursor + 3u > legacySize)
-			return RejectHCDEServerSnapshotBuild(client, "missing-player-record", legacySize, recordCursor);
-
-		const uint8_t playerNum = legacyPacket[recordCursor++];
-		if (playerNum >= MAXPLAYERS || playerNum >= 64u)
-			return RejectHCDEServerSnapshotBuild(client, "invalid-player-record", legacySize, recordCursor);
-
+		const int playerNumInt = playerNums[p];
+		if (playerNumInt < 0 || playerNumInt >= MAXPLAYERS || playerNumInt >= 64)
+			return fail("server-snapshot-invalid-player-slot");
+		const uint8_t playerNum = uint8_t(playerNumInt);
 		const uint64_t playerMask = uint64_t(1u) << playerNum;
-		if (playersSeen & playerMask)
-			return RejectHCDEServerSnapshotBuild(client, "duplicate-player-record", legacySize, recordCursor);
+		if ((playersSeen & playerMask) != 0u)
+			return fail("server-snapshot-duplicate-player-slot");
 		playersSeen |= playerMask;
 		if (!addWorldDeltaPlayer(playerNum))
-			return RejectHCDEServerSnapshotBuild(client, "too-many-world-delta-players", legacySize, recordCursor);
+			return fail("server-snapshot-world-player-list-full");
 
-		const uint16_t latency = HCDELiveReadBE16(&legacyPacket[recordCursor]);
-		recordCursor += 2u;
+		auto& clientState = ClientStates[playerNum];
 		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, playerNum)
-			|| !HCDEAppendBE16(output, outputCapacity, bodyCursor, latency)
+			|| !HCDEAppendBE16(output, outputCapacity, bodyCursor, uint16_t(clientState.AverageLatency))
 			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, consistencyTics)
 			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, commandTics))
 		{
-			return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
+			return fail("server-snapshot-player-record-overflow");
 		}
 
-		uint64_t consistencyOffsetsSeen = 0u;
 		for (uint8_t r = 0u; r < consistencyTics; ++r)
 		{
-			if (recordCursor + 3u > legacySize)
-				return RejectHCDEServerSnapshotBuild(client, "truncated-consistency-record", legacySize, recordCursor);
-
-			const uint8_t consistencyOffset = legacyPacket[recordCursor];
-			if (consistencyOffset >= consistencyTics)
-				return RejectHCDEServerSnapshotBuild(client, "invalid-consistency-offset", legacySize, recordCursor);
-			const uint64_t consistencyMask = uint64_t(1u) << consistencyOffset;
-			if (consistencyOffsetsSeen & consistencyMask)
-				return RejectHCDEServerSnapshotBuild(client, "duplicate-consistency-offset", legacySize, recordCursor);
-			consistencyOffsetsSeen |= consistencyMask;
-
-			if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], 3u))
-				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
-			recordCursor += 3u;
+			const int tic = int(baseConsistency) + int(r);
+			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, r)
+				|| !HCDEAppendBE16(output, outputCapacity, bodyCursor, uint16_t(clientState.LocalConsistency[tic % BACKUPTICS])))
+			{
+				return fail("server-snapshot-consistency-record-overflow");
+			}
 		}
 
-		uint64_t commandOffsetsSeen = 0u;
 		for (uint8_t t = 0u; t < commandTics; ++t)
 		{
-			if (recordCursor >= legacySize)
-				return RejectHCDEServerSnapshotBuild(client, "truncated-command-record", legacySize, recordCursor);
-
-			const uint8_t commandOffset = legacyPacket[recordCursor++];
-			if (commandOffset >= commandTics)
-				return RejectHCDEServerSnapshotBuild(client, "invalid-command-offset", legacySize, recordCursor);
-			const uint64_t commandMask = uint64_t(1u) << commandOffset;
-			if (commandOffsetsSeen & commandMask)
-				return RejectHCDEServerSnapshotBuild(client, "duplicate-command-offset", legacySize, recordCursor);
-			commandOffsetsSeen |= commandMask;
-
-			size_t commandPayloadBytes = 0u;
-			if (!Net_TrySkipUserCmdMessageWithBoundary(&legacyPacket[recordCursor], legacySize - recordCursor,
-				t + 1u == commandTics, commandTics, commandOffsetsSeen, commandTics - t - 1u, commandPayloadBytes))
+			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, t)
+				|| !HCDEAppendEventRecords(output, outputCapacity, bodyCursor, eventStreams[p][t], eventSizes[p][t], /*clientInput=*/false)
+				|| !HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, commands[p][t]))
 			{
-				return RejectHCDEServerSnapshotBuild(client, "invalid-command-record", legacySize, recordCursor);
+				return fail("server-snapshot-command-record-overflow");
 			}
-			if (commandPayloadBytes == 0u)
-				return RejectHCDEServerSnapshotBuild(client, "empty-command-record", legacySize, recordCursor);
-
-			size_t eventBytes = 0u;
-			usercmd_t command = {};
-			const uint32_t commandSequence = baseSequence + commandOffset;
-			if (!HCDEDecodeLegacyUserCmdRecord(playerNum, commandSequence, &legacyPacket[recordCursor], commandPayloadBytes, eventBytes, command))
-				return RejectHCDEServerSnapshotBuild(client, "invalid-command-record", legacySize, recordCursor);
-			if (eventBytes > 0xffffu)
-				return RejectHCDEServerSnapshotBuild(client, "too-many-event-bytes", legacySize, recordCursor);
-
-			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, commandOffset))
-				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
-			if (!HCDEAppendEventRecords(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], eventBytes))
-				return RejectHCDEServerSnapshotBuild(client, "invalid-event-records", legacySize, recordCursor);
-			if (!HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, command))
-				return RejectHCDEServerSnapshotBuild(client, "output-overflow", legacySize, recordCursor);
-			recordCursor += commandPayloadBytes;
 		}
 	}
 
@@ -7565,46 +8177,35 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 		if (!playeringame[playerNum] || I_IsServerReservedSlot(playerNum) || players[playerNum].mo == nullptr)
 			continue;
 		if (!addWorldDeltaPlayer(playerNum))
-			return RejectHCDEServerSnapshotBuild(client, "too-many-world-delta-players", legacySize, recordCursor);
+			return fail("server-snapshot-world-player-list-full");
 	}
-
-	if (recordCursor != legacySize)
-		return RejectHCDEServerSnapshotBuild(client, "trailing-snapshot-bytes", legacySize, recordCursor);
 
 	const size_t playerSnapshotEnd = bodyCursor;
 	if (!HCDEAppendServerWorldDeltas(client, output, outputCapacity, bodyCursor, worldDeltaPlayers, worldDeltaPlayerCount))
-		return RejectHCDEServerSnapshotBuild(client, "world-delta-overflow", legacySize, recordCursor);
+		return fail("server-snapshot-world-delta-build");
 	if (!Net_IsInvasionModeEnabled()
 		&& !HCDEAppendSharedActorDeltasV2(client, output,
 			HCDELiveLaneBudgetEnd(client, HLANE_ACTOR_DELTA, bodyCursor, outputCapacity), bodyCursor))
 	{
-		return RejectHCDEServerSnapshotBuild(client, "shared-actor-delta-overflow", legacySize, recordCursor);
+		return fail("server-snapshot-actor-delta-build");
 	}
 	if (Net_IsInvasionModeEnabled()
 		&& !HCDEAppendInvasionSnapshot(client, output, outputCapacity, bodyCursor))
 	{
-		return RejectHCDEServerSnapshotBuild(client, "invasion-overflow", legacySize, recordCursor);
+		return fail("server-snapshot-invasion-build");
 	}
 
 	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
-	if (bodyBytes > 0xffffu)
-		return RejectHCDEServerSnapshotBuild(client, "too-many-record-bytes", legacySize, recordCursor);
-
-	// Explicit bounds validation before accessing offsets
-	if (legacySize < 2u)
-		return RejectHCDEServerSnapshotBuild(client, "insufficient-offset-bounds", legacySize, cursor);
-	if (legacySize < 6u)
-		return RejectHCDEServerSnapshotBuild(client, "insufficient-offset-bounds", legacySize, cursor);
-	if (legacySize < 10u + quitterBytes)
-		return RejectHCDEServerSnapshotBuild(client, "insufficient-quitter-bytes", legacySize, cursor);
+	if (bodyBytes > UINT16_MAX)
+		return fail("server-snapshot-body-too-large");
 
 	memcpy(&output[HCDEServerSnapshotMagicOffset], HCDEServerSnapshotMagic, sizeof(HCDEServerSnapshotMagic));
 	output[HCDEServerSnapshotVersionOffset] = HCDEServerSnapshotProtocolVersion;
 	output[HCDEServerSnapshotFlagsOffset] = controlFlags;
-	output[HCDEServerSnapshotRoutingOffset] = legacyPacket[1];
+	output[HCDEServerSnapshotRoutingOffset] = routingByte;
 	output[HCDEServerSnapshotPlayerCountOffset] = playerCount;
-	memcpy(&output[HCDEServerSnapshotSequenceAckOffset], &legacyPacket[2], 4u);
-	memcpy(&output[HCDEServerSnapshotConsistencyAckOffset], &legacyPacket[6], 4u);
+	HCDELiveWriteBE32(&output[HCDEServerSnapshotSequenceAckOffset], sequenceAck);
+	HCDELiveWriteBE32(&output[HCDEServerSnapshotConsistencyAckOffset], consistencyAck);
 	HCDELiveWriteBE16(&output[HCDEServerSnapshotQuitterBytesOffset], uint16_t(quitterBytes));
 	HCDELiveWriteBE32(&output[HCDEServerSnapshotBaseSequenceOffset], baseSequence);
 	HCDELiveWriteBE32(&output[HCDEServerSnapshotBaseConsistencyOffset], baseConsistency);
@@ -7613,190 +8214,94 @@ static bool BuildHCDEServerSnapshotPayload(int client, const uint8_t* legacyPack
 	output[HCDEServerSnapshotStabilityOffset] = stabilityBuffer;
 	HCDELiveWriteBE16(&output[HCDEServerSnapshotBodyBytesOffset], uint16_t(bodyBytes));
 	if (quitterBytes > 0u)
-		memcpy(&output[HCDEServerSnapshotHeaderSize], &legacyPacket[10], quitterBytes);
+	{
+		// Quitter inputs were validated up-front above; just emit them.
+		output[HCDEServerSnapshotHeaderSize] = quitterCount;
+		for (uint8_t i = 0u; i < quitterCount; ++i)
+			output[HCDEServerSnapshotHeaderSize + 1u + i] = uint8_t(quitNums[i]);
+	}
+
 	outputSize = bodyCursor;
 	++HCDELiveProfile.ServerSnapshotPacketsBuilt;
+	++HCDELiveProfile.ServerSnapshotNativeBuilt;
 	HCDELiveProfile.ServerSnapshotBytesBuilt += outputSize;
-	HCDELiveProfile.ServerSnapshotLegacyBytes += legacySize;
 	HCDERecordLiveLaneTx(HLANE_PLAYER_SNAPSHOT, client, playerSnapshotEnd);
-
-	DebugTrace::Markf("net", "HCDE server snapshot payload build client=%d players=%u tics=%u consistencies=%u quitters=%zu records=%zu deltas=%zu raw=%zu",
-		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes, worldDeltaPlayerCount, rawSnapshotBytes);
+	DebugTrace::Markf("net", "HCDE server snapshot native build client=%d players=%u tics=%u consistencies=%u quitters=%u records=%zu deltas=%zu",
+		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), unsigned(quitterCount), bodyBytes, worldDeltaPlayerCount);
 	return true;
 }
 
-static bool RejectHCDEClientInputBuild(int client, const char* reason, size_t legacySize, size_t cursor)
-{
-	DebugTrace::Markf("net", "refused legacy client input for client=%d reason=%s size=%zu cursor=%zu",
-		client, reason != nullptr ? reason : "unknown", legacySize, cursor);
-	return false;
-}
-
-static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket, size_t legacySize, uint8_t* output, size_t outputCapacity, size_t& outputSize)
+// Build a native HLIVE_CLIENT_COMMANDS body for the local non-authority player from
+// LocalCmds + NetEvents data passed in by NetUpdate. The header bytes are fixed up
+// at the end once `bodyBytes` is known. Returns false (with outputSize=0) on any
+// encoding failure, leaving the caller to invoke HCDEAbortLiveGameplaySend instead
+// of attempting any legacy NCMD fallback.
+static bool HCDEBuildNativeClientInputPayload(int client, uint8_t controlFlags, uint8_t routingByte,
+	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
+	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, int playerNum, int sequenceOffset,
+	const usercmd_t* commands, const uint8_t* const* eventStreams, const size_t* eventSizes,
+	uint8_t* output, size_t outputCapacity, size_t& outputSize, const char*& failureReason)
 {
 	outputSize = 0u;
-	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_QUITTERS | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
-	if (legacySize < 13u || legacySize > MAX_MSGLEN)
-		return RejectHCDEClientInputBuild(client, "malformed-size", legacySize, 0u);
-
-	const uint8_t controlFlags = legacyPacket[0];
-	if (controlFlags & disallowedControlFlags)
+	failureReason = nullptr;
+	auto fail = [&](const char* reason) -> bool
 	{
-		DebugTrace::Markf("net", "refused legacy client input for client=%d control flags=%u",
-			client, unsigned(controlFlags & disallowedControlFlags));
+		failureReason = reason;
 		return false;
-	}
-
-	size_t cursor = 10u;
-	const uint8_t playerCount = legacyPacket[cursor++];
-	const uint8_t commandTics = legacyPacket[cursor++];
-	uint32_t baseSequence = 0u;
-	if (commandTics > 0u)
+	};
+	if (playerNum < 0 || playerNum >= MAXPLAYERS
+		|| commandTics > MAXSENDTICS
+		|| consistencyTics > MAXSENDTICS
+		|| (commandTics > 0u && (commands == nullptr || eventStreams == nullptr || eventSizes == nullptr))
+		|| HCDEClientInputHeaderSize > outputCapacity)
 	{
-		if (commandTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
-			return RejectHCDEClientInputBuild(client, "invalid-command-tics", legacySize, cursor);
-		baseSequence = HCDELiveReadBE32(&legacyPacket[cursor]);
-		cursor += 4u;
+		return fail("client-input-invalid-build-input");
 	}
 
-	if (cursor >= legacySize)
-		return RejectHCDEClientInputBuild(client, "missing-consistency-count", legacySize, cursor);
-
-	const uint8_t consistencyTics = legacyPacket[cursor++];
-	uint32_t baseConsistency = 0u;
-	if (consistencyTics > 0u)
-	{
-		if (consistencyTics > MAXSENDTICS || cursor > legacySize || legacySize - cursor < 4u)
-			return RejectHCDEClientInputBuild(client, "invalid-consistency-tics", legacySize, cursor);
-		baseConsistency = HCDELiveReadBE32(&legacyPacket[cursor]);
-		cursor += 4u;
-	}
-
-	if (cursor >= legacySize)
-		return RejectHCDEClientInputBuild(client, "missing-stability-byte", legacySize, cursor);
-
-	const uint8_t stabilityBuffer = legacyPacket[cursor++];
-	const size_t rawCommandBytes = legacySize - cursor;
-	if (playerCount > MAXPLAYERS)
-		return RejectHCDEClientInputBuild(client, "too-many-players", legacySize, cursor);
-	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u || rawCommandBytes != 0u))
-		return RejectHCDEClientInputBuild(client, "invalid-empty-heartbeat", legacySize, cursor);
-	if (HCDEClientInputHeaderSize > outputCapacity)
-		return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, cursor);
-
-	size_t recordCursor = cursor;
 	size_t bodyCursor = HCDEClientInputHeaderSize;
-	uint64_t playersSeen = 0u;
 	if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, HCDEClientInputRecordsMagic, sizeof(HCDEClientInputRecordsMagic))
 		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, HCDEClientInputRecordsProtocolVersion)
-		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, playerCount))
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, 1u)
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, uint8_t(playerNum))
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, consistencyTics)
+		|| !HCDEAppendByte(output, outputCapacity, bodyCursor, commandTics))
 	{
-		return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
+		return fail("client-input-record-header-overflow");
 	}
 
-	for (uint8_t p = 0u; p < playerCount; ++p)
+	auto& clientState = ClientStates[playerNum];
+	for (uint8_t r = 0u; r < consistencyTics; ++r)
 	{
-		if (recordCursor >= legacySize)
-			return RejectHCDEClientInputBuild(client, "missing-player-record", legacySize, recordCursor);
-
-		const uint8_t playerNum = legacyPacket[recordCursor++];
-		if (playerNum >= MAXPLAYERS || playerNum >= 64u)
-			return RejectHCDEClientInputBuild(client, "invalid-player-record", legacySize, recordCursor);
-
-		const uint64_t playerMask = uint64_t(1u) << playerNum;
-		if (playersSeen & playerMask)
-			return RejectHCDEClientInputBuild(client, "duplicate-player-record", legacySize, recordCursor);
-		playersSeen |= playerMask;
-
-		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, playerNum)
-			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, consistencyTics)
-			|| !HCDEAppendByte(output, outputCapacity, bodyCursor, commandTics))
+		const int tic = int(baseConsistency) + int(r);
+		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, r)
+			|| !HCDEAppendBE16(output, outputCapacity, bodyCursor, uint16_t(clientState.LocalConsistency[tic % BACKUPTICS])))
 		{
-			return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
-		}
-
-		uint64_t consistencyOffsetsSeen = 0u;
-		for (uint8_t r = 0u; r < consistencyTics; ++r)
-		{
-			if (recordCursor + 3u > legacySize)
-				return RejectHCDEClientInputBuild(client, "truncated-consistency-record", legacySize, recordCursor);
-
-			const uint8_t consistencyOffset = legacyPacket[recordCursor];
-			if (consistencyOffset >= consistencyTics)
-				return RejectHCDEClientInputBuild(client, "invalid-consistency-offset", legacySize, recordCursor);
-			const uint64_t consistencyMask = uint64_t(1u) << consistencyOffset;
-			if (consistencyOffsetsSeen & consistencyMask)
-				return RejectHCDEClientInputBuild(client, "duplicate-consistency-offset", legacySize, recordCursor);
-			consistencyOffsetsSeen |= consistencyMask;
-
-			if (!HCDEAppendBytes(output, outputCapacity, bodyCursor, &legacyPacket[recordCursor], 3u))
-				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
-			recordCursor += 3u;
-		}
-
-		uint64_t commandOffsetsSeen = 0u;
-		for (uint8_t t = 0u; t < commandTics; ++t)
-		{
-			if (recordCursor >= legacySize)
-				return RejectHCDEClientInputBuild(client, "truncated-command-record", legacySize, recordCursor);
-
-			const uint8_t commandOffset = legacyPacket[recordCursor++];
-			if (commandOffset >= commandTics)
-				return RejectHCDEClientInputBuild(client, "invalid-command-offset", legacySize, recordCursor);
-			const uint64_t commandMask = uint64_t(1u) << commandOffset;
-			if (commandOffsetsSeen & commandMask)
-				return RejectHCDEClientInputBuild(client, "duplicate-command-offset", legacySize, recordCursor);
-			commandOffsetsSeen |= commandMask;
-
-			const uint8_t* commandStart = &legacyPacket[recordCursor];
-			size_t commandPayloadBytes = 0u;
-			if (!Net_TrySkipUserCmdMessageWithBoundary(commandStart, legacySize - recordCursor,
-				t + 1u == commandTics, commandTics, commandOffsetsSeen, commandTics - t - 1u, commandPayloadBytes))
-			{
-				return RejectHCDEClientInputBuild(client, "invalid-command-record", legacySize, recordCursor);
-			}
-			if (commandPayloadBytes == 0u)
-				return RejectHCDEClientInputBuild(client, "empty-command-record", legacySize, recordCursor);
-
-			size_t eventBytes = 0u;
-			usercmd_t command = {};
-			const uint32_t commandSequence = baseSequence + commandOffset;
-			if (!HCDEDecodeLegacyUserCmdRecord(playerNum, commandSequence, commandStart, commandPayloadBytes, eventBytes, command))
-				return RejectHCDEClientInputBuild(client, "invalid-command-record", legacySize, recordCursor);
-			if (eventBytes > 0xffffu)
-				return RejectHCDEClientInputBuild(client, "too-many-event-bytes", legacySize, recordCursor);
-
-			if (!HCDEAppendByte(output, outputCapacity, bodyCursor, commandOffset))
-				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
-			if (!HCDEAppendEventRecords(output, outputCapacity, bodyCursor, commandStart, eventBytes))
-				return RejectHCDEClientInputBuild(client, "invalid-event-records", legacySize, recordCursor);
-			if (!HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, command))
-				return RejectHCDEClientInputBuild(client, "output-overflow", legacySize, recordCursor);
-			recordCursor += commandPayloadBytes;
+			return fail("client-input-consistency-record-overflow");
 		}
 	}
 
-	if (recordCursor != legacySize)
-		return RejectHCDEClientInputBuild(client, "trailing-input-bytes", legacySize, recordCursor);
+	for (uint8_t t = 0u; t < commandTics; ++t)
+	{
+		if (!HCDEAppendByte(output, outputCapacity, bodyCursor, t)
+			|| !HCDEAppendEventRecords(output, outputCapacity, bodyCursor, eventStreams[t], eventSizes[t], /*clientInput=*/true)
+			|| !HCDEAppendUserCmdFields(output, outputCapacity, bodyCursor, commands[t]))
+		{
+			return fail("client-input-command-record-overflow");
+		}
+	}
 
 	const size_t bodyBytes = bodyCursor - HCDEClientInputHeaderSize;
-	if (bodyBytes > 0xffffu)
-		return RejectHCDEClientInputBuild(client, "too-many-record-bytes", legacySize, recordCursor);
-
-	// Explicit bounds validation before accessing offsets
-	if (legacySize < 2u)
-		return RejectHCDEClientInputBuild(client, "insufficient-offset-bounds", legacySize, recordCursor);
-	if (legacySize < 6u)
-		return RejectHCDEClientInputBuild(client, "insufficient-offset-bounds", legacySize, recordCursor);
+	if (bodyBytes > UINT16_MAX)
+		return fail("client-input-body-too-large");
 
 	memcpy(&output[HCDEClientInputMagicOffset], HCDEClientInputMagic, sizeof(HCDEClientInputMagic));
 	output[HCDEClientInputVersionOffset] = HCDEClientInputProtocolVersion;
 	output[HCDEClientInputFlagsOffset] = controlFlags;
-	output[HCDEClientInputRoutingOffset] = legacyPacket[1];
-	output[HCDEClientInputPlayerCountOffset] = playerCount;
-	memcpy(&output[HCDEClientInputSequenceAckOffset], &legacyPacket[2], 4u);
-	memcpy(&output[HCDEClientInputConsistencyAckOffset], &legacyPacket[6], 4u);
-	HCDELiveWriteBE32(&output[HCDEClientInputBaseSequenceOffset], baseSequence);
+	output[HCDEClientInputRoutingOffset] = routingByte;
+	output[HCDEClientInputPlayerCountOffset] = 1u;
+	HCDELiveWriteBE32(&output[HCDEClientInputSequenceAckOffset], sequenceAck);
+	HCDELiveWriteBE32(&output[HCDEClientInputConsistencyAckOffset], consistencyAck);
+	HCDELiveWriteBE32(&output[HCDEClientInputBaseSequenceOffset], baseSequence + uint32_t(sequenceOffset));
 	HCDELiveWriteBE32(&output[HCDEClientInputBaseConsistencyOffset], baseConsistency);
 	output[HCDEClientInputCommandTicsOffset] = commandTics;
 	output[HCDEClientInputConsistencyTicsOffset] = consistencyTics;
@@ -7804,67 +8309,388 @@ static bool BuildHCDEClientInputPayload(int client, const uint8_t* legacyPacket,
 	HCDELiveWriteBE16(&output[HCDEClientInputBodyBytesOffset], uint16_t(bodyBytes));
 	outputSize = HCDEClientInputHeaderSize + bodyBytes;
 	++HCDELiveProfile.ClientInputPacketsBuilt;
+	++HCDELiveProfile.ClientInputNativeBuilt;
 	HCDELiveProfile.ClientInputBytesBuilt += outputSize;
-	HCDELiveProfile.ClientInputLegacyBytes += legacySize;
 	HCDERecordLiveLaneTx(HLANE_COMMAND, client, outputSize);
-
-	DebugTrace::Markf("net", "HCDE client input payload build client=%d players=%u tics=%u consistencies=%u records=%zu raw=%zu",
-		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes, rawCommandBytes);
+	DebugTrace::Markf("net", "HCDE client input native build client=%d player=%d tics=%u consistencies=%u records=%zu",
+		client, playerNum, unsigned(commandTics), unsigned(consistencyTics), bodyBytes);
 	return true;
 }
 
-static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
+static bool Net_IsLateJoinSyncPending(int client);
+static void Net_ClearLateJoinSyncPending(int client, const char* reason);
+static void Net_ResetAuthorityWaitWatchdog(const char* reason, bool trace);
+static void Net_EnsureRuntimeClientSlot(int client, int sourceClient);
+static void DisconnectClient(int clientNum);
+
+// Translate `eventCount` canonical HCDE tic events starting at `body[bodyCursor]`
+// into the legacy NCMD/DEM_* layout expected by Net_DoCommand and store the result
+// into `output[outputCursor..]`. Advances `bodyCursor` past each event regardless
+// of whether the translation succeeds; the caller treats a false return as a
+// malformed packet. The `clientInput` flag selects the receive-side allow-list:
+// client-input bodies are gated by HCDEIsAllowedClientInputEventType, while server
+// snapshot bodies use the broader HCDEIsAllowedTicEventType.
+static bool HCDEAppendNativeCommandEventsToLegacyBuffer(const uint8_t* body, size_t bodyBytes, size_t& bodyCursor,
+	size_t eventCount, bool clientInput, uint8_t* output, size_t outputCapacity, size_t& outputCursor)
 {
+	for (size_t e = 0u; e < eventCount; ++e)
+	{
+		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
+			return false;
+
+		const uint8_t eventType = body[bodyCursor++];
+		const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
+		bodyCursor += 2u;
+		const bool allowed = clientInput
+			? HCDEIsAllowedClientInputEventType(eventType)
+			: HCDEIsAllowedTicEventType(eventType);
+		if (!allowed
+			|| bodyCursor > bodyBytes
+			|| eventPayloadBytes > bodyBytes - bodyCursor)
+		{
+			return false;
+		}
+
+		if (!HCDEAppendByte(output, outputCapacity, outputCursor, eventType)
+			|| !HCDEAppendLegacyEventPayload(eventType, &body[bodyCursor], eventPayloadBytes, output, outputCapacity, outputCursor))
+		{
+			return false;
+		}
+		bodyCursor += eventPayloadBytes;
+	}
+	return true;
+}
+
+// Apply the shared NCMD-style header bits carried by native HCDE gameplay packets:
+// the retransmit flag/resend identifier, room-id staleness check, sequence ack,
+// late-join sync gating (authority side), and the authority watchdog (non-
+// authority side). Mirrors the inline logic in the legacy NetUpdate receive loop;
+// `staleRoom` is set true when the routing byte does not match `CurrentRoomID`,
+// in which case the caller must skip applying the rest of the payload.
+static void HCDEApplyNativeGameplayHeader(int clientNum, uint8_t controlFlags, uint8_t routingByte, uint32_t sequenceAck, uint32_t consistencyAck, bool& staleRoom)
+{
+	staleRoom = false;
+	auto& clientState = ClientStates[clientNum];
+	if ((controlFlags & NCMD_RETRANSMIT) != 0u)
+	{
+		clientState.ResendID = routingByte;
+		clientState.Flags |= CF_RETRANSMIT;
+	}
+	if (routingByte != CurrentRoomID)
+	{
+		staleRoom = true;
+		DebugTrace::Markf("net", "ignored stale-room native packet client=%d packet-room=%u current-room=%u gametic=%d clienttic=%d",
+			clientNum, unsigned(routingByte), unsigned(CurrentRoomID), gametic, ClientTic);
+		return;
+	}
+
+	clientState.Flags |= CF_UPDATED;
+	clientState.SequenceAck = int(sequenceAck);
+	if (I_IsLocalHCDEServiceAuthority() && Net_IsLateJoinSyncPending(clientNum))
+	{
+		const int targetSeq = LateJoinSyncTargetSequence[clientNum];
+		const int targetCon = LateJoinSyncTargetConsistency[clientNum];
+		const bool seqReady = targetSeq < 0 || clientState.SequenceAck >= targetSeq;
+		const bool conReady = targetCon < 0 || int(consistencyAck) >= targetCon;
+		constexpr int LateJoinPromotionTimeoutTics = MAXSENDTICS * 12;
+		const bool timedOut = LateJoinSyncStartTic[clientNum] >= 0
+			&& EnterTic - LateJoinSyncStartTic[clientNum] >= LateJoinPromotionTimeoutTics;
+
+		if (!seqReady)
+		{
+			const int resendFrom = max<int>(clientState.SequenceAck + 1, 0);
+			if (clientState.ResendSequenceFrom < 0 || clientState.ResendSequenceFrom > resendFrom)
+				clientState.ResendSequenceFrom = resendFrom;
+			clientState.Flags |= CF_RETRANSMIT_SEQ;
+		}
+		if (!conReady)
+		{
+			const int resendFrom = max<int>(int(consistencyAck) + 1, 0);
+			if (clientState.ResendConsistencyFrom < 0 || clientState.ResendConsistencyFrom > resendFrom)
+				clientState.ResendConsistencyFrom = resendFrom;
+			clientState.Flags |= CF_RETRANSMIT_CON;
+		}
+
+		if (seqReady && conReady)
+		{
+			players[clientNum].waiting = false;
+			Net_ClearLateJoinSyncPending(clientNum, "acks-caught-up-native");
+		}
+		else if (timedOut)
+		{
+			DebugTrace::Warningf("net", "late-join native sync promotion timed out client=%d seq=%d/%d con=%d/%d room=%u",
+				clientNum, clientState.SequenceAck, targetSeq, int(consistencyAck), targetCon, unsigned(CurrentRoomID));
+			players[clientNum].waiting = false;
+			Net_ClearLateJoinSyncPending(clientNum, "promotion-timeout-native");
+		}
+	}
+	if (!I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(clientNum))
+	{
+		const bool wasWaiting = players[clientNum].waiting;
+		Net_ResetAuthorityWaitWatchdog("authority-native-packet", wasWaiting);
+		if (wasWaiting)
+		{
+			DebugTrace::Markf("net", "authority wait cleared by native current-room packet client=%d seq=%d ack=%d room=%u",
+				clientNum, clientState.CurrentSequence, clientState.SequenceAck, unsigned(CurrentRoomID));
+		}
+	}
+}
+
+// Decode an HLIVE_CLIENT_COMMANDS payload directly into ClientStates without ever
+// repacking through the classic NCMD NetBuffer layout. Two passes: the first
+// validates structural invariants (record uniqueness, bounded offsets, well-formed
+// events/user commands) so the second pass can mutate state without ever rolling
+// back on a malformed tail.
+static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* payload, size_t inputPayloadSize,
+	const uint8_t* body, size_t bodyBytes, uint32_t remoteGameTic, const char*& failureReason)
+{
+	failureReason = nullptr;
+	auto fail = [&](const char* reason) -> bool
+	{
+		failureReason = reason;
+		return false;
+	};
+	const uint8_t controlFlags = payload[HCDEClientInputFlagsOffset];
+	const uint8_t routingByte = payload[HCDEClientInputRoutingOffset];
+	const uint8_t playerCount = payload[HCDEClientInputPlayerCountOffset];
+	const uint32_t sequenceAck = HCDELiveReadBE32(&payload[HCDEClientInputSequenceAckOffset]);
+	const uint32_t consistencyAck = HCDELiveReadBE32(&payload[HCDEClientInputConsistencyAckOffset]);
+	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEClientInputBaseSequenceOffset]);
+	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEClientInputBaseConsistencyOffset]);
+	const uint8_t commandTics = payload[HCDEClientInputCommandTicsOffset];
+	const uint8_t consistencyTics = payload[HCDEClientInputConsistencyTicsOffset];
+	const uint8_t stabilityBuffer = payload[HCDEClientInputStabilityOffset];
+
+	// Reused across every (player, tic) pair to avoid 14 KB of stack zero-init on every
+	// inner iteration; eventCursor tracks the live byte count for each event payload.
+	uint8_t eventScratch[MAX_MSGLEN];
+
+	size_t bodyCursor = HCDEClientInputRecordsHeaderSize;
+	uint64_t playersSeen = 0u;
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
+			return fail("client-input-record-truncated");
+
+		const uint8_t playerNum = body[bodyCursor++];
+		const uint8_t consistencyCount = body[bodyCursor++];
+		const uint8_t commandCount = body[bodyCursor++];
+		if (playerNum >= MAXPLAYERS || playerNum >= 64u || consistencyCount != consistencyTics || commandCount != commandTics)
+			return fail("client-input-invalid-player-record");
+		const uint64_t playerMask = uint64_t(1u) << playerNum;
+		if (playersSeen & playerMask)
+			return fail("client-input-duplicate-player-record");
+		playersSeen |= playerMask;
+		if (!HCDEInputRecordAuthorized(clientNum, playerNum, playerCount))
+			return fail("client-input-unauthorized-player-record");
+
+		uint64_t consistencyOffsetsSeen = 0u;
+		for (uint8_t r = 0u; r < consistencyCount; ++r)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u || body[bodyCursor] >= consistencyTics)
+				return fail("client-input-consistency-truncated");
+			const uint64_t consistencyMask = uint64_t(1u) << body[bodyCursor];
+			if (consistencyOffsetsSeen & consistencyMask)
+				return fail("client-input-duplicate-consistency-offset");
+			consistencyOffsetsSeen |= consistencyMask;
+			bodyCursor += 3u;
+		}
+
+		uint64_t commandOffsetsSeen = 0u;
+		for (uint8_t t = 0u; t < commandCount; ++t)
+		{
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
+				return fail("client-input-command-truncated");
+
+			const uint8_t commandOffset = body[bodyCursor++];
+			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
+			bodyCursor += 2u;
+			if (commandOffset >= commandTics)
+				return fail("client-input-command-offset-out-of-range");
+			const uint64_t commandMask = uint64_t(1u) << commandOffset;
+			if (commandOffsetsSeen & commandMask)
+				return fail("client-input-duplicate-command-offset");
+			commandOffsetsSeen |= commandMask;
+
+			size_t eventCursor = 0u;
+			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+				eventCount, true, eventScratch, sizeof(eventScratch), eventCursor))
+			{
+				return fail("client-input-event-records-invalid");
+			}
+
+			usercmd_t command = {};
+			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
+				return fail("client-input-usercmd-invalid");
+		}
+	}
+	if (bodyCursor != bodyBytes)
+		return fail("client-input-body-trailing-bytes");
+
+	bool staleRoom = false;
+	HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+	if (staleRoom)
+		return fail("client-input-stale-room");
+	if (I_IsLocalHCDEServiceAuthority())
+		ClientStates[clientNum].StabilityBuffer = stabilityBuffer;
+
+	bodyCursor = HCDEClientInputRecordsHeaderSize;
+	for (uint8_t p = 0u; p < playerCount; ++p)
+	{
+		const uint8_t playerNum = body[bodyCursor++];
+		const uint8_t consistencyCount = body[bodyCursor++];
+		const uint8_t commandCount = body[bodyCursor++];
+		auto& pState = ClientStates[playerNum];
+
+		if (!I_IsLocalHCDEServiceAuthority()
+			|| I_IsHCDEServiceAuthoritySlot(playerNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
+		{
+			pState.ConsistencyAck = int(consistencyAck);
+		}
+
+		int16_t consistencies[MAXSENDTICS] = {};
+		bool consistencyPresent[MAXSENDTICS] = {};
+		for (uint8_t r = 0u; r < consistencyCount; ++r)
+		{
+			const uint8_t offset = body[bodyCursor++];
+			consistencies[offset] = int16_t(HCDELiveReadBE16(&body[bodyCursor]));
+			consistencyPresent[offset] = true;
+			bodyCursor += 2u;
+		}
+		for (uint8_t i = 0u; i < consistencyTics; ++i)
+		{
+			const int cTic = int(baseConsistency) + int(i);
+			if (cTic <= pState.CurrentNetConsistency)
+				continue;
+			if (cTic > pState.CurrentNetConsistency + 1 || !consistencyPresent[i] || consistencies[i] == 0)
+			{
+				ClientStates[clientNum].Flags |= CF_MISSING_CON;
+				break;
+			}
+			pState.NetConsistency[cTic % BACKUPTICS] = consistencies[i];
+			pState.CurrentNetConsistency = cTic;
+		}
+
+		usercmd_t commands[MAXSENDTICS] = {};
+		bool commandPresent[MAXSENDTICS] = {};
+		FDynamicBuffer commandEvents[MAXSENDTICS] = {};
+		for (uint8_t t = 0u; t < commandCount; ++t)
+		{
+			const uint8_t commandOffset = body[bodyCursor++];
+			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
+			bodyCursor += 2u;
+			size_t eventCursor = 0u;
+			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+				eventCount, true, eventScratch, sizeof(eventScratch), eventCursor))
+			{
+				// Validation pass should have rejected this already; bail without mutating
+				// pState further so the caller can request replay.
+				return fail("client-input-apply-event-records-invalid");
+			}
+			commandEvents[commandOffset].SetData(eventScratch, int(eventCursor));
+			commandPresent[commandOffset] = HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, commands[commandOffset]);
+		}
+		for (uint8_t i = 0u; i < commandTics; ++i)
+		{
+			const int seq = int(baseSequence) + int(i);
+			if (seq <= pState.CurrentSequence)
+				continue;
+			if (seq > pState.CurrentSequence + 1 || !commandPresent[i])
+			{
+				ClientStates[clientNum].Flags |= CF_MISSING_SEQ;
+				break;
+			}
+
+			auto& curTic = pState.Tics[seq % BACKUPTICS];
+			curTic.Data.SetData(nullptr, 0u);
+			int eventLen = 0;
+			uint8_t* eventData = commandEvents[i].GetData(&eventLen);
+			if (eventLen > 0)
+				curTic.Data.SetData(eventData, eventLen);
+			curTic.Command = commands[i];
+			if (!I_IsLocalHCDEServiceAuthority()
+				|| I_IsHCDEServiceAuthoritySlot(playerNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
+			{
+				pState.CurrentSequence = seq;
+			}
+			if (!I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(playerNum))
+				pState.SequenceAck = seq;
+		}
+	}
+
+	// Successful apply clears any malformed-packet pressure that earlier rejects raised.
+	ClientStates[clientNum].MalformedPacketStrikes = 0u;
+	ClientStates[clientNum].MalformedWindowStartMS = 0u;
+	ClearHCDELiveReplayPressure(clientNum, "client-input-native-apply");
+	DebugTrace::Markf("net", "HCDE client input native-apply client=%d room=%u tic=%u players=%u tics=%u consistencies=%u records=%zu",
+		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes);
+	++HCDELiveProfile.ClientInputNativeApplied;
+	HCDELiveProfile.ClientInputPacketsReceived++;
+	HCDELiveProfile.ClientInputBytesReceived += inputPayloadSize;
+	HCDERecordLiveLaneRx(HLANE_COMMAND, clientNum, inputPayloadSize);
+	return true;
+}
+
+// Validate the HCDE client-input envelope produced by HSendNativeClientInputPacket
+// and apply it natively. Returns true only when the payload was fully consumed and
+// the per-player tic data was committed to ClientStates; the caller treats any
+// false return as a malformed packet worth a replay request.
+static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize, const char*& failureReason)
+{
+	failureReason = nullptr;
 	auto& peer = HCDELivePeers[clientNum];
 	const uint8_t* payload = nullptr;
 	size_t inputPayloadSize = 0u;
 	uint32_t remoteGameTic = 0u;
 	if (!UnwrapHCDEGameplayEnvelope(clientNum, payloadSize, "client input", HGP_CLIENT_INPUTS, payload, inputPayloadSize, remoteGameTic))
+	{
+		failureReason = "client-input-envelope-invalid";
 		return false;
+	}
 
 	if (inputPayloadSize < HCDEClientInputHeaderSize
 		|| memcmp(&payload[HCDEClientInputMagicOffset], HCDEClientInputMagic, sizeof(HCDEClientInputMagic)) != 0)
 	{
 		++peer.UnsupportedReceived;
 		DebugTrace::Markf("net", "malformed HCDE client input from client=%d size=%zu", clientNum, inputPayloadSize);
+		failureReason = "client-input-magic-invalid";
 		return false;
 	}
 
+	// Only the fields used for header validation and diagnostic logging are
+	// extracted here; everything else (sequences, routing, stability) is consumed
+	// inside HCDETryApplyNativeClientInputPayload from the same payload buffer.
 	const uint8_t inputVersion = payload[HCDEClientInputVersionOffset];
 	const uint8_t controlFlags = payload[HCDEClientInputFlagsOffset];
-	const uint8_t routingByte = payload[HCDEClientInputRoutingOffset];
 	const uint8_t playerCount = payload[HCDEClientInputPlayerCountOffset];
-	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEClientInputBaseSequenceOffset]);
-	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEClientInputBaseConsistencyOffset]);
 	const uint8_t commandTics = payload[HCDEClientInputCommandTicsOffset];
 	const uint8_t consistencyTics = payload[HCDEClientInputConsistencyTicsOffset];
-	const uint8_t stabilityBuffer = payload[HCDEClientInputStabilityOffset];
 	const size_t bodyBytes = HCDELiveReadBE16(&payload[HCDEClientInputBodyBytesOffset]);
 	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_QUITTERS | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
 	auto rejectClientInput = [&](const char* reason)
 	{
+		failureReason = reason;
 		++peer.UnsupportedReceived;
 		DebugTrace::Markf("net", "ignored HCDE client input from client=%d reason=%s version=%u flags=%u players=%u tics=%u consistencies=%u body=%zu size=%zu",
 			clientNum, reason != nullptr ? reason : "unknown", unsigned(inputVersion), unsigned(controlFlags & disallowedControlFlags),
 			unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes, inputPayloadSize);
 		return false;
 	};
-	auto rejectClientAuthority = [&](int playerNum)
-	{
-		++peer.AuthorityRejected;
-		DebugTrace::Markf("net", "ignored HCDE client input from client=%d reason=unauthorized-player-record player=%d players=%u authority-rejected=%u",
-			clientNum, playerNum, unsigned(playerCount), peer.AuthorityRejected);
-		return rejectClientInput("unauthorized-player-record");
-	};
 
-	if (inputVersion != HCDEClientInputProtocolVersion
-		|| (controlFlags & disallowedControlFlags)
-		|| playerCount > MAXPLAYERS
-		|| commandTics > MAXSENDTICS
-		|| consistencyTics > MAXSENDTICS
-		|| (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
-		|| HCDEClientInputHeaderSize + bodyBytes != inputPayloadSize)
-		return rejectClientInput("invalid-header");
+	if (inputVersion != HCDEClientInputProtocolVersion)
+		return rejectClientInput("client-input-version-mismatch");
+	if (controlFlags & disallowedControlFlags)
+		return rejectClientInput("client-input-disallowed-control-flags");
+	if (playerCount > MAXPLAYERS)
+		return rejectClientInput("client-input-player-count-overflow");
+	if (commandTics > MAXSENDTICS)
+		return rejectClientInput("client-input-command-tics-overflow");
+	if (consistencyTics > MAXSENDTICS)
+		return rejectClientInput("client-input-consistency-tics-overflow");
+	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
+		return rejectClientInput("client-input-empty-player-records-with-tics");
+	if (HCDEClientInputHeaderSize + bodyBytes != inputPayloadSize)
+		return rejectClientInput("client-input-body-length-mismatch");
 
 	const uint8_t* body = &payload[HCDEClientInputHeaderSize];
 	if (bodyBytes < HCDEClientInputRecordsHeaderSize
@@ -7873,75 +8699,71 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 
 	const uint8_t recordsVersion = body[HCDEClientInputRecordsVersionOffset];
 	const uint8_t recordPlayerCount = body[HCDEClientInputRecordsPlayerCountOffset];
-	if (recordsVersion != HCDEClientInputRecordsProtocolVersion || recordPlayerCount != playerCount)
-		return rejectClientInput("invalid-record-header");
+	if (recordsVersion != HCDEClientInputRecordsProtocolVersion)
+		return rejectClientInput("client-input-record-version-mismatch");
+	if (recordPlayerCount != playerCount)
+		return rejectClientInput("client-input-record-player-count-mismatch");
 
-	NetBuffer[0] = controlFlags;
-	NetBuffer[1] = routingByte;
-	memcpy(&NetBuffer[2], &payload[HCDEClientInputSequenceAckOffset], 4u);
-	memcpy(&NetBuffer[6], &payload[HCDEClientInputConsistencyAckOffset], 4u);
+	if (HCDETryApplyNativeClientInputPayload(clientNum, payload, inputPayloadSize, body, bodyBytes, remoteGameTic, failureReason))
+		return true;
 
-	size_t cursor = 10u;
-	NetBuffer[cursor++] = playerCount;
-	NetBuffer[cursor++] = commandTics;
-	if (commandTics > 0u)
+	return rejectClientInput(failureReason != nullptr ? failureReason : "client-input-native-apply-failed");
+}
+
+// Decode an HLIVE_SERVER_SNAPSHOT payload directly into ClientStates and the world
+// delta/actor delta/invasion appliers without ever materialising a classic NCMD
+// NetBuffer. As with the client-input variant, a validation pass guards the apply
+// pass so a malformed tail never leaves partially-mutated state behind.
+static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t* payload, size_t snapshotPayloadSize,
+	const uint8_t* body, size_t bodyBytes, size_t quitterBytes, uint32_t remoteGameTic, const char*& failureReason)
+{
+	failureReason = nullptr;
+	auto fail = [&](const char* reason) -> bool
 	{
-		HCDELiveWriteBE32(&NetBuffer[cursor], baseSequence);
-		cursor += 4u;
-	}
-	NetBuffer[cursor++] = consistencyTics;
-	if (consistencyTics > 0u)
-	{
-		HCDELiveWriteBE32(&NetBuffer[cursor], baseConsistency);
-		cursor += 4u;
-	}
-	NetBuffer[cursor++] = stabilityBuffer;
+		failureReason = reason;
+		return false;
+	};
+	const uint8_t controlFlags = payload[HCDEServerSnapshotFlagsOffset];
+	const uint8_t routingByte = payload[HCDEServerSnapshotRoutingOffset];
+	const uint8_t playerCount = payload[HCDEServerSnapshotPlayerCountOffset];
+	const uint32_t sequenceAck = HCDELiveReadBE32(&payload[HCDEServerSnapshotSequenceAckOffset]);
+	const uint32_t consistencyAck = HCDELiveReadBE32(&payload[HCDEServerSnapshotConsistencyAckOffset]);
+	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseSequenceOffset]);
+	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseConsistencyOffset]);
+	const uint8_t commandTics = payload[HCDEServerSnapshotCommandTicsOffset];
+	const uint8_t consistencyTics = payload[HCDEServerSnapshotConsistencyTicsOffset];
+	const uint8_t stabilityBuffer = payload[HCDEServerSnapshotStabilityOffset];
 
-	size_t bodyCursor = HCDEClientInputRecordsHeaderSize;
+	// Reused across every (player, tic) pair to avoid 14 KB of stack zero-init on every
+	// inner iteration; eventCursor tracks the live byte count for each event payload.
+	uint8_t eventScratch[MAX_MSGLEN];
+
+	size_t bodyCursor = HCDEServerSnapshotRecordsHeaderSize;
 	uint64_t playersSeen = 0u;
 	for (uint8_t p = 0u; p < playerCount; ++p)
 	{
-		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
-			return rejectClientInput("truncated-player-record");
-
+		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 5u)
+			return fail("server-snapshot-player-record-truncated");
 		const uint8_t playerNum = body[bodyCursor++];
+		bodyCursor += 2u; // latency (validated during apply pass)
 		const uint8_t consistencyCount = body[bodyCursor++];
 		const uint8_t commandCount = body[bodyCursor++];
 		if (playerNum >= MAXPLAYERS || playerNum >= 64u || consistencyCount != consistencyTics || commandCount != commandTics)
-			return rejectClientInput("invalid-player-record");
-
+			return fail("server-snapshot-invalid-player-record");
 		const uint64_t playerMask = uint64_t(1u) << playerNum;
 		if (playersSeen & playerMask)
-			return rejectClientInput("duplicate-player-record");
+			return fail("server-snapshot-duplicate-player-record");
 		playersSeen |= playerMask;
-		if (!HCDEInputRecordAuthorized(clientNum, playerNum, playerCount))
-			return rejectClientAuthority(playerNum);
-
-		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum))
-			return rejectClientInput("packet-overflow");
-
-		usercmd_t rollingCommandBasis = {};
-		bool hasRollingCommandBasis = false;
-		uint8_t expectedCommandOffset = 0u;
-		if (const usercmd_t* basis = HCDEReceiveUserCmdBasis(playerNum, baseSequence))
-		{
-			rollingCommandBasis = *basis;
-			hasRollingCommandBasis = true;
-		}
 
 		uint64_t consistencyOffsetsSeen = 0u;
 		for (uint8_t r = 0u; r < consistencyCount; ++r)
 		{
-			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
-				return rejectClientInput("truncated-consistency-record");
-			if (body[bodyCursor] >= consistencyTics)
-				return rejectClientInput("invalid-consistency-offset");
+			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u || body[bodyCursor] >= consistencyTics)
+				return fail("server-snapshot-consistency-truncated");
 			const uint64_t consistencyMask = uint64_t(1u) << body[bodyCursor];
 			if (consistencyOffsetsSeen & consistencyMask)
-				return rejectClientInput("duplicate-consistency-offset");
+				return fail("server-snapshot-duplicate-consistency-offset");
 			consistencyOffsetsSeen |= consistencyMask;
-			if (!HCDEAppendBytes(NetBuffer, MAX_MSGLEN, cursor, &body[bodyCursor], 3u))
-				return rejectClientInput("packet-overflow");
 			bodyCursor += 3u;
 		}
 
@@ -7949,119 +8771,229 @@ static bool UnwrapHCDELiveClientInputPayload(int clientNum, size_t payloadSize)
 		for (uint8_t t = 0u; t < commandCount; ++t)
 		{
 			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
-				return rejectClientInput("truncated-command-record");
-
+				return fail("server-snapshot-command-truncated");
 			const uint8_t commandOffset = body[bodyCursor++];
 			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
 			bodyCursor += 2u;
 			if (commandOffset >= commandTics)
-				return rejectClientInput("invalid-command-record");
+				return fail("server-snapshot-command-offset-out-of-range");
 			const uint64_t commandMask = uint64_t(1u) << commandOffset;
 			if (commandOffsetsSeen & commandMask)
-				return rejectClientInput("duplicate-command-offset");
+				return fail("server-snapshot-duplicate-command-offset");
 			commandOffsetsSeen |= commandMask;
 
-			if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, commandOffset))
-				return rejectClientInput("packet-overflow");
-
-			for (size_t e = 0u; e < eventCount; ++e)
+			size_t eventCursor = 0u;
+			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+				eventCount, false, eventScratch, sizeof(eventScratch), eventCursor))
 			{
-				if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
-					return rejectClientInput("truncated-event-record");
-
-				const uint8_t eventType = body[bodyCursor++];
-				const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
-				bodyCursor += 2u;
-				if (!HCDEIsAllowedClientInputEventType(eventType)
-					|| bodyCursor > bodyBytes
-					|| eventPayloadBytes > bodyBytes - bodyCursor
-					|| bodyBytes - bodyCursor - eventPayloadBytes < HCDEExplicitUserCmdBytes)
-				{
-					return rejectClientInput("invalid-event-record");
-				}
-
-				if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, eventType))
-					return rejectClientInput("packet-overflow");
-				if (!HCDEAppendLegacyEventPayload(eventType, &body[bodyCursor], eventPayloadBytes, NetBuffer, MAX_MSGLEN, cursor))
-					return rejectClientInput("invalid-event-payload");
-				bodyCursor += eventPayloadBytes;
+				return fail("server-snapshot-event-records-invalid");
 			}
 
 			usercmd_t command = {};
 			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
-				return rejectClientInput("truncated-command-record");
+				return fail("server-snapshot-usercmd-invalid");
+		}
+	}
+	const size_t playerSnapshotBodyEnd = bodyCursor;
 
-			if (cursor > MAX_MSGLEN || MAX_MSGLEN - cursor < 18u)
-				return rejectClientInput("packet-overflow");
-			uint8_t* commandOutputStart = &NetBuffer[cursor];
-			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
-			const usercmd_t* basis = (hasRollingCommandBasis && commandOffset == expectedCommandOffset)
-				? &rollingCommandBasis
-				: HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset);
-			WriteUserCmdMessage(command, basis, commandOutput);
-			// The legacy reader applies commands sequentially and uses the command it
-			// just read as the next basis. Mirror that here so zero yaw/pitch deltas
-			// after a nonzero turn are encoded as explicit clears, not stale repeats.
-			rollingCommandBasis = command;
-			hasRollingCommandBasis = true;
-			expectedCommandOffset = commandOffset + 1u;
-			cursor += size_t(commandOutput.Data() - commandOutputStart);
+	bool staleRoom = false;
+	HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+	if (staleRoom)
+		return fail("server-snapshot-stale-room");
+
+	if ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes > 0u)
+	{
+		const uint8_t* quitters = &payload[HCDEServerSnapshotHeaderSize];
+		const int numPlayers = quitters[0];
+		for (int i = 0; i < numPlayers && size_t(i + 1) < quitterBytes; ++i)
+		{
+			const int quitter = quitters[i + 1];
+			Printf(PRINT_HIGH, "NetGame:: Authority reported client %d quit at gametic=%d clienttic=%d room=%u\n",
+				quitter, gametic, ClientTic, unsigned(CurrentRoomID));
+			DebugTrace::Warningf("net", "authority quit broadcast client=%d from=%d gametic=%d clienttic=%d room=%u native=1",
+				quitter, clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
+			DisconnectClient(quitter);
 		}
 	}
 
-	if (bodyCursor != bodyBytes)
-		return rejectClientInput("trailing-record-bytes");
+	if (I_IsHCDEServiceAuthoritySlot(clientNum))
+		CommandsAhead = stabilityBuffer;
+	else if (I_IsLocalHCDEServiceAuthority())
+		ClientStates[clientNum].StabilityBuffer = stabilityBuffer;
 
-	NetBufferLength = cursor;
-
-	const size_t expectedSize = GetNetBufferSize();
-	if (NetBufferLength != expectedSize)
+	bodyCursor = HCDEServerSnapshotRecordsHeaderSize;
+	for (uint8_t p = 0u; p < playerCount; ++p)
 	{
-		++peer.UnsupportedReceived;
-		DPrintf(DMSG_WARNING, "Malformed HCDE client input from client %d: size %zu (expected %zu)\n",
-			clientNum, NetBufferLength, expectedSize);
-		return false;
+		const uint8_t playerNum = body[bodyCursor++];
+		const uint16_t latency = HCDELiveReadBE16(&body[bodyCursor]);
+		bodyCursor += 2u;
+		const uint8_t consistencyCount = body[bodyCursor++];
+		const uint8_t commandCount = body[bodyCursor++];
+		if (I_IsHCDEServiceAuthoritySlot(clientNum))
+			Net_EnsureRuntimeClientSlot(playerNum, clientNum);
+		auto& pState = ClientStates[playerNum];
+		if (I_IsHCDEServiceAuthoritySlot(clientNum) && !I_IsLocalHCDEServiceAuthority())
+			pState.AverageLatency = latency;
+
+		if (!I_IsLocalHCDEServiceAuthority()
+			|| I_IsHCDEServiceAuthoritySlot(playerNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
+		{
+			pState.ConsistencyAck = int(consistencyAck);
+		}
+
+		int16_t consistencies[MAXSENDTICS] = {};
+		bool consistencyPresent[MAXSENDTICS] = {};
+		for (uint8_t r = 0u; r < consistencyCount; ++r)
+		{
+			const uint8_t offset = body[bodyCursor++];
+			consistencies[offset] = int16_t(HCDELiveReadBE16(&body[bodyCursor]));
+			consistencyPresent[offset] = true;
+			bodyCursor += 2u;
+		}
+		for (uint8_t i = 0u; i < consistencyTics; ++i)
+		{
+			const int cTic = int(baseConsistency) + int(i);
+			if (cTic <= pState.CurrentNetConsistency)
+				continue;
+			if (cTic > pState.CurrentNetConsistency + 1 || !consistencyPresent[i] || consistencies[i] == 0)
+			{
+				ClientStates[clientNum].Flags |= CF_MISSING_CON;
+				break;
+			}
+			pState.NetConsistency[cTic % BACKUPTICS] = consistencies[i];
+			pState.CurrentNetConsistency = cTic;
+		}
+
+		usercmd_t commands[MAXSENDTICS] = {};
+		bool commandPresent[MAXSENDTICS] = {};
+		FDynamicBuffer commandEvents[MAXSENDTICS] = {};
+		for (uint8_t t = 0u; t < commandCount; ++t)
+		{
+			const uint8_t commandOffset = body[bodyCursor++];
+			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
+			bodyCursor += 2u;
+			size_t eventCursor = 0u;
+			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+				eventCount, false, eventScratch, sizeof(eventScratch), eventCursor))
+			{
+				// Validation should have caught this; bail without mutating pState further.
+				return fail("server-snapshot-apply-event-records-invalid");
+			}
+			commandEvents[commandOffset].SetData(eventScratch, int(eventCursor));
+			commandPresent[commandOffset] = HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, commands[commandOffset]);
+		}
+		for (uint8_t i = 0u; i < commandTics; ++i)
+		{
+			const int seq = int(baseSequence) + int(i);
+			if (seq <= pState.CurrentSequence)
+				continue;
+			if (seq > pState.CurrentSequence + 1 || !commandPresent[i])
+			{
+				ClientStates[clientNum].Flags |= CF_MISSING_SEQ;
+				break;
+			}
+			auto& curTic = pState.Tics[seq % BACKUPTICS];
+			curTic.Data.SetData(nullptr, 0u);
+			int eventLen = 0;
+			uint8_t* eventData = commandEvents[i].GetData(&eventLen);
+			if (eventLen > 0)
+				curTic.Data.SetData(eventData, eventLen);
+			curTic.Command = commands[i];
+			if (!I_IsLocalHCDEServiceAuthority()
+				|| I_IsHCDEServiceAuthoritySlot(playerNum) || !I_IsHCDEServiceAuthoritySlot(clientNum))
+			{
+				pState.CurrentSequence = seq;
+			}
+			if (!I_IsLocalHCDEServiceAuthority() && !I_IsHCDEServiceAuthoritySlot(playerNum))
+				pState.SequenceAck = seq;
+		}
 	}
 
-	DebugTrace::Markf("net", "HCDE client input recv client=%d room=%u tic=%u players=%u tics=%u consistencies=%u records=%zu",
-		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes);
-	++HCDELiveProfile.ClientInputPacketsReceived;
-	HCDELiveProfile.ClientInputBytesReceived += inputPayloadSize;
-	HCDERecordLiveLaneRx(HLANE_COMMAND, clientNum, inputPayloadSize);
+	bodyCursor = playerSnapshotBodyEnd;
+	if (!HCDEValidateServerWorldDeltas(clientNum, body, bodyBytes, bodyCursor, playerCount, playersSeen))
+		return fail("server-snapshot-world-delta-invalid");
+	const bool expectActorDelta = HCDELivePeerHasCapability(clientNum, HCDELiveCapActorDeltaV2)
+		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapActorRegistryV1);
+	const bool expectInvasionSnapshot = Net_IsInvasionModeEnabled()
+		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2);
+	if (bodyCursor < bodyBytes
+		&& expectActorDelta
+		&& bodyBytes - bodyCursor >= HCDEActorDeltasHeaderSize
+		&& memcmp(&body[bodyCursor + HCDEActorDeltasMagicOffset], HCDEActorDeltasMagic, sizeof(HCDEActorDeltasMagic)) == 0)
+	{
+		if (!HCDEApplyActorDeltasV2(clientNum, body, bodyBytes, bodyCursor))
+			return fail("server-snapshot-actor-delta-invalid");
+	}
+	if (expectInvasionSnapshot
+		&& bodyCursor < bodyBytes
+		&& !HCDEApplyInvasionSnapshot(clientNum, body, bodyBytes, bodyCursor))
+	{
+		return fail("server-snapshot-invasion-invalid");
+	}
+	else if (bodyCursor < bodyBytes
+		&& Net_IsInvasionModeEnabled()
+		&& !expectInvasionSnapshot
+		&& bodyBytes - bodyCursor >= HCDEInvasionSnapshotHeaderV1Size
+		&& memcmp(&body[bodyCursor + HCDEInvasionSnapshotMagicOffset], HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic)) == 0u)
+	{
+		return fail("server-snapshot-invasion-capability-missing");
+	}
+	if (bodyCursor != bodyBytes)
+		return fail("server-snapshot-body-trailing-bytes");
+
+	ClientStates[clientNum].MalformedPacketStrikes = 0u;
+	ClientStates[clientNum].MalformedWindowStartMS = 0u;
+	ClearHCDELiveReplayPressure(clientNum, "server-snapshot-native-apply");
+	DebugTrace::Markf("net", "HCDE server snapshot native-apply client=%d room=%u tic=%u players=%u tics=%u consistencies=%u quitters=%zu records=%zu",
+		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes);
+	++HCDELiveProfile.ServerSnapshotNativeApplied;
+	++HCDELiveProfile.ServerSnapshotPacketsReceived;
+	HCDELiveProfile.ServerSnapshotBytesReceived += snapshotPayloadSize;
+	HCDERecordLiveLaneRx(HLANE_PLAYER_SNAPSHOT, clientNum, HCDEServerSnapshotHeaderSize + quitterBytes + playerSnapshotBodyEnd);
 	return true;
 }
 
-static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSize)
+// Validate the HCDE server-snapshot envelope produced by HSendNativeServerSnapshotPacket
+// and apply it natively. Returns true only when the payload was fully consumed and the
+// player/quitter/world/actor/invasion sections were committed; any false return is
+// treated by the caller as a malformed packet worth a replay request.
+static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSize, const char*& failureReason)
 {
+	failureReason = nullptr;
 	auto& peer = HCDELivePeers[clientNum];
 	const uint8_t* payload = nullptr;
 	size_t snapshotPayloadSize = 0u;
 	uint32_t remoteGameTic = 0u;
 	if (!UnwrapHCDEGameplayEnvelope(clientNum, payloadSize, "server snapshot", HGP_SERVER_SNAPSHOT, payload, snapshotPayloadSize, remoteGameTic))
+	{
+		failureReason = "server-snapshot-envelope-invalid";
 		return false;
+	}
 
 	if (snapshotPayloadSize < HCDEServerSnapshotHeaderSize
 		|| memcmp(&payload[HCDEServerSnapshotMagicOffset], HCDEServerSnapshotMagic, sizeof(HCDEServerSnapshotMagic)) != 0)
 	{
 		++peer.UnsupportedReceived;
 		DebugTrace::Markf("net", "malformed HCDE server snapshot from client=%d size=%zu", clientNum, snapshotPayloadSize);
+		failureReason = "server-snapshot-magic-invalid";
 		return false;
 	}
 
+	// Only the fields used for header validation and diagnostic logging are
+	// extracted here; everything else (sequences, routing, stability, base
+	// sequence/consistency) is consumed inside HCDETryApplyNativeServerSnapshotPayload
+	// from the same payload buffer.
 	const uint8_t snapshotVersion = payload[HCDEServerSnapshotVersionOffset];
 	const uint8_t controlFlags = payload[HCDEServerSnapshotFlagsOffset];
-	const uint8_t routingByte = payload[HCDEServerSnapshotRoutingOffset];
 	const uint8_t playerCount = payload[HCDEServerSnapshotPlayerCountOffset];
 	const size_t quitterBytes = HCDELiveReadBE16(&payload[HCDEServerSnapshotQuitterBytesOffset]);
-	const uint32_t baseSequence = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseSequenceOffset]);
-	const uint32_t baseConsistency = HCDELiveReadBE32(&payload[HCDEServerSnapshotBaseConsistencyOffset]);
 	const uint8_t commandTics = payload[HCDEServerSnapshotCommandTicsOffset];
 	const uint8_t consistencyTics = payload[HCDEServerSnapshotConsistencyTicsOffset];
-	const uint8_t stabilityBuffer = payload[HCDEServerSnapshotStabilityOffset];
 	const size_t bodyBytes = HCDELiveReadBE16(&payload[HCDEServerSnapshotBodyBytesOffset]);
 	const uint8_t disallowedControlFlags = NCMD_EXIT | NCMD_SETUP | NCMD_LEVELREADY | NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED;
 	auto rejectServerSnapshot = [&](const char* reason)
 	{
+		failureReason = reason;
 		++peer.UnsupportedReceived;
 		DebugTrace::Markf("net", "ignored HCDE server snapshot from client=%d reason=%s version=%u flags=%u players=%u tics=%u consistencies=%u quitters=%zu body=%zu size=%zu",
 			clientNum, reason != nullptr ? reason : "unknown", unsigned(snapshotVersion), unsigned(controlFlags & disallowedControlFlags),
@@ -8085,17 +9017,26 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 	const bool quitterLengthMatches = quitterBytes == 0u
 		|| (HCDEServerSnapshotHeaderSize < snapshotPayloadSize && size_t(payload[HCDEServerSnapshotHeaderSize]) + 1u == quitterBytes);
 
-	if (snapshotVersion != HCDEServerSnapshotProtocolVersion
-		|| (controlFlags & disallowedControlFlags)
-		|| playerCount > MAXPLAYERS
-		|| commandTics > MAXSENDTICS
-		|| consistencyTics > MAXSENDTICS
-		|| ((controlFlags & NCMD_QUITTERS) == 0u && quitterBytes != 0u)
-		|| ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes == 0u)
-		|| (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
-		|| !payloadLengthsFit
-		|| !quitterLengthMatches)
-		return rejectServerSnapshot("invalid-header");
+	if (snapshotVersion != HCDEServerSnapshotProtocolVersion)
+		return rejectServerSnapshot("server-snapshot-version-mismatch");
+	if (controlFlags & disallowedControlFlags)
+		return rejectServerSnapshot("server-snapshot-disallowed-control-flags");
+	if (playerCount > MAXPLAYERS)
+		return rejectServerSnapshot("server-snapshot-player-count-overflow");
+	if (commandTics > MAXSENDTICS)
+		return rejectServerSnapshot("server-snapshot-command-tics-overflow");
+	if (consistencyTics > MAXSENDTICS)
+		return rejectServerSnapshot("server-snapshot-consistency-tics-overflow");
+	if ((controlFlags & NCMD_QUITTERS) == 0u && quitterBytes != 0u)
+		return rejectServerSnapshot("server-snapshot-quitter-bytes-without-flag");
+	if ((controlFlags & NCMD_QUITTERS) != 0u && quitterBytes == 0u)
+		return rejectServerSnapshot("server-snapshot-quitter-flag-without-bytes");
+	if (playerCount == 0u && (commandTics != 0u || consistencyTics != 0u))
+		return rejectServerSnapshot("server-snapshot-empty-player-records-with-tics");
+	if (!payloadLengthsFit)
+		return rejectServerSnapshot("server-snapshot-body-length-mismatch");
+	if (!quitterLengthMatches)
+		return rejectServerSnapshot("server-snapshot-quitter-length-mismatch");
 
 	const uint8_t* body = &payload[HCDEServerSnapshotHeaderSize + quitterBytes];
 	if (bodyBytes < HCDEServerSnapshotRecordsHeaderSize
@@ -8104,199 +9045,15 @@ static bool UnwrapHCDELiveServerSnapshotPayload(int clientNum, size_t payloadSiz
 
 	const uint8_t recordsVersion = body[HCDEServerSnapshotRecordsVersionOffset];
 	const uint8_t recordPlayerCount = body[HCDEServerSnapshotRecordsPlayerCountOffset];
-	if (recordsVersion != HCDEServerSnapshotRecordsProtocolVersion || recordPlayerCount != playerCount)
-		return rejectServerSnapshot("invalid-record-header");
+	if (recordsVersion != HCDEServerSnapshotRecordsProtocolVersion)
+		return rejectServerSnapshot("server-snapshot-record-version-mismatch");
+	if (recordPlayerCount != playerCount)
+		return rejectServerSnapshot("server-snapshot-record-player-count-mismatch");
 
-	NetBuffer[0] = controlFlags;
-	NetBuffer[1] = routingByte;
-	memcpy(&NetBuffer[2], &payload[HCDEServerSnapshotSequenceAckOffset], 4u);
-	memcpy(&NetBuffer[6], &payload[HCDEServerSnapshotConsistencyAckOffset], 4u);
+	if (HCDETryApplyNativeServerSnapshotPayload(clientNum, payload, snapshotPayloadSize, body, bodyBytes, quitterBytes, remoteGameTic, failureReason))
+		return true;
 
-	size_t cursor = 10u;
-	if (quitterBytes > 0u)
-	{
-		memmove(&NetBuffer[cursor], &payload[HCDEServerSnapshotHeaderSize], quitterBytes);
-		cursor += quitterBytes;
-	}
-	NetBuffer[cursor++] = playerCount;
-	NetBuffer[cursor++] = commandTics;
-	if (commandTics > 0u)
-	{
-		HCDELiveWriteBE32(&NetBuffer[cursor], baseSequence);
-		cursor += 4u;
-	}
-	NetBuffer[cursor++] = consistencyTics;
-	if (consistencyTics > 0u)
-	{
-		HCDELiveWriteBE32(&NetBuffer[cursor], baseConsistency);
-		cursor += 4u;
-	}
-	NetBuffer[cursor++] = stabilityBuffer;
-
-	size_t bodyCursor = HCDEServerSnapshotRecordsHeaderSize;
-	uint64_t playersSeen = 0u;
-	for (uint8_t p = 0u; p < playerCount; ++p)
-	{
-		if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 5u)
-			return rejectServerSnapshot("truncated-player-record");
-
-		const uint8_t playerNum = body[bodyCursor++];
-		const uint16_t latency = HCDELiveReadBE16(&body[bodyCursor]);
-		bodyCursor += 2u;
-		const uint8_t consistencyCount = body[bodyCursor++];
-		const uint8_t commandCount = body[bodyCursor++];
-		if (playerNum >= MAXPLAYERS || playerNum >= 64u || consistencyCount != consistencyTics || commandCount != commandTics)
-			return rejectServerSnapshot("invalid-player-record");
-
-		const uint64_t playerMask = uint64_t(1u) << playerNum;
-		if (playersSeen & playerMask)
-			return rejectServerSnapshot("duplicate-player-record");
-		playersSeen |= playerMask;
-
-		if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, playerNum)
-			|| !HCDEAppendBE16(NetBuffer, MAX_MSGLEN, cursor, latency))
-		{
-			return rejectServerSnapshot("packet-overflow");
-		}
-
-		usercmd_t rollingCommandBasis = {};
-		bool hasRollingCommandBasis = false;
-		uint8_t expectedCommandOffset = 0u;
-		if (const usercmd_t* basis = HCDEReceiveUserCmdBasis(playerNum, baseSequence))
-		{
-			rollingCommandBasis = *basis;
-			hasRollingCommandBasis = true;
-		}
-
-		uint64_t consistencyOffsetsSeen = 0u;
-		for (uint8_t r = 0u; r < consistencyCount; ++r)
-		{
-			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u)
-				return rejectServerSnapshot("truncated-consistency-record");
-			if (body[bodyCursor] >= consistencyTics)
-				return rejectServerSnapshot("invalid-consistency-offset");
-			const uint64_t consistencyMask = uint64_t(1u) << body[bodyCursor];
-			if (consistencyOffsetsSeen & consistencyMask)
-				return rejectServerSnapshot("duplicate-consistency-offset");
-			consistencyOffsetsSeen |= consistencyMask;
-			if (!HCDEAppendBytes(NetBuffer, MAX_MSGLEN, cursor, &body[bodyCursor], 3u))
-				return rejectServerSnapshot("packet-overflow");
-			bodyCursor += 3u;
-		}
-
-		uint64_t commandOffsetsSeen = 0u;
-		for (uint8_t t = 0u; t < commandCount; ++t)
-		{
-			if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
-				return rejectServerSnapshot("truncated-command-record");
-
-			const uint8_t commandOffset = body[bodyCursor++];
-			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
-			bodyCursor += 2u;
-			if (commandOffset >= commandTics)
-				return rejectServerSnapshot("invalid-command-record");
-			const uint64_t commandMask = uint64_t(1u) << commandOffset;
-			if (commandOffsetsSeen & commandMask)
-				return rejectServerSnapshot("duplicate-command-offset");
-			commandOffsetsSeen |= commandMask;
-
-			if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, commandOffset))
-				return rejectServerSnapshot("packet-overflow");
-
-			for (size_t e = 0u; e < eventCount; ++e)
-			{
-				if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < 3u + HCDEExplicitUserCmdBytes)
-					return rejectServerSnapshot("truncated-event-record");
-
-				const uint8_t eventType = body[bodyCursor++];
-				const size_t eventPayloadBytes = HCDELiveReadBE16(&body[bodyCursor]);
-				bodyCursor += 2u;
-				if (!HCDEIsAllowedTicEventType(eventType)
-					|| bodyCursor > bodyBytes
-					|| eventPayloadBytes > bodyBytes - bodyCursor
-					|| bodyBytes - bodyCursor - eventPayloadBytes < HCDEExplicitUserCmdBytes)
-				{
-					return rejectServerSnapshot("invalid-event-record");
-				}
-
-				if (!HCDEAppendByte(NetBuffer, MAX_MSGLEN, cursor, eventType))
-					return rejectServerSnapshot("packet-overflow");
-				if (!HCDEAppendLegacyEventPayload(eventType, &body[bodyCursor], eventPayloadBytes, NetBuffer, MAX_MSGLEN, cursor))
-					return rejectServerSnapshot("invalid-event-payload");
-				bodyCursor += eventPayloadBytes;
-			}
-
-			usercmd_t command = {};
-			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
-				return rejectServerSnapshot("truncated-command-record");
-
-			if (cursor > MAX_MSGLEN || MAX_MSGLEN - cursor < 18u)
-				return rejectServerSnapshot("packet-overflow");
-			uint8_t* commandOutputStart = &NetBuffer[cursor];
-			TArrayView<uint8_t> commandOutput = TArrayView(commandOutputStart, MAX_MSGLEN - cursor);
-			const usercmd_t* basis = (hasRollingCommandBasis && commandOffset == expectedCommandOffset)
-				? &rollingCommandBasis
-				: HCDEReceiveUserCmdBasis(playerNum, baseSequence + commandOffset);
-			WriteUserCmdMessage(command, basis, commandOutput);
-			// Keep the re-packed legacy stream's basis in step with the parser that
-			// consumes it immediately after unwrapping.
-			rollingCommandBasis = command;
-			hasRollingCommandBasis = true;
-			expectedCommandOffset = commandOffset + 1u;
-			cursor += size_t(commandOutput.Data() - commandOutputStart);
-		}
-	}
-
-	const size_t playerSnapshotBodyEnd = bodyCursor;
-	if (!HCDEValidateServerWorldDeltas(clientNum, body, bodyBytes, bodyCursor, playerCount, playersSeen))
-		return rejectServerSnapshot("invalid-world-deltas");
-	const bool expectActorDelta = HCDELivePeerHasCapability(clientNum, HCDELiveCapActorDeltaV2)
-		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapActorRegistryV1);
-	const bool expectInvasionSnapshot = Net_IsInvasionModeEnabled()
-		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2);
-	if (bodyCursor < bodyBytes
-		&& expectActorDelta
-		&& bodyBytes - bodyCursor >= HCDEActorDeltasHeaderSize
-		&& memcmp(&body[bodyCursor + HCDEActorDeltasMagicOffset], HCDEActorDeltasMagic, sizeof(HCDEActorDeltasMagic)) == 0)
-	{
-		if (!HCDEApplyActorDeltasV2(clientNum, body, bodyBytes, bodyCursor))
-			return rejectServerSnapshot("invalid-shared-actor-deltas");
-	}
-	if (expectInvasionSnapshot
-		&& bodyCursor < bodyBytes
-		&& !HCDEApplyInvasionSnapshot(clientNum, body, bodyBytes, bodyCursor))
-	{
-		return rejectServerSnapshot("invalid-invasion-snapshot");
-	}
-	else if (bodyCursor < bodyBytes
-		&& Net_IsInvasionModeEnabled()
-		&& !expectInvasionSnapshot
-		&& bodyBytes - bodyCursor >= HCDEInvasionSnapshotHeaderV1Size
-		&& memcmp(&body[bodyCursor + HCDEInvasionSnapshotMagicOffset], HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic)) == 0u)
-	{
-		return rejectServerSnapshot("unexpected-invasion-snapshot");
-	}
-
-	if (bodyCursor != bodyBytes)
-		return rejectServerSnapshot("trailing-record-bytes");
-
-	NetBufferLength = cursor;
-
-	const size_t expectedSize = GetNetBufferSize();
-	if (NetBufferLength != expectedSize)
-	{
-		++peer.UnsupportedReceived;
-		DPrintf(DMSG_WARNING, "Malformed HCDE server snapshot from client %d: size %zu (expected %zu)\n",
-			clientNum, NetBufferLength, expectedSize);
-		return false;
-	}
-
-	DebugTrace::Markf("net", "HCDE server snapshot recv client=%d room=%u tic=%u players=%u tics=%u consistencies=%u quitters=%zu records=%zu",
-		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes);
-	++HCDELiveProfile.ServerSnapshotPacketsReceived;
-	HCDELiveProfile.ServerSnapshotBytesReceived += snapshotPayloadSize;
-	HCDERecordLiveLaneRx(HLANE_PLAYER_SNAPSHOT, clientNum, HCDEServerSnapshotHeaderSize + quitterBytes + playerSnapshotBodyEnd);
-	return true;
+	return rejectServerSnapshot(failureReason != nullptr ? failureReason : "server-snapshot-native-apply-failed");
 }
 
 static bool HandleHCDELivePacket(int clientNum)
@@ -8365,10 +9122,16 @@ static bool HandleHCDELivePacket(int clientNum)
 				clientNum, I_IsHCDELiveAuthoritySlot(clientNum), I_IsLocalHCDELiveAuthority());
 			return true;
 		}
-
-		if (!UnwrapHCDELiveClientInputPayload(clientNum, payloadSize))
+		if (!HCDELivePeerHasRequiredGameplayCapabilities(clientNum))
 		{
-			RequestHCDELiveReplay(clientNum, "client-input-decode");
+			HCDERejectLiveGameplayForCapabilities(clientNum, EHCDELiveMessage(type), "recv", true);
+			return true;
+		}
+
+		const char* decodeFailureReason = nullptr;
+		if (!UnwrapHCDELiveClientInputPayload(clientNum, payloadSize, decodeFailureReason))
+		{
+			RequestHCDELiveReplay(clientNum, decodeFailureReason != nullptr ? decodeFailureReason : "client-input-decode");
 			return true;
 		}
 
@@ -8379,7 +9142,7 @@ static bool HandleHCDELivePacket(int clientNum)
 			Printf("NetServer:: HCDE live client inputs active with client %d\n", clientNum);
 		DebugTrace::Markf("net", "HCDE live client-input boundary recv client=%d payload=%zu local-authority=%d",
 			clientNum, payloadSize, I_IsLocalHCDELiveAuthority());
-		return false;
+		return true;
 	}
 	case HLIVE_SERVER_SNAPSHOT:
 	{
@@ -8390,10 +9153,16 @@ static bool HandleHCDELivePacket(int clientNum)
 				clientNum, I_IsHCDELiveAuthoritySlot(clientNum), I_IsLocalHCDELiveAuthority());
 			return true;
 		}
-
-		if (!UnwrapHCDELiveServerSnapshotPayload(clientNum, payloadSize))
+		if (!HCDELivePeerHasRequiredGameplayCapabilities(clientNum))
 		{
-			RequestHCDELiveReplay(clientNum, "server-snapshot-decode");
+			HCDERejectLiveGameplayForCapabilities(clientNum, EHCDELiveMessage(type), "recv", true);
+			return true;
+		}
+
+		const char* decodeFailureReason = nullptr;
+		if (!UnwrapHCDELiveServerSnapshotPayload(clientNum, payloadSize, decodeFailureReason))
+		{
+			RequestHCDELiveReplay(clientNum, decodeFailureReason != nullptr ? decodeFailureReason : "server-snapshot-decode");
 			return true;
 		}
 
@@ -8404,7 +9173,7 @@ static bool HandleHCDELivePacket(int clientNum)
 			Printf("NetSession:: HCDE live server snapshots active with client %d\n", clientNum);
 		DebugTrace::Markf("net", "HCDE live snapshot boundary recv client=%d payload=%zu from-authority=%d",
 			clientNum, payloadSize, I_IsHCDELiveAuthoritySlot(clientNum));
-		return false;
+		return true;
 	}
 	default:
 		++peer.UnsupportedReceived;
@@ -8445,12 +9214,49 @@ static void SendHCDELiveControl()
 	}
 }
 
+// Native gameplay encoding cannot fall back to legacy NCMD on the wire; when a
+// build fails for an HCDE peer we instead record the failure, optionally ask the
+// peer for a replay (server snapshots only, since clients need them to advance
+// game state), and emit a single warning so the diagnostics show why the peer
+// stalled. `legacySize` and `payloadSize` are recorded for the trace only.
+static void HCDEAbortLiveGameplaySend(int client, EHCDELiveMessage type, const char* reason, size_t legacySize, size_t payloadSize = 0u)
+{
+	++HCDELiveProfile.LiveNativeEncodeFailures;
+	DebugTrace::Warningf("net",
+		"HCDE live %s encode failed client=%d reason=%s legacy=%zu payload=%zu seq=%d ack=%d room=%u native-only",
+		HCDELiveMessageName(uint8_t(type)), client, reason != nullptr ? reason : "unknown",
+		legacySize, payloadSize, ClientStates[client].CurrentSequence, ClientStates[client].SequenceAck,
+		unsigned(CurrentRoomID));
+	if (type == HLIVE_SERVER_SNAPSHOT)
+	{
+		Printf(PRINT_HIGH,
+			"HCDE live server snapshot for client %d failed (%s); not sending legacy fallback.\n",
+			client, reason != nullptr ? reason : "unknown");
+		RequestHCDELiveReplay(client, reason);
+	}
+	else
+	{
+		DPrintf(DMSG_WARNING, "HCDE live client input for client %d failed (%s): %zu bytes\n",
+			client, reason != nullptr ? reason : "unknown", legacySize);
+	}
+}
+
+// Final guard for the legacy NetBuffer send path. Non-HCDE peers (or anything not
+// classified as live gameplay) still send through the classic NCMD packet shaped
+// in NetBuffer. For HCDE gameplay we must have already gone through the native
+// HSendNative* wrappers; reaching here means the native build was bypassed, so we
+// abort with a native-only diagnostic instead of leaking NCMD onto the wire.
 static void HSendLiveGameplayPacket(int client, size_t size)
 {
 	const bool clientCommand = ShouldWrapHCDEClientCommandPacket(client);
 	const bool serverSnapshot = ShouldWrapHCDEServerSnapshotPacket(client);
 	if (!clientCommand && !serverSnapshot)
 	{
+		if (HCDEEnforcesNativeGameplayForPeer(client))
+		{
+			HCDERejectLegacyGameplayPeer(client, "send", I_ClientUsesHCDEService(client) ? "native-route-unavailable" : "non-hcde-peer");
+			return;
+		}
 		HSendPacket(client, size);
 		return;
 	}
@@ -8459,76 +9265,124 @@ static void HSendLiveGameplayPacket(int client, size_t size)
 		I_FatalError("HCDE live gameplay packet for client %d exceeded NetBuffer: %zu bytes", client, size);
 	}
 
-	uint8_t legacyPacket[MAX_MSGLEN];
-	memcpy(legacyPacket, NetBuffer, size);
-
-	uint8_t gameplayPayload[MAX_MSGLEN];
-	size_t gameplayPayloadSize = 0u;
-	auto& peer = HCDELivePeers[client];
 	const EHCDELiveMessage type = clientCommand ? HLIVE_CLIENT_COMMANDS : HLIVE_SERVER_SNAPSHOT;
-	const EHCDEGameplayPayload gameplayKind = clientCommand ? HGP_CLIENT_INPUTS : HGP_SERVER_SNAPSHOT;
-	if (clientCommand)
+	if (!HCDELivePeerHasRequiredGameplayCapabilities(client))
 	{
-		if (!BuildHCDEClientInputPayload(client, legacyPacket, size, gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize))
-		{
-			DPrintf(DMSG_WARNING, "HCDE live client input for client %d could not be encoded: %zu bytes\n", client, size);
-			HSendPacket(client, size);
-			return;
-		}
-	}
-	else
-	{
-		if (!BuildHCDEServerSnapshotPayload(client, legacyPacket, size, gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize))
-		{
-			ClientStates[client].Flags |= CF_RETRANSMIT_SEQ;
-			Printf(PRINT_HIGH, "HCDE live server snapshot for client %d could not be encoded; requesting resend instead of legacy fallback.\n", client);
-			DebugTrace::Warningf("net", "HCDE live server snapshot encode failed client=%d size=%zu seq=%d ack=%d room=%u",
-				client, size, ClientStates[client].CurrentSequence, ClientStates[client].SequenceAck, unsigned(CurrentRoomID));
-			return;
-		}
-	}
-
-	if (gameplayPayloadSize > MAX_MSGLEN - HCDELiveHeaderSize - HCDEGameplayHeaderSize)
-	{
-		if (serverSnapshot)
-		{
-			ClientStates[client].Flags |= CF_RETRANSMIT_SEQ;
-			Printf(PRINT_HIGH, "HCDE live server snapshot for client %d is too large to wrap; requesting resend instead of legacy fallback.\n", client);
-			DebugTrace::Warningf("net", "HCDE live server snapshot wrap too large client=%d payload=%zu legacy=%zu seq=%d ack=%d room=%u",
-				client, gameplayPayloadSize, size, ClientStates[client].CurrentSequence, ClientStates[client].SequenceAck, unsigned(CurrentRoomID));
-			return;
-		}
-
-		DPrintf(DMSG_WARNING, "HCDE live gameplay packet for client %d is too large to wrap: %zu bytes\n", client, gameplayPayloadSize);
-		HSendPacket(client, size);
+		HCDERejectLiveGameplayForCapabilities(client, type, "send", false);
 		return;
 	}
 
+	HCDEAbortLiveGameplaySend(client, type, "native-send-not-built", size);
+}
+
+// Native send wrapper for HLIVE_CLIENT_COMMANDS. Returns:
+//   false  -- this peer is not a candidate for native client-input send (the
+//             caller should fall back to HSendLiveGameplayPacket which itself
+//             gates HCDE peers).
+//   true   -- a native send attempt was made for this peer. Success/failure of
+//             the encode is hidden from the caller because in both cases the
+//             peer must NOT be subjected to a legacy fallback packet.
+static bool HSendNativeClientInputPacket(int client, uint8_t controlFlags, uint8_t routingByte,
+	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
+	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, int playerNum, int sequenceOffset,
+	const usercmd_t* commands, const uint8_t* const* eventStreams, const size_t* eventSizes)
+{
+	constexpr EHCDELiveMessage type = HLIVE_CLIENT_COMMANDS;
+	if (!ShouldWrapHCDEClientCommandPacket(client))
+		return false;
+	if (!HCDELivePeerHasRequiredGameplayCapabilities(client))
+	{
+		HCDERejectLiveGameplayForCapabilities(client, type, "send", false);
+		return true;
+	}
+
+	uint8_t gameplayPayload[MAX_MSGLEN];
+	size_t gameplayPayloadSize = 0u;
+	const char* buildFailureReason = nullptr;
+	if (!HCDEBuildNativeClientInputPayload(client, controlFlags, routingByte,
+		sequenceAck, consistencyAck, baseSequence, baseConsistency, commandTics, consistencyTics,
+		stabilityBuffer, playerNum, sequenceOffset, commands, eventStreams, eventSizes,
+		gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize, buildFailureReason))
+	{
+		HCDEAbortLiveGameplaySend(client, type, buildFailureReason != nullptr ? buildFailureReason : "client-input-native-build", 0u);
+		return true;
+	}
+	if (gameplayPayloadSize > MAX_MSGLEN - HCDELiveHeaderSize - HCDEGameplayHeaderSize)
+	{
+		HCDEAbortLiveGameplaySend(client, type, "client-input-native-too-large", 0u, gameplayPayloadSize);
+		return true;
+	}
+
+	auto& peer = HCDELivePeers[client];
 	const size_t payloadOffset = BeginHCDELivePacket(client, type);
-	WriteHCDEGameplayEnvelope(&NetBuffer[payloadOffset], gameplayKind);
+	WriteHCDEGameplayEnvelope(&NetBuffer[payloadOffset], HGP_CLIENT_INPUTS);
 	memcpy(&NetBuffer[payloadOffset + HCDEGameplayHeaderSize], gameplayPayload, gameplayPayloadSize);
-	if (clientCommand)
-	{
-		++peer.ClientCommandSent;
-		if (peer.ClientCommandSent == 1u)
-			Printf("NetSession:: HCDE live client inputs active with client %d\n", client);
-	}
-	else
-	{
-		++peer.SnapshotSent;
-		if (peer.SnapshotSent == 1u)
-			Printf("NetServer:: HCDE live server snapshots active with client %d\n", client);
-	}
-	DebugTrace::Markf("net", "HCDE live %s send client=%d seq=%u ack=%u payload=%zu sent=%u",
-		HCDELiveMessageName(uint8_t(type)), client, peer.TxSequence, peer.RxSequence, gameplayPayloadSize,
-		clientCommand ? peer.ClientCommandSent : peer.SnapshotSent);
+	++peer.ClientCommandSent;
+	if (peer.ClientCommandSent == 1u)
+		Printf("NetSession:: HCDE live client inputs active with client %d\n", client);
+	DebugTrace::Markf("net", "HCDE live client commands native send client=%d seq=%u ack=%u payload=%zu sent=%u",
+		client, peer.TxSequence, peer.RxSequence, gameplayPayloadSize, peer.ClientCommandSent);
 	++HCDELiveProfile.LivePacketsWrapped;
 	HCDELiveProfile.LivePayloadBytesWrapped += gameplayPayloadSize;
 	HCDELiveProfile.LiveBytesWrapped += payloadOffset + HCDEGameplayHeaderSize + gameplayPayloadSize;
+	ClearHCDELiveReplayPressure(client, "client-input-native-send");
 	HSendPacket(client, payloadOffset + HCDEGameplayHeaderSize + gameplayPayloadSize);
+	return true;
+}
 
-	memcpy(NetBuffer, legacyPacket, size);
-	NetBufferLength = size;
+// Native send wrapper for HLIVE_SERVER_SNAPSHOT. Returns false if this peer is
+// not a native server-snapshot target (caller should fall back to
+// HSendLiveGameplayPacket). Otherwise returns true and hides build success/
+// failure: native build failure triggers HCDEAbortLiveGameplaySend (which both
+// records the failure and requests a replay from the peer) instead of falling
+// back to the legacy NCMD encoder.
+static bool HSendNativeServerSnapshotPacket(int client, uint8_t controlFlags, uint8_t routingByte,
+	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
+	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, const int* playerNums, uint8_t playerCount,
+	const int* quitNums, uint8_t quitterCount, const usercmd_t (*commands)[MAXSENDTICS],
+	const uint8_t* const (*eventStreams)[MAXSENDTICS], const size_t (*eventSizes)[MAXSENDTICS])
+{
+	constexpr EHCDELiveMessage type = HLIVE_SERVER_SNAPSHOT;
+	if (!ShouldWrapHCDEServerSnapshotPacket(client))
+		return false;
+	if (!HCDELivePeerHasRequiredGameplayCapabilities(client))
+	{
+		HCDERejectLiveGameplayForCapabilities(client, type, "send", false);
+		return true;
+	}
+
+	uint8_t gameplayPayload[MAX_MSGLEN];
+	size_t gameplayPayloadSize = 0u;
+	const char* buildFailureReason = nullptr;
+	if (!HCDEBuildNativeServerSnapshotPayload(client, controlFlags, routingByte,
+		sequenceAck, consistencyAck, baseSequence, baseConsistency, commandTics, consistencyTics,
+		stabilityBuffer, playerNums, playerCount, quitNums, quitterCount, commands, eventStreams, eventSizes,
+		gameplayPayload, sizeof(gameplayPayload), gameplayPayloadSize, buildFailureReason))
+	{
+		HCDEAbortLiveGameplaySend(client, type, buildFailureReason != nullptr ? buildFailureReason : "server-snapshot-native-build", 0u);
+		return true;
+	}
+	if (gameplayPayloadSize > MAX_MSGLEN - HCDELiveHeaderSize - HCDEGameplayHeaderSize)
+	{
+		HCDEAbortLiveGameplaySend(client, type, "server-snapshot-native-too-large", 0u, gameplayPayloadSize);
+		return true;
+	}
+
+	auto& peer = HCDELivePeers[client];
+	const size_t payloadOffset = BeginHCDELivePacket(client, type);
+	WriteHCDEGameplayEnvelope(&NetBuffer[payloadOffset], HGP_SERVER_SNAPSHOT);
+	memcpy(&NetBuffer[payloadOffset + HCDEGameplayHeaderSize], gameplayPayload, gameplayPayloadSize);
+	++peer.SnapshotSent;
+	if (peer.SnapshotSent == 1u)
+		Printf("NetSession:: HCDE live server snapshots active with client %d\n", client);
+	DebugTrace::Markf("net", "HCDE live server snapshot native send client=%d seq=%u ack=%u payload=%zu sent=%u",
+		client, peer.TxSequence, peer.RxSequence, gameplayPayloadSize, peer.SnapshotSent);
+	++HCDELiveProfile.LivePacketsWrapped;
+	HCDELiveProfile.LivePayloadBytesWrapped += gameplayPayloadSize;
+	HCDELiveProfile.LiveBytesWrapped += payloadOffset + HCDEGameplayHeaderSize + gameplayPayloadSize;
+	ClearHCDELiveReplayPressure(client, "server-snapshot-native-send");
+	HSendPacket(client, payloadOffset + HCDEGameplayHeaderSize + gameplayPayloadSize);
+	return true;
 }
 
 CVAR(Bool, vid_dontdowait, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
@@ -8664,19 +9518,27 @@ CUSTOM_CVAR(Bool, sv_invasionsimlod, true, CVAR_SERVERINFO | CVAR_NOSAVE)
 }
 CUSTOM_CVAR(Float, sv_invasionsimlodfullrange, 2048.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
-	self = clamp<float>(self, 256.0f, 32768.0f);
+	const float clamped = clamp<float>(self, 256.0f, 32768.0f);
+	if (self != clamped)
+		self = clamped;
 }
 CUSTOM_CVAR(Float, sv_invasionsimlodreducedrange, 4096.0f, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
-	self = clamp<float>(self, float(sv_invasionsimlodfullrange), 65536.0f);
+	const float clamped = clamp<float>(self, float(sv_invasionsimlodfullrange), 65536.0f);
+	if (self != clamped)
+		self = clamped;
 }
 CUSTOM_CVAR(Int, sv_invasionsimlodreducedinterval, 5, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
-	self = clamp<int>(self, 1, TICRATE * 5);
+	const int clamped = clamp<int>(self, 1, TICRATE * 5);
+	if (self != clamped)
+		self = clamped;
 }
 CUSTOM_CVAR(Int, sv_invasionsimloddormantinterval, TICRATE * 3, CVAR_SERVERINFO | CVAR_NOSAVE)
 {
-	self = clamp<int>(self, TICRATE / 2, TICRATE * 30);
+	const int clamped = clamp<int>(self, TICRATE / 2, TICRATE * 30);
+	if (self != clamped)
+		self = clamped;
 }
 
 CVAR(Bool, cl_noboldchat, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -9937,6 +10799,7 @@ static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, 
 		InvasionPendingMirrorSpawns.Clear();
 		InvasionLastAppliedSpawnEventId = 0u;
 		InvasionMirrorNextVisualDiagnosticTic = 0;
+		InvasionMirrorNextPurgeTic = 0;
 	}
 
 	InvasionSpawnDirectory.Spots.Clear();
@@ -10198,6 +11061,7 @@ static void Net_ResetInvasionState(const char* reason)
 	InvasionNextSpawnEventId = 1u;
 	InvasionLastAppliedSpawnEventId = 0u;
 	InvasionMirrorNextVisualDiagnosticTic = 0;
+	InvasionMirrorNextPurgeTic = 0;
 	Net_ResetInvasionAnnouncements();
 	InvasionReplicatedActiveMonsterCount = 0;
 	InvasionWipeGraceTics = 0;
@@ -10686,22 +11550,55 @@ static void Net_TickInvasionMirrorVisualFrame()
 	if (Net_IsLocalInvasionAuthority() || InvasionState == INVS_DISABLED)
 		return;
 
-	Net_DrainPendingInvasionSpawnEvents();
-	Net_DrainPendingInvasionMirrorSpawns();
 	if (InvasionMirrorVisualTickBudget > 0)
 	{
 		// Catch-up can run several gameplay tics in one frame. Mirror actors are
 		// visual-only server replicas, so move them once per frame and let the
 		// latest authoritative target correct them instead of multiplying speed.
+		// Spawn drains are also gated here to prevent a burst of actor creation
+		// when processing multiple tics in a single frame, which would otherwise
+		// cause visible lag spikes during network catch-up.
 		--InvasionMirrorVisualTickBudget;
-		Net_TickInvasionMirrorVisualActors();
+		if (gametic >= InvasionMirrorNextPurgeTic)
+		{
+			InvasionMirrorNextPurgeTic = gametic + TICRATE * 2;
+			Net_PurgeStaleInvasionMirrorActorsOnClient();
+		}
+
+		const uint64_t visualStartUS = HCDEProfileNowUS();
+		Net_DrainPendingInvasionSpawnEvents();
+		Net_DrainPendingInvasionMirrorSpawns();
+		unsigned updated = 0u;
+		unsigned skipped = 0u;
+		Net_TickInvasionMirrorVisualActors(updated, skipped);
+		LastMirrorVisualPassUS = HCDEProfileNowUS() - visualStartUS;
+		HCDEProfileRecordMirrorVisualPass(LastMirrorVisualPassUS, updated, skipped);
+		Net_LogInvasionMirrorVisualDiagnostic();
+
+		if (*hcde_hud_debug && HCDELiveProfile.MirrorVisualPasses % 35u == 0u)
+		{
+			const double avgMS = HCDELiveProfile.MirrorVisualPasses > 0u
+				? double(HCDELiveProfile.MirrorVisualMicros) / double(HCDELiveProfile.MirrorVisualPasses) / 1000.0
+				: 0.0;
+			const double maxMS = double(HCDELiveProfile.MirrorVisualMaxMicros) / 1000.0;
+			Printf(PRINT_HIGH,
+				"HCDE mirror perf tracked=%u updated=%u skipped=%u pending-spawns=%u pending-events=%u world-steps=%d avg=%.2fms max=%.2fms backlog=%d lag=%s\n",
+				unsigned(InvasionReplicatedActors.Size()),
+				updated,
+				skipped,
+				unsigned(InvasionPendingMirrorSpawns.Size()),
+				unsigned(InvasionPendingSpawnEvents.Size()),
+				InvasionMirrorVisualWorldSteps,
+				avgMS,
+				maxMS,
+				ClientTic - gametic,
+				Net_LagStateName(LagState));
+		}
 	}
-	Net_LogInvasionMirrorVisualDiagnostic();
 }
 
 static void Net_TickInvasionMirrorState()
 {
-	Net_TickInvasionMirrorVisualFrame();
 	if (Net_IsLocalInvasionAuthority() || InvasionState == INVS_DISABLED)
 		return;
 
@@ -10751,6 +11648,7 @@ void Net_ClearBuffers()
 	LastHCDELiveSequenceRejectReportMS = 0u;
 	LastHCDELiveSnapshotRejectReportMS = 0u;
 	LastHCDELiveTicGateReportMS = 0u;
+	LastHCDEPredictionFaultReportMS = 0u;
 
 	LagState = LAG_NONE;
 	MutedClients = 0u;
@@ -10922,6 +11820,11 @@ void Net_PlayerReadiedUp(int player)
 		CutsceneReady &= ~((uint64_t)1u << player);
 	else
 		CutsceneReady |= (uint64_t)1u << player;
+
+	DebugTrace::Markf("net", "cutscene ready toggle player=%d ready=%d room=%u map=%s gametic=%d clienttic=%d mask=0x%llx",
+		player, Net_IsPlayerReady(player) ? 1 : 0, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", gametic, ClientTic,
+		static_cast<unsigned long long>(CutsceneReady));
 }
 
 void Net_StartCutscene()
@@ -10961,21 +11864,34 @@ bool Net_CheckCutsceneReady()
 		for (auto client : NetworkClients)
 		{
 			if (Net_IsCutsceneReadyParticipant(client) && (CutsceneReady & ((uint64_t)1u << client)))
+			{
+				DebugTrace::Markf("net", "cutscene advance ready-anyone client=%d room=%u map=%s",
+					client, unsigned(CurrentRoomID),
+					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 				return true;
+			}
 		}
+		DebugTrace::Markf("net", "cutscene advance blocked ready-anyone room=%u map=%s",
+			unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 		return false;
 	}
 
 	if (net_cutscenereadytype == RT_HOST_ONLY)
 	{
 		const int readyHost = Net_GetCutsceneReadyHost();
-		return readyHost >= 0 && (CutsceneReady & ((uint64_t)1u << readyHost));
+		const bool ready = readyHost >= 0 && (CutsceneReady & ((uint64_t)1u << readyHost));
+		DebugTrace::Markf("net", "cutscene advance host-only host=%d ready=%d room=%u map=%s",
+			readyHost, ready ? 1 : 0, unsigned(CurrentRoomID),
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+		return ready;
 	}
 
 	uint64_t mask = 0u;
 	uint64_t readyMask = 0u;
 	int totalReady = 0;
 	int totalClients = 0;
+	int humanReady = 0;
+	int humanClients = 0;
 	for (auto client : NetworkClients)
 	{
 		if (!Net_IsCutsceneReadyParticipant(client))
@@ -10983,21 +11899,28 @@ bool Net_CheckCutsceneReady()
 
 		mask |= (uint64_t)1u << client;
 		++totalClients;
-		if (Net_IsPlayerReady(client))
+		const bool ready = Net_IsPlayerReady(client);
+		if (ready)
 		{
 			readyMask |= (uint64_t)1u << client;
 			++totalReady;
 		}
+		if (players[client].Bot == nullptr)
+		{
+			++humanClients;
+			if (ready)
+				++humanReady;
+		}
 	}
 
-	if (totalClients <= 0)
-		return false;
-
-	if ((readyMask & mask) == mask)
-		return true;
-
-	const float readyRatio = (float)totalReady / totalClients;
-	const bool thresholdReached = readyRatio >= net_cutscenereadypercent;
+	if (humanClients <= 1)
+	{
+		const bool ready = humanReady >= humanClients;
+		DebugTrace::Markf("net", "cutscene human fast-path ready=%d/%d total=%d/%d room=%u map=%s",
+			humanReady, humanClients, totalReady, totalClients, unsigned(CurrentRoomID),
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+		return ready;
+	}
 
 	// Keep the countdown progressing even when nobody reaches the ready threshold.
 	// This avoids an intermission deadlock if input focus is lost or clients never
@@ -11007,13 +11930,29 @@ bool Net_CheckCutsceneReady()
 		--CutsceneCountdown;
 		if (CutsceneCountdown <= 0)
 		{
+			const float readyRatio = totalClients > 0 ? (float)totalReady / totalClients : 0.f;
 			DebugTrace::Markf("net", "cutscene countdown auto-advance ratio=%.3f ready=%d/%d room=%u map=%s",
 				double(readyRatio), totalReady, totalClients, unsigned(CurrentRoomID),
 				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 			return true;
 		}
+		DebugTrace::Markf("net", "cutscene countdown ticking seconds=%.3f ready=%d/%d room=%u map=%s",
+			double(CutsceneCountdown) / TICRATE, totalReady, totalClients, unsigned(CurrentRoomID),
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 		return false;
 	}
+
+	if (totalClients <= 0)
+		return true;
+
+	if ((readyMask & mask) == mask)
+		return true;
+
+	const float readyRatio = (float)totalReady / totalClients;
+	const bool thresholdReached = readyRatio >= net_cutscenereadypercent;
+	DebugTrace::Markf("net", "cutscene threshold check ratio=%.3f ready=%d/%d threshold=%.3f result=%d room=%u map=%s",
+		double(readyRatio), totalReady, totalClients, double(net_cutscenereadypercent), thresholdReached ? 1 : 0,
+		unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 
 	return thresholdReached;
 }
@@ -11112,10 +12051,25 @@ void Net_ResetCommands(bool midTic)
 		auto& state = ClientStates[client];
 		state.Flags &= CF_QUIT;
 		state.StabilityBuffer = 0u;
-		state.CurrentSequence = min<int>(state.CurrentSequence, tic);
-		state.SequenceAck = min<int>(state.SequenceAck, tic);
-		if (state.ResendSequenceFrom >= tic)
-			state.ResendSequenceFrom = -1;
+		state.ResendID = CurrentRoomID;
+		// After a level reset every peer must agree on a single anchor sequence
+		// to begin streaming from again. Previously this clamped with min(),
+		// which left the authority's view of a lagging client below the new
+		// map's anchor; the LST_HOST tic gate then waited for a sequence the
+		// client would never resend (it only sends `>= tic + 1` going forward),
+		// freezing the world on the new map's first tic. Snap both fields to
+		// `tic` so the next tic can be produced as soon as the client delivers
+		// its first post-reset command.
+		state.CurrentSequence = tic;
+		state.SequenceAck = tic;
+		// Any in-flight resend window targeted the previous map's sequence
+		// space. Carrying it across the room reset would either re-send stale
+		// pre-reset commands (which the peer treats as duplicates and ignores)
+		// or block fresh sequences behind a phantom retransmit. Clear both
+		// resend cursors unconditionally so the next NetUpdate streams the
+		// post-reset tics starting at `tic + 1`.
+		state.ResendSequenceFrom = -1;
+		state.ResendConsistencyFrom = -1;
 
 		// Make sure not to run its current command either.
 		auto& curTic = state.Tics[tic % BACKUPTICS];
@@ -11168,9 +12122,12 @@ static size_t GetNetBufferSize()
 
 	if (NetBuffer[0] & NCMD_LEVELREADY)
 	{
+		// Level start carries the authority's starting gametic (4 bytes) so clients
+		// can align their local gametic and sequence anchors exactly, preventing
+		// the post-load "availableTics == 0" stall caused by local init ticks.
 		int bytes = 2;
 		if (I_IsHCDEServiceAuthoritySlot(RemoteClient))
-			bytes += 2;
+			bytes += 6;
 
 		return bytes;
 	}
@@ -11421,6 +12378,8 @@ void Net_ResetClientState(int clientNum)
 	state.CurrentNetConsistency = -1;
 	memset(state.NetConsistency, 0, sizeof(state.NetConsistency));
 	memset(state.LocalConsistency, 0, sizeof(state.LocalConsistency));
+	state.MalformedPacketStrikes = 0u;
+	state.MalformedWindowStartMS = 0u;
 	ConsistencyGraceUntilTic[clientNum] = 0;
 
 	for (auto& tic : state.Tics)
@@ -11591,13 +12550,26 @@ static bool TryReleaseLevelStart()
 
 		NetBuffer[2] = delay >> 8;
 		NetBuffer[3] = delay;
+		NetBuffer[4] = gametic >> 24;
+		NetBuffer[5] = gametic >> 16;
+		NetBuffer[6] = gametic >> 8;
+		NetBuffer[7] = gametic;
 
-		HSendPacket(client, 4);
+		HSendPacket(client, 8);
 	}
 
 	LevelStartAck = 0u;
 	LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
 	LevelStartDelay = LevelStartDebug = 0;
+
+	// NOTE: Do not re-anchor ClientStates[*].CurrentSequence here. The authority's
+	// view of each client's last delivered sequence is maintained authoritatively
+	// by Net_ResetCommands (transitions) or by the default -1 (cold start). Setting
+	// it to `gametic/TicDup` here makes the authority "ahead of" what the client
+	// will actually send next, which causes every fresh client packet to be
+	// rejected as a duplicate -- producing the "net stall on launch" deadlock
+	// where the authority never advances `lowestSeq` and the client never
+	// receives any sequence updates back.
 	Net_ResetAuthorityWaitWatchdog("authority-release");
 	Printf(PRINT_HIGH, "NetGame:: Authority released level start at gametic=%d clienttic=%d room=%u map=%s clients=%u\n",
 		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
@@ -11619,8 +12591,12 @@ static void CheckLevelStart(int client, int delayTics)
 			NetBuffer[1] = CurrentRoomID;
 			NetBuffer[2] = 0;
 			NetBuffer[3] = 0;
+			NetBuffer[4] = gametic >> 24;
+			NetBuffer[5] = gametic >> 16;
+			NetBuffer[6] = gametic >> 8;
+			NetBuffer[7] = gametic;
 
-			HSendPacket(client, 4);
+			HSendPacket(client, 8);
 		}
 
 		return;
@@ -11631,6 +12607,26 @@ static void CheckLevelStart(int client, int delayTics)
 		LevelStartAck = 0u;
 		LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
 		LevelStartDelay = LevelStartDebug = delayTics;
+
+		const int serverGametic = (NetBuffer[4] << 24) | (NetBuffer[5] << 16) | (NetBuffer[6] << 8) | NetBuffer[7];
+		if (gametic != serverGametic)
+		{
+			// Only realign the playsim clock; leave ClientTic and the per-peer
+			// CurrentSequence/SequenceAck alone. Between the local
+			// Net_ResetCommands(true) and the authority's NCMD_LEVELREADY the
+			// client has been allowed to keep building and shipping commands
+			// (NetUpdate runs G_BuildTiccmd and the send loop unconditionally),
+			// so the authority's view of this client's CurrentSequence has
+			// almost certainly advanced past the post-reset anchor. Rewinding
+			// ClientTic (or stamping CurrentSequence back to `tic`) would make
+			// the next outbound command duplicate sequences the authority has
+			// already accepted, which then deadlocks the world on the new map.
+			// gametic, on the other hand, only advances inside the LST_HOST/READY
+			// playsim gate and is safe to snap to the authority's value here.
+			Printf(PRINT_HIGH, "NetGame:: Aligning local gametic=%d to server gametic=%d\n", gametic, serverGametic);
+			gametic = serverGametic;
+		}
+
 		Net_ResetAuthorityWaitWatchdog("authority-start");
 		Printf(PRINT_HIGH, "NetGame:: Authority started level for client at gametic=%d clienttic=%d room=%u map=%s delay=%d\n",
 			gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", delayTics);
@@ -11644,6 +12640,49 @@ static void CheckLevelStart(int client, int delayTics)
 		client, (unsigned long long)LevelStartAck, (unsigned long long)LevelStartPlayableMask(),
 		IsMapLoaded() ? 1 : 0, unsigned(CurrentRoomID));
 	TryReleaseLevelStart();
+}
+
+// Repeated malformed gameplay packets from the same peer are grouped in a short
+// window so hostile/broken traffic cannot keep forcing parser retries forever.
+static void NoteMalformedGameplayPacket(int clientNum, const char* reason)
+{
+	if (clientNum < 0 || clientNum >= MAXPLAYERS)
+		return;
+
+	auto& state = ClientStates[clientNum];
+	const uint64_t now = I_msTime();
+	constexpr uint64_t MalformedStrikeWindowMS = 5000u;
+	constexpr uint32_t MalformedStrikeLimit = 6u;
+	if (state.MalformedWindowStartMS == 0u || now < state.MalformedWindowStartMS
+		|| now - state.MalformedWindowStartMS > MalformedStrikeWindowMS)
+	{
+		state.MalformedWindowStartMS = now;
+		state.MalformedPacketStrikes = 0u;
+	}
+
+	++state.MalformedPacketStrikes;
+	DebugTrace::Warningf("net", "malformed gameplay packet from=%d reason=%s strikes=%u window-ms=%llu room=%u",
+		clientNum, reason, unsigned(state.MalformedPacketStrikes),
+		static_cast<unsigned long long>(now - state.MalformedWindowStartMS),
+		unsigned(CurrentRoomID));
+
+	if (state.MalformedPacketStrikes < MalformedStrikeLimit)
+		return;
+
+	state.MalformedPacketStrikes = 0u;
+	state.MalformedWindowStartMS = now;
+	if (!I_IsLocalHCDEServiceAuthority() || I_IsHCDEServiceAuthoritySlot(clientNum))
+	{
+		DebugTrace::Warningf("net", "malformed packet strike limit reached but peer is authority/not locally kickable client=%d room=%u",
+			clientNum, unsigned(CurrentRoomID));
+		return;
+	}
+
+	Printf(PRINT_HIGH, "NetGame:: Disconnecting client %d '%s' for repeated malformed gameplay packets at gametic=%d clienttic=%d room=%u\n",
+		clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
+	DebugTrace::Warningf("net", "disconnecting malformed-packet source client=%d name=%s gametic=%d clienttic=%d room=%u",
+		clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
+	ClientStates[clientNum].Flags |= CF_QUIT;
 }
 
 struct FLatencyAck
@@ -11728,6 +12767,12 @@ static void GetPackets()
 				continue;
 		}
 
+		if (HCDEEnforcesNativeGameplayForPeer(clientNum))
+		{
+			HCDERejectLegacyGameplayPeer(clientNum, "recv", I_ClientUsesHCDEService(clientNum) ? "raw-ncmd-from-hcde-peer" : "raw-ncmd-from-non-hcde-peer");
+			continue;
+		}
+
 		if (NetBuffer[0] & NCMD_RETRANSMIT)
 		{
 			clientState.ResendID = NetBuffer[1];
@@ -11738,6 +12783,7 @@ static void GetPackets()
 		// Treat undersized packets as missing/corrupt and request retransmit.
 		if (NetBufferLength < 10u)
 		{
+			NoteMalformedGameplayPacket(clientNum, "header-too-short");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
@@ -11817,6 +12863,7 @@ static void GetPackets()
 		{
 			if (!hasBytes(1))
 			{
+				NoteMalformedGameplayPacket(clientNum, "quitters-count-missing");
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
@@ -11837,6 +12884,7 @@ static void GetPackets()
 			}
 			if (malformedPacketFields)
 			{
+				NoteMalformedGameplayPacket(clientNum, "quitters-entry-malformed");
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
@@ -11844,6 +12892,7 @@ static void GetPackets()
 
 		if (!hasBytes(1))
 		{
+			NoteMalformedGameplayPacket(clientNum, "player-count-missing");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
@@ -11852,6 +12901,7 @@ static void GetPackets()
 		int baseSequence = -1;
 		if (!hasBytes(1))
 		{
+			NoteMalformedGameplayPacket(clientNum, "tic-count-missing");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
@@ -11860,6 +12910,7 @@ static void GetPackets()
 		{
 			if (!hasBytes(4))
 			{
+				NoteMalformedGameplayPacket(clientNum, "base-sequence-missing");
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
@@ -11869,6 +12920,7 @@ static void GetPackets()
 		int baseConsistency = -1;
 		if (!hasBytes(1))
 		{
+			NoteMalformedGameplayPacket(clientNum, "consistency-count-missing");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
@@ -11877,6 +12929,7 @@ static void GetPackets()
 		{
 			if (!hasBytes(4))
 			{
+				NoteMalformedGameplayPacket(clientNum, "base-consistency-missing");
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
@@ -11885,6 +12938,7 @@ static void GetPackets()
 
 		if (!hasBytes(1))
 		{
+			NoteMalformedGameplayPacket(clientNum, "stability-byte-missing");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
@@ -12020,6 +13074,7 @@ static void GetPackets()
 			}
 			if (malformedCommandRecord)
 			{
+				NoteMalformedGameplayPacket(clientNum, "command-record-malformed");
 				clientState.Flags |= CF_MISSING_SEQ;
 				continue;
 			}
@@ -12055,9 +13110,14 @@ static void GetPackets()
 		}
 		if (malformedPacketFields)
 		{
+			NoteMalformedGameplayPacket(clientNum, "packet-fields-malformed");
 			clientState.Flags |= CF_MISSING_SEQ;
 			continue;
 		}
+
+		// Valid gameplay packet path; clear strike pressure.
+		clientState.MalformedPacketStrikes = 0u;
+		clientState.MalformedWindowStartMS = 0u;
 	}
 
 	for (const auto& ack : latencyAcks)
@@ -12808,16 +13868,34 @@ void NetUpdate(int tics)
 		}
 
 		int passiveResendSequenceFrom = -1;
-		if (localAuthority && !isSelf && curState.SequenceAck >= 0 && curState.SequenceAck + 1 < startSequence)
+		if (localAuthority)
 		{
-			// Dedicated clients can occasionally miss the explicit retransmit edge
-			// while still reporting an older sequence ack every input packet. Honor
-			// that ack as a soft resend request so one lost authority tic cannot
-			// leave the client stuck at the tic gate forever.
-			passiveResendSequenceFrom = curState.SequenceAck + 1;
-			DebugTrace::Warningf("net", "passive authority resend client=%d from=%d start=%d end=%d seq=%d ack=%d room=%u",
-				client, passiveResendSequenceFrom, startSequence, endSequence,
-				curState.CurrentSequence, curState.SequenceAck, unsigned(CurrentRoomID));
+			if (!isSelf && curState.SequenceAck >= 0 && curState.SequenceAck + 1 < startSequence)
+			{
+				// Dedicated clients can occasionally miss the explicit retransmit edge
+				// while still reporting an older sequence ack every input packet. Honor
+				// that ack as a soft resend request so one lost authority tic cannot
+				// leave the client stuck at the tic gate forever.
+				passiveResendSequenceFrom = curState.SequenceAck + 1;
+				DebugTrace::Warningf("net", "passive authority resend client=%d from=%d start=%d end=%d seq=%d ack=%d room=%u",
+					client, passiveResendSequenceFrom, startSequence, endSequence,
+					curState.CurrentSequence, curState.SequenceAck, unsigned(CurrentRoomID));
+			}
+		}
+		else
+		{
+			// Clients can occasionally stall at the tic gate because they missed the
+			// latest server snapshots or because the server duplicated their input, leaving
+			// their local SequenceAck behind. Honor that ack as a soft resend request for
+			// our own commands to ensure they stream back to the server.
+			const bool validLocalState = consoleplayer >= 0 && consoleplayer < MAXPLAYERS;
+			const auto& localState = ClientStates[validLocalState ? consoleplayer : 0];
+			if (validLocalState && localState.SequenceAck >= 0 && localState.SequenceAck + 1 < newestTic)
+			{
+				passiveResendSequenceFrom = localState.SequenceAck + 1;
+				DebugTrace::Warningf("net", "passive client resend to authority=%d from=%d newest=%d ack=%d room=%u",
+					client, passiveResendSequenceFrom, newestTic, localState.SequenceAck, unsigned(CurrentRoomID));
+			}
 		}
 
 		const int sequenceNum = curState.ResendSequenceFrom >= 0
@@ -12849,6 +13927,7 @@ void NetUpdate(int tics)
 			for (int pLoops = 0, curPlayerOfs = 0; pLoops < maxPlayerLoops; ++pLoops, curPlayerOfs += MaxPlayersPerPacket)
 			{
 				size_t size = 10;
+				const int packetQuitters = totalQuits > 0 ? totalQuits : 0;
 				if (totalQuits > 0)
 				{
 					NetBuffer[0] |= NCMD_QUITTERS;
@@ -12929,6 +14008,7 @@ void NetUpdate(int tics)
 				// Client commands.
 
 				TArrayView<uint8_t> cmd = TArrayView(&NetBuffer[size], MAX_MSGLEN - size);
+				auto& nativeSendScratch = HCDELiveNativeSendScratch;
 				for (int i = 0; i < playerCount; ++i)
 				{
 					WriteInt8(playerNums[i], cmd);
@@ -12959,6 +14039,9 @@ void NetUpdate(int tics)
 							// Write out the net events before the user commands so inputs can
 							// be used as a marker for when the given command ends.
 							auto& stream = NetEvents.Streams[curTic % BACKUPTICS];
+							nativeSendScratch.SnapshotCommands[i][t] = LocalCmds[realTic];
+							nativeSendScratch.SnapshotEventStreams[i][t] = stream.Stream;
+							nativeSendScratch.SnapshotEventSizes[i][t] = stream.Used;
 							WriteBytes(TArrayView(stream.Stream, stream.Used), cmd);
 
 							WriteUserCmdMessage(LocalCmds[realTic],
@@ -12969,6 +14052,10 @@ void NetUpdate(int tics)
 							auto& netTic = clientState.Tics[curTic % BACKUPTICS];
 
 							auto data = netTic.Data.GetTArrayView();
+							nativeSendScratch.SnapshotCommands[i][t] = netTic.Command;
+							int eventLen = 0;
+							nativeSendScratch.SnapshotEventStreams[i][t] = netTic.Data.GetData(&eventLen);
+							nativeSendScratch.SnapshotEventSizes[i][t] = size_t(max<int>(eventLen, 0));
 							WriteBytes(data, cmd);
 
 							WriteUserCmdMessage(netTic.Command,
@@ -12977,9 +14064,77 @@ void NetUpdate(int tics)
 					}
 				}
 
-				HSendLiveGameplayPacket(client, int(cmd.Data() - NetBuffer));
-				if (net_extratic && !isSelf)
+				const bool canSendNativeClientInput =
+					!localAuthority
+					&& !isSelf
+					&& playerCount == 1
+					&& playerNums[0] == consoleplayer;
+				if (canSendNativeClientInput)
+				{
+					for (int t = 0; t < sendTics; ++t)
+					{
+						const int curTic = sequenceNum + curTicOfs + t;
+						const int realTic = (curTic * TicDup) % LOCALCMDTICS;
+						auto& stream = NetEvents.Streams[curTic % BACKUPTICS];
+						nativeSendScratch.ClientCommands[t] = LocalCmds[realTic];
+						nativeSendScratch.ClientEventStreams[t] = stream.Stream;
+						nativeSendScratch.ClientEventSizes[t] = stream.Used;
+					}
+				}
+				const bool sentNativeClientInput = canSendNativeClientInput
+					&& HSendNativeClientInputPacket(client, NetBuffer[0], CurrentRoomID,
+						uint32_t(lastSeq), uint32_t(lastCon),
+						uint32_t(sequenceNum), uint32_t(baseConsistency + curTicOfs),
+						uint8_t(sendTics), uint8_t(sendCon), uint8_t(max<int>(StabilityBuffer, 0)),
+						consoleplayer, curTicOfs,
+						nativeSendScratch.ClientCommands,
+						nativeSendScratch.ClientEventStreams,
+						nativeSendScratch.ClientEventSizes);
+				const bool canSendNativeServerSnapshot =
+					localAuthority
+					&& !isSelf;
+				const bool sentNativeServerSnapshot = canSendNativeServerSnapshot
+					&& HSendNativeServerSnapshotPacket(client, NetBuffer[0], CurrentRoomID,
+						uint32_t(lastSeq), uint32_t(lastCon),
+						uint32_t(sequenceNum + curTicOfs), uint32_t(baseConsistency + curTicOfs),
+						uint8_t(sendTics), uint8_t(sendCon),
+						uint8_t(I_IsHCDEServiceAuthoritySlot(client) ? 0 : max<int>(curState.CurrentSequence + curState.StabilityBuffer - newestTic, 0)),
+						playerNums, uint8_t(playerCount), quitNums, uint8_t(packetQuitters),
+						nativeSendScratch.SnapshotCommands,
+						nativeSendScratch.SnapshotEventStreams,
+						nativeSendScratch.SnapshotEventSizes);
+				if (!sentNativeClientInput && !sentNativeServerSnapshot)
 					HSendLiveGameplayPacket(client, int(cmd.Data() - NetBuffer));
+				if (net_extratic && !isSelf)
+				{
+					if (sentNativeClientInput)
+					{
+						HSendNativeClientInputPacket(client, NetBuffer[0], CurrentRoomID,
+							uint32_t(lastSeq), uint32_t(lastCon),
+							uint32_t(sequenceNum), uint32_t(baseConsistency + curTicOfs),
+							uint8_t(sendTics), uint8_t(sendCon), uint8_t(max<int>(StabilityBuffer, 0)),
+							consoleplayer, curTicOfs,
+							nativeSendScratch.ClientCommands,
+							nativeSendScratch.ClientEventStreams,
+							nativeSendScratch.ClientEventSizes);
+					}
+					else if (sentNativeServerSnapshot)
+					{
+						HSendNativeServerSnapshotPacket(client, NetBuffer[0], CurrentRoomID,
+							uint32_t(lastSeq), uint32_t(lastCon),
+							uint32_t(sequenceNum + curTicOfs), uint32_t(baseConsistency + curTicOfs),
+							uint8_t(sendTics), uint8_t(sendCon),
+							uint8_t(I_IsHCDEServiceAuthoritySlot(client) ? 0 : max<int>(curState.CurrentSequence + curState.StabilityBuffer - newestTic, 0)),
+							playerNums, uint8_t(playerCount), quitNums, uint8_t(packetQuitters),
+							nativeSendScratch.SnapshotCommands,
+							nativeSendScratch.SnapshotEventStreams,
+							nativeSendScratch.SnapshotEventSizes);
+					}
+					else
+					{
+						HSendLiveGameplayPacket(client, int(cmd.Data() - NetBuffer));
+					}
+				}
 			}
 		}
 	}
@@ -13391,10 +14546,16 @@ static void HCDEPrintLiveProfile()
 		I_IsLocalHCDEServiceAuthority() ? 1 : 0,
 		Net_GetInvasionActiveMonsterCount(), unsigned(InvasionReplicatedActors.Size()));
 	Printf(PRINT_HIGH,
-		"  live: wrapped=%llu bytes=%llu payload=%llu control-tx=%llu/%llu control-rx=%llu/%llu caps-tx=%llu caps-rx=%llu legacy-rx=%llu\n",
+		"  live: wrapped=%llu bytes=%llu payload=%llu encode-fail=%llu cap-reject=%llu legacy-gameplay-reject=%llu replay-req=%llu replay-suppress=%llu replay-escalate=%llu control-tx=%llu/%llu control-rx=%llu/%llu caps-tx=%llu caps-rx=%llu legacy-rx=%llu\n",
 		static_cast<unsigned long long>(HCDELiveProfile.LivePacketsWrapped),
 		static_cast<unsigned long long>(HCDELiveProfile.LiveBytesWrapped),
 		static_cast<unsigned long long>(HCDELiveProfile.LivePayloadBytesWrapped),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveNativeEncodeFailures),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveNativeCapabilityRejects),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveLegacyGameplayRejected),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveReplayRequests),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveReplaySuppressions),
+		static_cast<unsigned long long>(HCDELiveProfile.LiveReplayEscalations),
 		static_cast<unsigned long long>(HCDELiveProfile.ControlPacketsSent),
 		static_cast<unsigned long long>(HCDELiveProfile.ControlBytesSent),
 		static_cast<unsigned long long>(HCDELiveProfile.ControlPacketsReceived),
@@ -13403,19 +14564,21 @@ static void HCDEPrintLiveProfile()
 		static_cast<unsigned long long>(HCDELiveProfile.CapabilityControlsReceived),
 		static_cast<unsigned long long>(HCDELiveProfile.LegacyControlsReceived));
 	Printf(PRINT_HIGH,
-		"  client-input: built=%llu bytes=%llu legacy=%llu recv=%llu bytes=%llu\n",
+		"  client-input: built=%llu native-built=%llu bytes=%llu recv=%llu bytes=%llu native-apply=%llu\n",
 		static_cast<unsigned long long>(HCDELiveProfile.ClientInputPacketsBuilt),
+		static_cast<unsigned long long>(HCDELiveProfile.ClientInputNativeBuilt),
 		static_cast<unsigned long long>(HCDELiveProfile.ClientInputBytesBuilt),
-		static_cast<unsigned long long>(HCDELiveProfile.ClientInputLegacyBytes),
 		static_cast<unsigned long long>(HCDELiveProfile.ClientInputPacketsReceived),
-		static_cast<unsigned long long>(HCDELiveProfile.ClientInputBytesReceived));
+		static_cast<unsigned long long>(HCDELiveProfile.ClientInputBytesReceived),
+		static_cast<unsigned long long>(HCDELiveProfile.ClientInputNativeApplied));
 	Printf(PRINT_HIGH,
-		"  snapshots: built=%llu bytes=%llu legacy=%llu recv=%llu bytes=%llu world-delta-tx=%llu records=%llu bytes=%llu world-delta-rx=%llu records=%llu bytes=%llu\n",
+		"  snapshots: built=%llu native-built=%llu bytes=%llu recv=%llu bytes=%llu native-apply=%llu world-delta-tx=%llu records=%llu bytes=%llu world-delta-rx=%llu records=%llu bytes=%llu\n",
 		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotPacketsBuilt),
+		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotNativeBuilt),
 		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotBytesBuilt),
-		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotLegacyBytes),
 		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotPacketsReceived),
 		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotBytesReceived),
+		static_cast<unsigned long long>(HCDELiveProfile.ServerSnapshotNativeApplied),
 		static_cast<unsigned long long>(HCDELiveProfile.WorldDeltaPacketsBuilt),
 		static_cast<unsigned long long>(HCDELiveProfile.WorldDeltaRecordsBuilt),
 		static_cast<unsigned long long>(HCDELiveProfile.WorldDeltaBytesBuilt),
@@ -13423,7 +14586,7 @@ static void HCDEPrintLiveProfile()
 		static_cast<unsigned long long>(HCDELiveProfile.WorldDeltaRecordsReceived),
 		static_cast<unsigned long long>(HCDELiveProfile.WorldDeltaBytesReceived));
 	Printf(PRINT_HIGH,
-		"  competitive-player-lane: max-bytes=%llu max-records=%llu budget-pressure=%llu missing-records=%llu local-health=%llu local-state=%llu respawn-hard=%llu death-hard=%llu remote-repairs=%llu shared-player-suppressed=%llu\n",
+		"  competitive-player-lane: max-bytes=%llu max-records=%llu budget-pressure=%llu missing-records=%llu local-health=%llu local-state=%llu respawn-hard=%llu death-hard=%llu predict-faults=%llu attack-faults=%llu move-faults=%llu remote-repairs=%llu shared-player-suppressed=%llu\n",
 		static_cast<unsigned long long>(HCDELiveProfile.PlayerSnapshotMaxBytes),
 		static_cast<unsigned long long>(HCDELiveProfile.PlayerSnapshotMaxRecords),
 		static_cast<unsigned long long>(HCDELiveProfile.PlayerSnapshotBudgetPressure),
@@ -13432,6 +14595,9 @@ static void HCDEPrintLiveProfile()
 		static_cast<unsigned long long>(HCDELiveProfile.PredictionLocalStateRepairs),
 		static_cast<unsigned long long>(HCDELiveProfile.PredictionHardRespawnRepairs),
 		static_cast<unsigned long long>(HCDELiveProfile.PredictionHardDeathRepairs),
+		static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultReports),
+		static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultAttackReports),
+		static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultMoveReports),
 		static_cast<unsigned long long>(HCDELiveProfile.RemotePlayerBaselineRepairs),
 		static_cast<unsigned long long>(HCDELiveProfile.SharedActorPlayerRecordsSuppressed));
 	Printf(PRINT_HIGH,
@@ -13565,6 +14731,18 @@ static void HCDEPrintLiveProfile()
 			"  world-tic: count=%llu avg=%.3fms max=%.3fms\n",
 			static_cast<unsigned long long>(HCDELiveProfile.WorldTics),
 			avgWorldMS, maxWorldMS);
+		const double avgMirrorMS = HCDEProfileAverage(HCDELiveProfile.MirrorVisualMicros, HCDELiveProfile.MirrorVisualPasses) / 1000.0;
+		const double maxMirrorMS = double(HCDELiveProfile.MirrorVisualMaxMicros) / 1000.0;
+		Printf(PRINT_HIGH,
+			"  mirror-visual: passes=%llu updated=%llu skipped=%llu avg=%.3fms max=%.3fms pending-spawns=%u pending-events=%u tracked=%u\n",
+			static_cast<unsigned long long>(HCDELiveProfile.MirrorVisualPasses),
+			static_cast<unsigned long long>(HCDELiveProfile.MirrorVisualActorsUpdated),
+			static_cast<unsigned long long>(HCDELiveProfile.MirrorVisualActorsSkipped),
+			avgMirrorMS,
+			maxMirrorMS,
+			unsigned(InvasionPendingMirrorSpawns.Size()),
+			unsigned(InvasionPendingSpawnEvents.Size()),
+			unsigned(InvasionReplicatedActors.Size()));
 		HCDEPrintLiveLaneSummary();
 		HCDEPrintPregameProfile();
 	}
@@ -13830,6 +15008,57 @@ CCMD(net_profile_reset)
 	HCDELiveProfile.Clear();
 	I_ResetHCDEPregameServiceProfile();
 	Printf(PRINT_HIGH, "HCDE net profile counters reset.\n");
+}
+
+void Net_GetLagHUDMetrics(FHCDELagHUDMetrics& out)
+{
+	out = HCDELagHUDLast;
+}
+
+bool Net_ShouldDrawLagHUD()
+{
+	return (*hcde_lag_hud || *hcde_hud_debug) && gamestate == GS_LEVEL && !demoplayback;
+}
+
+CCMD(hcde_lag_hud)
+{
+	if (argv.argc() <= 1)
+	{
+		Printf(PRINT_HIGH, "hcde_lag_hud is %s. Use `hcde_lag_hud 1` for overlay or `stat hcde_lag` for stat panel.\n",
+			*hcde_lag_hud ? "on" : "off");
+		return;
+	}
+	hcde_lag_hud = !!atoi(argv[1]);
+}
+
+CCMD(hcde_lag_stat)
+{
+	FStat::ToggleStat("hcde_lag");
+	Printf(PRINT_HIGH, "stat hcde_lag toggled. Use `stat hcde_lag 0` to disable.\n");
+}
+
+ADD_STAT(hcde_lag)
+{
+	const FHCDELagHUDMetrics& m = HCDELagHUDLast;
+	FString out;
+	out.AppendFormat("HCDE lag monitor (gametic=%d clienttic=%d)\n", m.Gametic, m.ClientTic);
+	out.AppendFormat("lag=%s backlog=%d avail=%d run=%d total=%d stale=%d%s\n",
+		m.LagState, m.CommandBacklog, m.AvailableTics, m.RunTics, m.TotalTics, m.SimStaleTics,
+		m.TicGateStalled ? " STALL" : "");
+	out.AppendFormat("invasion=%s wave=%d%s\n",
+		m.InvasionState, m.InvasionWave,
+		(m.InvasionState != nullptr && strcmp(m.InvasionState, "disabled") == 0) ? " (idle: not started yet)" : "");
+	out.AppendFormat("mirrors tracked=%d pending-spawn=%d pending-event=%d steps=%d\n",
+		m.TrackedMirrors, m.PendingSpawns, m.PendingEvents, m.WorldSteps);
+	out.AppendFormat("mirror ms last=%.2f avg=%.2f max=%.2f | world ms avg=%.2f max=%.2f\n",
+		m.LastMirrorMS, m.AvgMirrorMS, m.MaxMirrorMS, m.AvgWorldMS, m.MaxWorldMS);
+	if (m.TicGateStalled)
+		out.AppendFormat("tic gate stalled: waiting for authority snapshots\n");
+	if (m.CommandBacklog > TICRATE)
+		out.AppendFormat("high command backlog: client outran server sim\n");
+	if (m.PendingSpawns > 16 || m.PendingEvents > 16)
+		out.AppendFormat("spawn backlog: wave catch-up still draining\n");
+	return out;
 }
 
 CCMD(net_unlagged)
@@ -14411,9 +15640,14 @@ void TryRunTics()
 
 	LastEnterTic = EnterTic;
 
-	// If the game is paused, everything we need to update has already done so.
+	// Paused gameplay should not extrapolate visuals as multi-tic catch-up.
 	if (pauseext)
+	{
+		Net_RefreshLagHUDMetrics(0, 0, totalTics, 0, false);
 		return;
+	}
+
+	InvasionMirrorVisualWorldSteps = 1;
 
 	// Get the amount of tics the client can actually run. This accounts for waiting for other
 	// players over the network.
@@ -14484,6 +15718,22 @@ void TryRunTics()
 				totalTics, availableTics, lowestSequence, gametic, ClientTic, unsigned(CurrentRoomID),
 				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 				Net_LevelStartStatusName(LevelStartStatus), LevelStartDelay, Net_LagStateName(LagState));
+			if (*hcde_hud_debug)
+			{
+				Printf(PRINT_HIGH, "HCDE tic gate stalled total=%d available=%d lowest=%d gametic=%d clienttic=%d room=%u map=%s levelstart=%s delay=%d lag=%s\n",
+					totalTics, availableTics, lowestSequence, gametic, ClientTic, unsigned(CurrentRoomID),
+					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+					Net_LevelStartStatusName(LevelStartStatus), LevelStartDelay, Net_LagStateName(LagState));
+				for (auto client : NetworkClients)
+				{
+					const auto& state = ClientStates[client];
+					Printf(PRINT_HIGH, "  HCDE tic gate client=%d gate=%d network=%d playeringame=%d reserved=%d authority=%d waiting=%d seq=%d ack=%d flags=0x%x\n",
+						client, Net_IsTicGateClient(client) ? 1 : 0, NetworkClients.InGame(client) ? 1 : 0,
+						playeringame[client] ? 1 : 0, I_IsServerReservedSlot(client) ? 1 : 0,
+						I_IsHCDEServiceAuthoritySlot(client) ? 1 : 0, players[client].waiting ? 1 : 0,
+						state.CurrentSequence, state.SequenceAck, state.Flags);
+				}
+			}
 			for (auto client : NetworkClients)
 			{
 				const auto& state = ClientStates[client];
@@ -14501,25 +15751,59 @@ void TryRunTics()
 			&& !I_IsLocalHCDEServiceAuthority()
 			&& HCDELiveReportIntervalElapsed(LastHCDELiveTicGateReportMS, 2000u))
 		{
-			const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
-			if (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+			// available=0 with total=1 is normal one-tic pipelining while waiting
+			// for the next authority snapshot. Only trace sustained stalls where the
+			// client has built a meaningful command backlog or the sim has gone stale.
+			const int commandBacklog = ClientTic - gametic;
+			const bool sustainedStall = availableTics < 0
+				|| (availableTics <= 0 && commandBacklog > TicDup * 3)
+				|| (availableTics <= 0 && EnterTic - LastGameUpdate > TICRATE / 2);
+			if (sustainedStall)
 			{
-				const auto& state = ClientStates[authoritySlot];
-				const auto& peer = HCDELivePeers[authoritySlot];
-				Printf(PRINT_HIGH,
-					"HCDE net stall: total=%d available=%d lowest=%d gametic=%d clienttic=%d authority=%d seq=%d ack=%d flags=0x%x snap-rx=%u ctrl-rx=%u any-rx=%u snap-count=%u input-sent=%u dup=%u unsupported=%u lag=%s\n",
-					totalTics, availableTics, lowestSequence, gametic, ClientTic,
-					authoritySlot, state.CurrentSequence, state.SequenceAck, unsigned(state.Flags),
-					peer.RxServerSnapshotSequence, peer.RxControlSequence, peer.RxSequence,
-					peer.SnapshotReceived, peer.ClientCommandSent, peer.DuplicateCount,
-					peer.UnsupportedReceived, Net_LagStateName(LagState));
+				const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+				if (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+				{
+					const auto& state = ClientStates[authoritySlot];
+					const auto& peer = HCDELivePeers[authoritySlot];
+					DebugTrace::Warningf("net",
+						"tic gate sustained stall total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d authority=%d seq=%d ack=%d flags=0x%x snap-rx=%u ctrl-rx=%u any-rx=%u snap-count=%u input-sent=%u dup=%u unsupported=%u lag=%s",
+						totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+						authoritySlot, state.CurrentSequence, state.SequenceAck, unsigned(state.Flags),
+						peer.RxServerSnapshotSequence, peer.RxControlSequence, peer.RxSequence,
+						peer.SnapshotReceived, peer.ClientCommandSent, peer.DuplicateCount,
+						peer.UnsupportedReceived, Net_LagStateName(LagState));
+					if (*hcde_hud_debug)
+					{
+						Printf(PRINT_HIGH,
+							"HCDE tic gate sustained stall total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d authority=%d seq=%d ack=%d flags=0x%x snap-rx=%u ctrl-rx=%u any-rx=%u snap-count=%u input-sent=%u dup=%u unsupported=%u lag=%s\n",
+							totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+							authoritySlot, state.CurrentSequence, state.SequenceAck, unsigned(state.Flags),
+							peer.RxServerSnapshotSequence, peer.RxControlSequence, peer.RxSequence,
+							peer.SnapshotReceived, peer.ClientCommandSent, peer.DuplicateCount,
+							peer.UnsupportedReceived, Net_LagStateName(LagState));
+					}
+				}
+				else
+				{
+					DebugTrace::Warningf("net",
+						"tic gate sustained stall total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d authority=%d lag=%s",
+						totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+						authoritySlot, Net_LagStateName(LagState));
+					if (*hcde_hud_debug)
+					{
+						Printf(PRINT_HIGH,
+							"HCDE tic gate sustained stall total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d authority=%d lag=%s\n",
+							totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+							authoritySlot, Net_LagStateName(LagState));
+					}
+				}
 			}
-			else
+			else if (*hcde_hud_debug)
 			{
 				Printf(PRINT_HIGH,
-					"HCDE net stall: total=%d available=%d lowest=%d gametic=%d clienttic=%d authority=%d lag=%s\n",
-					totalTics, availableTics, lowestSequence, gametic, ClientTic,
-					authoritySlot, Net_LagStateName(LagState));
+					"HCDE tic gate (dedicated idle) total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d lastWorldTics=%d lag=%s\n",
+					totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+					EnterTic - LastGameUpdate, Net_LagStateName(LagState));
 			}
 		}
 
@@ -14538,16 +15822,178 @@ void TryRunTics()
 		// tic passes this isn't guaranteed to happen since it's capped to 35 in advance).
 		if (ClientTic > startCommand)
 		{
-			LagState = LAG_PREDICTING;
+			const int commandBacklog = ClientTic - gametic;
+			const int latestCommandTic = max<int>(ClientTic - 1, 0);
+			const usercmd_t& latestCmd = LocalCmds[latestCommandTic % LOCALCMDTICS];
+			const bool wantsAttack = (latestCmd.buttons & BT_ATTACK) != 0;
+			const bool wantsMove = latestCmd.forwardmove != 0 || latestCmd.sidemove != 0 || latestCmd.upmove != 0;
+			const bool localClient = consoleplayer >= 0 && consoleplayer < MAXPLAYERS;
+			const player_t* localPlayer = localClient ? &players[consoleplayer] : nullptr;
+			const AActor* localActor = localPlayer != nullptr ? localPlayer->mo : nullptr;
+			const bool compatPredicting = localPlayer != nullptr && (localPlayer->cheats & CF_PREDICTING) != 0;
+			const bool staleAuthorityGate = availableTics <= 0
+				&& (commandBacklog > TicDup * 2 || EnterTic - LastGameUpdate > TICRATE / 4);
 			if (netgame
 				&& totalTics > 0
-				&& !Net_IsLocalInvasionAuthority())
+				&& !Net_IsLocalInvasionAuthority()
+				&& staleAuthorityGate
+				&& (wantsAttack || wantsMove || compatPredicting)
+				&& HCDELiveReportIntervalElapsed(LastHCDEPredictionFaultReportMS, 500u))
 			{
-				InvasionMirrorVisualTickBudget = 1;
-				Net_TickInvasionMirrorVisualFrame();
-				InvasionMirrorVisualTickBudget = 0;
+				unsigned liveMirrors = 0u;
+				unsigned blockingMirrors = 0u;
+				unsigned projectileMirrors = 0u;
+				for (const auto& ref : InvasionReplicatedActors)
+				{
+					AActor* actor = ref.Actor.Get();
+					if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0 || Net_IsInvasionActorCorpseLike(actor))
+						continue;
+					++liveMirrors;
+					if (ref.IsProjectile)
+						++projectileMirrors;
+					else
+						++blockingMirrors;
+				}
+
+				const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+				const FHCDELivePeerState* authorityPeer = authoritySlot >= 0 && authoritySlot < MAXPLAYERS ? &HCDELivePeers[authoritySlot] : nullptr;
+				const FClientNetState* authorityState = authoritySlot >= 0 && authoritySlot < MAXPLAYERS ? &ClientStates[authoritySlot] : nullptr;
+				++HCDELiveProfile.PredictionFaultReports;
+				if (wantsAttack)
+					++HCDELiveProfile.PredictionFaultAttackReports;
+				if (wantsMove)
+					++HCDELiveProfile.PredictionFaultMoveReports;
+
+				DebugTrace::Warningf("net",
+					"HCDE prediction fault total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d room=%u map=%s lag=%s predicting=%d compat-predict=%d attack=%d move=%d buttons=0x%08x fwd=%d side=%d up=%d last-world=%d authority=%d seq=%d ack=%d snap-rx=%u ctrl-rx=%u any-rx=%u snap-count=%u input-sent=%u invasion=%s wave=%d active=%d tracked=%u live-mirrors=%u blocking-mirrors=%u projectile-mirrors=%u pending-spawns=%u pending-events=%u actor-missing=%llu pos=(%.1f,%.1f,%.1f) vel=(%.2f,%.2f,%.2f) bob=%.4f health=%d",
+					totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+					unsigned(CurrentRoomID),
+					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+					Net_LagStateName(LagState),
+					NetworkEntityManager::IsPredicting() ? 1 : 0,
+					compatPredicting ? 1 : 0,
+					wantsAttack ? 1 : 0,
+					wantsMove ? 1 : 0,
+					latestCmd.buttons,
+					latestCmd.forwardmove,
+					latestCmd.sidemove,
+					latestCmd.upmove,
+					EnterTic - LastGameUpdate,
+					authoritySlot,
+					authorityState != nullptr ? authorityState->CurrentSequence : -1,
+					authorityState != nullptr ? authorityState->SequenceAck : -1,
+					authorityPeer != nullptr ? authorityPeer->RxServerSnapshotSequence : 0u,
+					authorityPeer != nullptr ? authorityPeer->RxControlSequence : 0u,
+					authorityPeer != nullptr ? authorityPeer->RxSequence : 0u,
+					authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+					authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+					Net_InvasionStateName(InvasionState),
+					InvasionWaveDirector.Wave,
+					Net_GetInvasionActiveMonsterCount(),
+					unsigned(InvasionReplicatedActors.Size()),
+					liveMirrors,
+					blockingMirrors,
+					projectileMirrors,
+					unsigned(InvasionPendingMirrorSpawns.Size()),
+					unsigned(InvasionPendingSpawnEvents.Size()),
+					static_cast<unsigned long long>(HCDELiveProfile.ActorDeltaV2RecordsMissing),
+					localActor != nullptr ? localActor->X() : 0.0,
+					localActor != nullptr ? localActor->Y() : 0.0,
+					localActor != nullptr ? localActor->Z() : 0.0,
+					localActor != nullptr ? localActor->Vel.X : 0.0,
+					localActor != nullptr ? localActor->Vel.Y : 0.0,
+					localActor != nullptr ? localActor->Vel.Z : 0.0,
+					localPlayer != nullptr ? double(localPlayer->bob) : 0.0,
+					localActor != nullptr ? localActor->health : 0);
+				const uint64_t faultTimeMS = I_msTime();
+				const FString faultLogPath = FStringf("%s/hcde_prediction_faults.log", M_GetAppDataPath(true).GetChars());
+				if (FILE* faultLog = fopen(faultLogPath.GetChars(), "a"))
+				{
+					fprintf(faultLog,
+						"%llu HCDE prediction fault total=%d available=%d lowest=%d gametic=%d clienttic=%d backlog=%d room=%u map=%s lag=%s predicting=%d compat-predict=%d attack=%d move=%d buttons=0x%08x fwd=%d side=%d up=%d last-world=%d authority=%d seq=%d ack=%d snap-rx=%u ctrl-rx=%u any-rx=%u snap-count=%u input-sent=%u invasion=%s wave=%d active=%d tracked=%u live-mirrors=%u blocking-mirrors=%u projectile-mirrors=%u pending-spawns=%u pending-events=%u actor-missing=%llu pos=(%.1f,%.1f,%.1f) vel=(%.2f,%.2f,%.2f) bob=%.4f health=%d\n",
+						static_cast<unsigned long long>(faultTimeMS),
+						totalTics, availableTics, lowestSequence, gametic, ClientTic, commandBacklog,
+						unsigned(CurrentRoomID),
+						primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+						Net_LagStateName(LagState),
+						NetworkEntityManager::IsPredicting() ? 1 : 0,
+						compatPredicting ? 1 : 0,
+						wantsAttack ? 1 : 0,
+						wantsMove ? 1 : 0,
+						latestCmd.buttons,
+						latestCmd.forwardmove,
+						latestCmd.sidemove,
+						latestCmd.upmove,
+						EnterTic - LastGameUpdate,
+						authoritySlot,
+						authorityState != nullptr ? authorityState->CurrentSequence : -1,
+						authorityState != nullptr ? authorityState->SequenceAck : -1,
+						authorityPeer != nullptr ? authorityPeer->RxServerSnapshotSequence : 0u,
+						authorityPeer != nullptr ? authorityPeer->RxControlSequence : 0u,
+						authorityPeer != nullptr ? authorityPeer->RxSequence : 0u,
+						authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+						authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+						Net_InvasionStateName(InvasionState),
+						InvasionWaveDirector.Wave,
+						Net_GetInvasionActiveMonsterCount(),
+						unsigned(InvasionReplicatedActors.Size()),
+						liveMirrors,
+						blockingMirrors,
+						projectileMirrors,
+						unsigned(InvasionPendingMirrorSpawns.Size()),
+						unsigned(InvasionPendingSpawnEvents.Size()),
+						static_cast<unsigned long long>(HCDELiveProfile.ActorDeltaV2RecordsMissing),
+						localActor != nullptr ? localActor->X() : 0.0,
+						localActor != nullptr ? localActor->Y() : 0.0,
+						localActor != nullptr ? localActor->Z() : 0.0,
+						localActor != nullptr ? localActor->Vel.X : 0.0,
+						localActor != nullptr ? localActor->Vel.Y : 0.0,
+						localActor != nullptr ? localActor->Vel.Z : 0.0,
+						localPlayer != nullptr ? double(localPlayer->bob) : 0.0,
+						localActor != nullptr ? localActor->health : 0);
+					fclose(faultLog);
+				}
+				const FString tracePath = FStringf("%s/hcde_prediction_fault_trace_%llu.txt",
+					M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(faultTimeMS));
+				DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+				if (*hcde_hud_debug)
+				{
+					Printf(PRINT_HIGH,
+						"HCDE prediction fault available=%d backlog=%d attack=%d move=%d compat-predict=%d snap-rx=%u input-sent=%u wave=%d active=%d tracked=%u blocking=%u pending=%u/%u missing=%llu\n",
+						availableTics, commandBacklog, wantsAttack ? 1 : 0, wantsMove ? 1 : 0,
+						compatPredicting ? 1 : 0,
+						authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+						authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+						InvasionWaveDirector.Wave,
+						Net_GetInvasionActiveMonsterCount(),
+						unsigned(InvasionReplicatedActors.Size()),
+						blockingMirrors,
+						unsigned(InvasionPendingMirrorSpawns.Size()),
+						unsigned(InvasionPendingSpawnEvents.Size()),
+						static_cast<unsigned long long>(HCDELiveProfile.ActorDeltaV2RecordsMissing));
+				}
 			}
-			P_PredictClient();
+			if (availableTics <= 0 && commandBacklog > TicDup * 4)
+			{
+				// Do not keep ghost-walking on predicted input when the authority has
+				// stopped advancing our confirmed sequence. Stay on the last authoritative
+				// pose until snapshots catch up instead of drifting further away.
+				P_UnPredictClient();
+				LagState = LAG_WAITING;
+			}
+			else
+			{
+				LagState = LAG_PREDICTING;
+				if (netgame
+					&& totalTics > 0
+					&& !Net_IsLocalInvasionAuthority())
+				{
+					InvasionMirrorVisualTickBudget = 1;
+					Net_TickInvasionMirrorVisualFrame();
+					InvasionMirrorVisualTickBudget = 0;
+				}
+				P_PredictClient();
+			}
 		}
 
 		// If we actually did have some tics available, make sure the UI
@@ -14561,6 +16007,11 @@ void TryRunTics()
 			NetworkEntityManager::VerifyPredictedEntities();
 		}
 
+		const bool ticGateStalled = runTics <= 0 && totalTics > 0
+			&& (availableTics < 0
+				|| (availableTics <= 0 && ClientTic - gametic > TicDup * 3)
+				|| (availableTics <= 0 && EnterTic - LastGameUpdate > TICRATE / 2));
+		Net_RefreshLagHUDMetrics(availableTics, 0, totalTics, 0, ticGateStalled);
 		return;
 	}
 
@@ -14574,9 +16025,10 @@ void TryRunTics()
 	// Run the available tics.
 	P_UnPredictClient();
 	HCDEApplyPendingLocalHealthRepair();
-	InvasionMirrorVisualTickBudget = Net_IsLocalInvasionAuthority() ? 0 : 1;
+	int worldStepsUsedThisFrame = 0;
 	while (runTics--)
 	{
+		++worldStepsUsedThisFrame;
 		const bool stabilize = ShouldStabilizeTick();
 		if (stabilize)
 			TicStabilityBegin();
@@ -14607,7 +16059,16 @@ void TryRunTics()
 			break;
 		}
 	}
+	if (!Net_IsLocalInvasionAuthority())
+	{
+		InvasionMirrorVisualWorldSteps = (netgame && worldStepsUsedThisFrame > 0)
+			? clamp<int>(worldStepsUsedThisFrame, 1, 32)
+			: 1;
+		InvasionMirrorVisualTickBudget = 1;
+		Net_TickInvasionMirrorVisualFrame();
+	}
 	InvasionMirrorVisualTickBudget = 0;
+	InvasionMirrorVisualWorldSteps = 1;
 	P_PredictClient();
 
 	// These should use the actual tics since they're not actually tied to the gameplay logic.
@@ -14619,6 +16080,7 @@ void TryRunTics()
 	// since it should only go up otherwise.
 	S_UpdateSounds(players[consoleplayer].camera, primaryLevel->LocalWorldTimer - min<int>(primaryLevel->LocalWorldTimer, worldTimer));
 	NetworkEntityManager::VerifyPredictedEntities();
+	Net_RefreshLagHUDMetrics(availableTics, runTics, totalTics, worldStepsUsedThisFrame, false);
 }
 
 void Net_NewClientTic()
@@ -15696,6 +17158,7 @@ static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 		case DEM_CONVNULL:
 		case DEM_REVERTCAMERA:
 		case DEM_FINISHGAME:
+		case DEM_ENDSCREENJOB:
 		case DEM_READIED:
 		case DEM_USEFLECHETTE:
 			skip = 0u;

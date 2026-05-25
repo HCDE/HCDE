@@ -88,7 +88,11 @@ CUSTOM_CVAR(Float, cl_rubberband_scale, 0.3f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 	else if (self > 1.0f)
 		self = 1.0f;
 }
-CUSTOM_CVAR(Float, cl_rubberband_threshold, 20.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+// HCDE: bumped default from 20 -> 32 so tiny per-tic drift does not constantly
+// trigger rubberband correction. Players still get smoothed back when the
+// authoritative server snaps them, but normal predicted motion no longer
+// fights the inputs frame-to-frame.
+CUSTOM_CVAR(Float, cl_rubberband_threshold, 32.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	if (self < 0.1f)
 		self = 0.1f;
@@ -102,6 +106,19 @@ CUSTOM_CVAR(Float, cl_rubberband_limit, 756.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG
 {
 	if (self < 0.0f)
 		self = 0.0f;
+}
+// HCDE: cap how many client tics we replay per visible frame inside
+// P_PredictClient. The replay cost is roughly O(tics * (PlayerThink + Tick)),
+// so if the network falls behind by many tics we previously paid the full cost
+// every frame which causes visible stutter on top of the network lag itself.
+// Default 24 tics (~0.68s @35Hz) is plenty for normal play; lag spikes beyond
+// that fall back to the rubberband path on the next snapshot.
+CUSTOM_CVAR(Int, cl_predict_max, 24, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 140)
+		self = 140;
 }
 
 EXTERN_CVAR (Int, cl_debugprediction)
@@ -1831,23 +1848,56 @@ void P_PredictClient()
 	if (ClientTic <= PredictionData.LastPredictedTic || player->playerstate != PST_LIVE || (player->mo->ObjectFlags & OF_JustSpawned))
 		return;
 
+	// HCDE: Hoist per-frame-invariant interpolation resets out of the per-tic
+	// loop. These only need to be cleared once before the first replayed tic;
+	// inside the loop they were being re-applied N times with no benefit.
+	R_ClearInterpolationPath();
+	r_NoInterpolate = false;
+	player->mo->renderflags &= ~RF_NOINTERPOLATEVIEW;
+
+	// HCDE: Cap how many tics we replay per frame. If the local client has
+	// outrun the authoritative state by more than cl_predict_max tics (network
+	// hitch, heavy mod load, etc.), skip ahead instead of paying the full
+	// PlayerThink+Tick cost on every visible frame. The rubberband check is
+	// disabled for the skipped range because LastPos.Tic is then outside the
+	// replay window; the server's next authoritative snapshot will correct any
+	// remaining drift through the normal reconcile path.
+	int predictStart = PredictionData.LastPredictedTic;
+	const int predictWindow = ClientTic - predictStart;
+	const int predictMax = max<int>(1, *cl_predict_max);
+	bool predictionWindowClamped = false;
+	if (predictWindow > predictMax)
+	{
+		predictStart = ClientTic - predictMax;
+		predictionWindowClamped = true;
+		DPrintf(DMSG_NOTIFY, "Prediction window clamped (%d -> %d tics) at gametic %d\n",
+			predictWindow, predictMax, gametic);
+	}
+
 	// This essentially acts like a mini P_Ticker where only the stuff relevant to the client is actually
 	// called. Call order is preserved.
 	bool rubberband = false, rubberbandLimit = false;
 	DVector3 rubberbandPos = {};
-	const bool canRubberband = PredictionData.bResetPrediction && PredictionData.LastPos.Tic >= 0 && cl_rubberband_scale > 0.0f && cl_rubberband_scale < 1.0f;
+	const bool canRubberband =
+		PredictionData.bResetPrediction
+		&& !predictionWindowClamped
+		&& PredictionData.LastPos.Tic >= predictStart
+		&& PredictionData.LastPos.Tic < ClientTic
+		&& cl_rubberband_scale > 0.0f
+		&& cl_rubberband_scale < 1.0f;
 	const double rubberbandThreshold = max<float>(cl_rubberband_minmove, cl_rubberband_threshold);
-	for (int i = PredictionData.LastPredictedTic; i < ClientTic; ++i)
-	{
-		// Make sure any portal paths have been cleared from the previous movement.
-		R_ClearInterpolationPath();
-		r_NoInterpolate = false;
-		player->mo->renderflags &= ~RF_NOINTERPOLATEVIEW;
+	const int rubberbandTic = canRubberband ? PredictionData.LastPos.Tic : INT_MIN;
 
+	// HCDE: If the game is paused we still want to advance the cmd buffer and
+	// keep prediction bookkeeping consistent, but there is no point running
+	// the heavy think/tick path for every paused tic. Cmd advancement happens
+	// just below; the body skips when paused.
+	for (int i = predictStart; i < ClientTic; ++i)
+	{
 		// Got snagged on something. Start correcting towards the player's final predicted position. We're
 		// being intentionally generous here by not really caring how the player got to that position, only
 		// that they ended up in the same spot on the same tick.
-		if (canRubberband && PredictionData.LastPos.Tic == i)
+		if (i == rubberbandTic)
 		{
 			DVector3 diff = player->mo->Pos() - PredictionData.LastPos.Pos;
 			diff += player->mo->Level->Displacements.getOffset(player->mo->Sector->PortalGroup, PredictionData.LastPos.PortalGroup);

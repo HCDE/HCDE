@@ -335,7 +335,7 @@ void C_UninitCVars();
 	{                                                                         \
 		if (m_Callback && !inCallback)                                        \
 		{                                                                     \
-			/* Virtual CVARs never invoke the callback recursively, giving
+			/* Virtual CVARs never invoke the callback recursively, giving    \
 			 * it a chance to manipulate the value without side effects. */   \
 			inCallback = !!(GetFlags() & CVAR_VIRTUAL);                       \
 			reinterpret_cast<void (*)(                                        \

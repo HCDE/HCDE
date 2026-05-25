@@ -524,8 +524,9 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 		}
 	}
 
-	// [SP] move unfriendly players around
-	// horribly hacky - yes, this needs rewritten.
+	// [SP] Move unfriendly players onto deathmatch starts when available.
+	// Only retire the previous pawn after a successful replacement so a failed
+	// spawn cannot leave the player actorless.
 	if (Level->deathmatchstarts.Size() > 0)
 	{
 		for (i = 0; i < MAXPLAYERS; ++i)
@@ -537,7 +538,10 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 				{
 					AActor * oldSpawn = p->mo;
 					Level->DeathMatchSpawnPlayer(i);
-					oldSpawn->Destroy();
+					if (p->mo != nullptr && p->mo != oldSpawn)
+					{
+						oldSpawn->Destroy();
+					}
 				}
 			}
 		}

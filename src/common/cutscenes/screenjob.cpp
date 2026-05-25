@@ -173,9 +173,18 @@ void DeleteScreenJob()
 
 void EndScreenJob()
 {
-	DeleteScreenJob();
-	if (cutscene.completion) cutscene.completion(false);
+	// The completion lambda is the only thing that actually queues the next
+	// world-action (ga_worlddone / D_StartTitle / etc.). If it is ever skipped
+	// the player gets a "stuck on Entering MAPxx" symptom because the screen
+	// job ends but no map transition is requested. Move the completion handle
+	// out of the global slot before invoking it so a nested EndScreenJob call
+	// (e.g. from inside the lambda or from a script-driven map change) cannot
+	// drop the callback or invoke it twice.
+	auto completion = std::move(cutscene.completion);
 	cutscene.completion = nullptr;
+	DeleteScreenJob();
+	if (completion)
+		completion(false);
 }
 
 

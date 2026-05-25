@@ -1584,7 +1584,6 @@ void FLevelLocals::WorldDone (void)
 {
 	gameaction = ga_worlddone;
 
-
 	//Added by mc
 	if (deathmatch)
 	{

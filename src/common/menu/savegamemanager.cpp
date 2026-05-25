@@ -276,9 +276,9 @@ void FSavegameManagerBase::DoSave(int Selected, const char *savegamestring)
 				Printf("saving to an absolute path is not allowed\n");
 				failed = true;
 			}
-			else if (filename.IndexOf("..") >= 0)
+			else if (FName_HasParentDirSegment(filename.GetChars()))
 			{
-				Printf("'..' not allowed in file names\n");
+				Printf("'..' parent-directory segments are not allowed in file names\n");
 				failed = true;
 			}
 #ifdef _WIN32

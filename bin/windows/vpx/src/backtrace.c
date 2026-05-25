@@ -498,13 +498,14 @@ exception_filter(LPEXCEPTION_POINTERS info)
     if (!initialized)
         return EXCEPTION_CONTINUE_SEARCH; // EXCEPTION_CONTINUE_EXECUTION
 
-    ExceptionPrinted = (char*)calloc(strlen(g_output) + 37 + 2*MAX_PATH, sizeof(char));
-    strcpy(ExceptionPrinted, g_output);
-    strcat(ExceptionPrinted, "\nPlease send ");
-    strcat(ExceptionPrinted, crashlogfilename);
-    strcat(ExceptionPrinted, " to the maintainers of ");
-    strcat(ExceptionPrinted, propername);
-    strcat(ExceptionPrinted, ".");
+    {
+        size_t ep_size = strlen(g_output) + 37 + 2*MAX_PATH;
+        ExceptionPrinted = (char*)calloc(ep_size, sizeof(char));
+        if (ExceptionPrinted != NULL)
+        {
+            snprintf(ExceptionPrinted, ep_size, "%s\nPlease send %s to the maintainers of %s.", g_output, crashlogfilename, propername);
+        }
+    }
 
     {
         DWORD error = 0;
@@ -648,7 +649,7 @@ int libintl_sprintf ( char * str, const char * format, ... )
     int value;
     va_list arg;
     va_start(arg, format);
-    value = vsprintf ( str, format, arg );
+    value = vsnprintf ( str, BUFFER_MAX, format, arg );
     va_end(arg);
     return value;
 }
@@ -671,7 +672,7 @@ int libintl_vfprintf ( FILE * stream, const char * format, va_list arg )
 }
 int libintl_vsprintf ( char * str, const char * format, va_list arg )
 {
-    return vsprintf ( str, format, arg );
+    return vsnprintf ( str, BUFFER_MAX, format, arg );
 }
 
 /* cut dependence on zlib... libbfd needs this */
