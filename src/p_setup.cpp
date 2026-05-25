@@ -24,6 +24,8 @@
 #endif
 
 
+#include "debugtrace.h"
+#include "doomstat.h"
 #include "d_player.h"
 #include "m_argv.h"
 #include "g_game.h"
@@ -418,6 +420,9 @@ void P_FreeLevelData (bool fullgc)
 void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 {
 	unsigned int i;
+
+	DebugTrace::Infof("level", "P_SetupLevel begin map=%s pos=%d newgame=%d gametic=%d",
+		Level != nullptr ? Level->MapName.GetChars() : "<none>", position, newGame ? 1 : 0, gametic);
 
 	Level->ShaderStartTime = I_msTimeFS(); // indicate to the shader system that the level just started
 

@@ -390,6 +390,7 @@ void HostSubPage::SetValues(FStartupSelectionInfo& info) const
 			info.AdditionalNetArgs.AppendFormat(" +team %d", team);
 			info.DefaultNetHostTeam = team;
 		}
+		break;
 	case 2:
 		if (AltDeathmatchCheckbox->GetChecked())
 			info.AdditionalNetArgs.AppendFormat(" -altdeath +sv_gametype 1");
@@ -398,6 +399,10 @@ void HostSubPage::SetValues(FStartupSelectionInfo& info) const
 		break;
 	case 4:
 		info.AdditionalNetArgs.AppendFormat(" +sv_gametype 4");
+		break;
+	case 0:
+	default:
+		info.AdditionalNetArgs.AppendFormat(" -coop +sv_gametype 0");
 		break;
 	}
 }

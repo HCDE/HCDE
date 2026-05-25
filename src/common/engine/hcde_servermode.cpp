@@ -160,6 +160,10 @@ void HCDE_ServerMode_InitFromArgs()
 	if (Runtime.JoinAddress.IsEmpty())
 		AssignArgValue(Runtime.JoinAddress, FArg_dedicatedjoin);
 	Runtime.FlowState = "startup";
+	DebugTrace::Infof("serv", "init dedicated-exe=%d dedicated-srv=%d host=%d join=%d slots=%d port=%d map=%s",
+		Runtime.DedicatedExecutable ? 1 : 0, Runtime.DedicatedServer ? 1 : 0,
+		Runtime.HostMode ? 1 : 0, Runtime.JoinMode ? 1 : 0,
+		Runtime.RequestedServerSlots, Runtime.GamePort, TextOr(Runtime.MapArg, "default"));
 
 	if (Runtime.DedicatedExecutable && !Runtime.DedicatedServer)
 	{
@@ -181,6 +185,8 @@ void HCDE_ServerMode_SetNetworkDetails(int visibleSlots, int internalSlots, int 
 	Runtime.GamePort = gamePort;
 	Runtime.ReservedServerSlot = reservedServerSlot;
 	Runtime.FlowState = flowState != nullptr ? flowState : "";
+	DebugTrace::Infof("serv", "network visible=%d internal=%d port=%d reserved=%d flow=%s",
+		visibleSlots, internalSlots, gamePort, reservedServerSlot ? 1 : 0, TextOr(Runtime.FlowState, "?"));
 }
 
 void HCDE_ServerMode_SetMasterState(bool advertisingEnabled, size_t configuredMasters)
@@ -189,6 +195,8 @@ void HCDE_ServerMode_SetMasterState(bool advertisingEnabled, size_t configuredMa
 	Runtime.MasterStateKnown = true;
 	Runtime.MasterAdvertisingEnabled = advertisingEnabled;
 	Runtime.ConfiguredMasters = configuredMasters;
+	DebugTrace::Infof("serv", "master advertising=%d configured=%zu",
+		advertisingEnabled ? 1 : 0, configuredMasters);
 }
 
 void HCDE_ServerMode_SetAuthorityState(int internalSlot, bool playerBacked, bool settingsController, bool waiting, const char* displayName)
@@ -200,7 +208,7 @@ void HCDE_ServerMode_SetAuthorityState(int internalSlot, bool playerBacked, bool
 	Runtime.AuthoritySettingsController = settingsController;
 	Runtime.AuthorityWaiting = waiting;
 	Runtime.AuthorityName = displayName != nullptr ? displayName : "";
-	DebugTrace::Markf("servermode", "authority slot=%d playerBacked=%d settings=%d waiting=%d name=%s",
+	DebugTrace::Markf("serv", "authority slot=%d playerBacked=%d settings=%d waiting=%d name=%s",
 		Runtime.AuthoritySlot,
 		Runtime.AuthorityPlayerBacked ? 1 : 0,
 		Runtime.AuthoritySettingsController ? 1 : 0,
@@ -213,7 +221,7 @@ void HCDE_ServerMode_SetAuthoritySettingsController(bool enabled)
 	HCDE_ServerMode_InitFromArgs();
 	Runtime.AuthorityStateKnown = true;
 	Runtime.AuthoritySettingsController = enabled;
-	DebugTrace::Markf("servermode", "authority settings-controller=%d", enabled ? 1 : 0);
+	DebugTrace::Markf("serv", "authority settings-controller=%d", enabled ? 1 : 0);
 }
 
 void HCDE_ServerMode_SetAuthorityWaiting(bool waiting)
@@ -221,7 +229,7 @@ void HCDE_ServerMode_SetAuthorityWaiting(bool waiting)
 	HCDE_ServerMode_InitFromArgs();
 	Runtime.AuthorityStateKnown = true;
 	Runtime.AuthorityWaiting = waiting;
-	DebugTrace::Markf("servermode", "authority waiting=%d", waiting ? 1 : 0);
+	DebugTrace::Markf("serv", "authority waiting=%d", waiting ? 1 : 0);
 }
 
 void HCDE_ServerMode_PrintDiagnostics(const char* phase)
@@ -245,7 +253,7 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 		YesNo(Runtime.JoinMode),
 		YesNo(Runtime.DedicatedJoin),
 		YesNo(HCDE_ServerMode_ShouldSuppressRoomUI()));
-	DebugTrace::Infof("servermode", "diagnostics phase=%s mode=%s executable=%s host=%s join=%s dedicatedjoin=%s silent-room-ui=%s",
+	DebugTrace::Infof("serv", "diagnostics phase=%s mode=%s executable=%s host=%s join=%s dedicatedjoin=%s silent-room-ui=%s",
 		safePhase,
 		modeText,
 		YesNo(Runtime.DedicatedExecutable),
@@ -261,7 +269,7 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 		YesNo(Runtime.ReservedServerSlot),
 		portText.GetChars(),
 		TextOr(Runtime.FlowState, "unknown"));
-	DebugTrace::Infof("servermode", "diagnostics phase=%s slots requested=%d visible=%d internal=%d reserved=%s port=%s flow=%s",
+	DebugTrace::Infof("serv", "diagnostics phase=%s slots requested=%d visible=%d internal=%d reserved=%s port=%s flow=%s",
 		safePhase,
 		Runtime.RequestedServerSlots,
 		Runtime.VisibleSlots,
@@ -278,7 +286,7 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 		masterState,
 		Runtime.ConfiguredMasters,
 		YesNo(!HCDE_ServerMode_ShouldSuppressStartupUI()));
-	DebugTrace::Infof("servermode", "diagnostics phase=%s iwad=%s selected-iwad=%s map=%s join=%s master=%s masters=%zu startup-ui=%s",
+	DebugTrace::Infof("serv", "diagnostics phase=%s iwad=%s selected-iwad=%s map=%s join=%s master=%s masters=%zu startup-ui=%s",
 		safePhase,
 		TextOr(Runtime.IWADArg, "auto"),
 		TextOr(Runtime.SelectedIWAD, "unknown"),
@@ -296,7 +304,7 @@ void HCDE_ServerMode_PrintDiagnostics(const char* phase)
 			YesNo(Runtime.AuthoritySettingsController),
 			YesNo(Runtime.AuthorityWaiting),
 			TextOr(Runtime.AuthorityName, "unknown"));
-		DebugTrace::Infof("servermode", "diagnostics phase=%s authority-slot=%d player-backed=%s settings=%s waiting=%s name=%s",
+		DebugTrace::Infof("serv", "diagnostics phase=%s authority-slot=%d player-backed=%s settings=%s waiting=%s name=%s",
 			safePhase,
 			Runtime.AuthoritySlot,
 			YesNo(Runtime.AuthorityPlayerBacked),
@@ -312,7 +320,7 @@ void HCDE_ServerMode_GuardClientSubsystem(const char* subsystem)
 	if (!Runtime.DedicatedServer)
 		return;
 
-	DebugTrace::Errorf("servermode", "dedicated server attempted client subsystem=%s",
+	DebugTrace::Errorf("serv", "dedicated server attempted client subsystem=%s",
 		subsystem != nullptr ? subsystem : "unknown");
 	I_FatalError("Dedicated server attempted to initialize client subsystem: %s. This is a server-boundary bug.",
 		subsystem != nullptr ? subsystem : "unknown");

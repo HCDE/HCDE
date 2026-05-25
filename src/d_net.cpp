@@ -578,6 +578,7 @@ struct FHCDELivePeerState
 	uint32_t ClientCommandReceived = 0u;
 	uint32_t SnapshotSent = 0u;
 	uint32_t SnapshotReceived = 0u;
+	uint32_t LastAppliedSnapshotGameTic = 0u;
 	uint32_t UnsupportedReceived = 0u;
 	uint32_t AuthorityRejected = 0u;
 	uint64_t RemoteCapabilities = 0u;
@@ -630,6 +631,41 @@ struct FHCDELiveNativeSendScratch
 };
 
 static uint8_t	CurrentRoomID = 0u;	// Ignore commands not from this room (useful when transitioning levels).
+
+void Net_TraceSetSvGametype(int value, const char* reason)
+{
+	const int oldValue = int(sv_gametype);
+	if (oldValue == value)
+		return;
+
+	DebugTrace::Infof("mode", "sv_gametype %d -> %d reason=%s gametic=%d room=%u map=%s",
+		oldValue, value, reason != nullptr ? reason : "?",
+		gametic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	sv_gametype = value;
+}
+
+void Net_TraceSetDeathmatch(int value, const char* reason)
+{
+	const int oldValue = int(deathmatch);
+	if (oldValue == value)
+		return;
+
+	DebugTrace::Infof("mode", "deathmatch %d -> %d reason=%s gametic=%d",
+		oldValue, value, reason != nullptr ? reason : "?", gametic);
+	deathmatch = value;
+}
+
+void Net_TraceSetTeamplay(int value, const char* reason)
+{
+	const int oldValue = int(teamplay);
+	if (oldValue == value)
+		return;
+
+	DebugTrace::Infof("mode", "teamplay %d -> %d reason=%s gametic=%d",
+		oldValue, value, reason != nullptr ? reason : "?", gametic);
+	teamplay = value;
+}
 static int		LastGameUpdate = 0;		// Track the last time the game actually ran the world.
 static uint64_t	MutedClients = 0u;		// Ignore messages from these clients.
 static_assert(MAXPLAYERS <= 64, "MAXPLAYERS must remain <=64 while using fixed-sized late-join bitmask state.");
@@ -1499,6 +1535,19 @@ static void Net_TickInvasionAnnouncements()
 static int  LevelStartDebug = 0;
 static int	LevelStartDelay = 0; // While this is > 0, don't start generating packets yet.
 static ELevelStartStatus LevelStartStatus = LST_READY; // Listen for when to actually start making tics.
+
+static void Net_SetLevelStartStatus(ELevelStartStatus status, const char* reason)
+{
+	if (LevelStartStatus == status)
+		return;
+
+	DebugTrace::Infof("net.levelstart", "%s -> %s reason=%s gametic=%d clienttic=%d room=%u map=%s",
+		Net_LevelStartStatusName(LevelStartStatus), Net_LevelStartStatusName(status),
+		reason != nullptr ? reason : "?", gametic, ClientTic, unsigned(CurrentRoomID),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
+	LevelStartStatus = status;
+}
+
 static uint64_t	LevelStartAck = 0u; // Used by the host to determine if everyone has loaded in.
 
 static int FullLatencyCycle = MAXSENDTICS * 3;	// Give ~3 seconds to gather latency info about clients on boot up.
@@ -1593,6 +1642,75 @@ static bool Net_TrySkipUserCmdMessageWithBoundary(const uint8_t* data, size_t da
 	bool allowImplicitEmptyAtEnd, uint8_t commandTics, uint64_t commandOffsetsSeen,
 	uint8_t remainingRecords, size_t& recordBytes);
 static void HSendPacket(int client, size_t size);
+
+namespace
+{
+struct FNetPacketTraceWindow
+{
+	uint64_t LastLogMS = 0u;
+	uint32_t InCount = 0u;
+	uint32_t OutCount = 0u;
+};
+
+static FNetPacketTraceWindow NetPacketTraceWindow;
+
+static bool Net_ShouldAggregatePacketTrace(uint8_t header)
+{
+	return (header & (NCMD_LATENCY | NCMD_LATENCYACK)) != 0u
+		&& (header & ~(NCMD_LATENCY | NCMD_LATENCYACK | NCMD_COMPRESSED)) == 0u;
+}
+
+static void Net_MaybeFlushPacketTraceWindow()
+{
+	const uint64_t nowMS = I_msTime();
+	if (nowMS - NetPacketTraceWindow.LastLogMS < 1000u
+		&& NetPacketTraceWindow.InCount + NetPacketTraceWindow.OutCount < 32u)
+		return;
+
+	if (NetPacketTraceWindow.InCount > 0u)
+	{
+		DebugTrace::Debugf("net.in", "aggregate packets=%u gametic=%d room=%u",
+			unsigned(NetPacketTraceWindow.InCount), gametic, unsigned(CurrentRoomID));
+		NetPacketTraceWindow.InCount = 0u;
+	}
+	if (NetPacketTraceWindow.OutCount > 0u)
+	{
+		DebugTrace::Debugf("net.out", "aggregate packets=%u gametic=%d room=%u",
+			unsigned(NetPacketTraceWindow.OutCount), gametic, unsigned(CurrentRoomID));
+		NetPacketTraceWindow.OutCount = 0u;
+	}
+	NetPacketTraceWindow.LastLogMS = nowMS;
+}
+
+static void Net_TraceIncomingPacket(int clientNum, uint8_t header, size_t size)
+{
+	if (Net_ShouldAggregatePacketTrace(header))
+	{
+		++NetPacketTraceWindow.InCount;
+		Net_MaybeFlushPacketTraceWindow();
+		return;
+	}
+
+	DebugTrace::Infof("net.in", "client=%d flags=0x%02x size=%zu gametic=%d clienttic=%d room=%u",
+		clientNum, unsigned(header), size, gametic, ClientTic, unsigned(CurrentRoomID));
+}
+
+static void Net_TraceOutgoingPacket(int client, uint8_t header, size_t size)
+{
+	if (client == consoleplayer)
+		return;
+
+	if (Net_ShouldAggregatePacketTrace(header))
+	{
+		++NetPacketTraceWindow.OutCount;
+		Net_MaybeFlushPacketTraceWindow();
+		return;
+	}
+
+	DebugTrace::Infof("net.out", "client=%d flags=0x%02x size=%zu gametic=%d room=%u",
+		client, unsigned(header), size, gametic, unsigned(CurrentRoomID));
+}
+}
 
 static uint32_t HCDELiveReadBE32(const uint8_t* data)
 {
@@ -1881,7 +1999,7 @@ static void HCDEApplyLiveControlCapabilities(int client, size_t payloadSize)
 	++HCDELiveProfile.CapabilityControlsReceived;
 	if (previousNegotiated != peer.NegotiatedCapabilities)
 	{
-		DebugTrace::Markf("net", "HCDE live capabilities client=%d remote=0x%llx negotiated=0x%llx",
+		DebugTrace::Markf("net.cap", "HCDE live capabilities client=%d remote=0x%llx negotiated=0x%llx",
 			client,
 			static_cast<unsigned long long>(peer.RemoteCapabilities),
 			static_cast<unsigned long long>(peer.NegotiatedCapabilities));
@@ -3713,7 +3831,7 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 	if (markApplied && id > InvasionLastAppliedSpawnEventId)
 		InvasionLastAppliedSpawnEventId = id;
 
-	DebugTrace::Markf("invasion", "mirror spawned id=%u wave=%d class=%s source=%s pos=(%.1f,%.1f,%.1f)",
+	DebugTrace::Markf("invasion.mirror", "mirror spawned id=%u wave=%d class=%s source=%s pos=(%.1f,%.1f,%.1f)",
 		unsigned(id),
 		wave,
 		className.GetChars(),
@@ -5108,6 +5226,8 @@ static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor)
 	ref.LastAuthorityHealthEventTic = gametic;
 	Net_SeedInvasionMirrorVisualTarget(ref, actor);
 	InvasionReplicatedActors.Push(ref);
+	DebugTrace::Infof("playsim.actor", "register invasion mirror id=%u class=%s projectile=%d gametic=%d",
+		unsigned(id), actor->GetClass()->TypeName.GetChars(), ref.IsProjectile ? 1 : 0, gametic);
 	Net_IndexInvasionReplicatedActor(InvasionReplicatedActors.Size() - 1u);
 	Net_RegisterHCDEReplicatedActor(id, actor,
 		Net_ClassifyHCDEReplicatedActor(actor, ref.IsProjectile), HREP_SOURCE_INVASION);
@@ -7269,8 +7389,6 @@ static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t
 {
 	if (!HCDEIsValidLiveClient(clientNum))
 		return false;
-	if (!Net_IsInvasionModeEnabled())
-		return false;
 	if (!HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2))
 		return false;
 	const bool expectActorDeltas = HCDELivePeerHasCapability(clientNum, HCDELiveCapActorDeltaV2)
@@ -7287,6 +7405,15 @@ static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t
 	const uint8_t flags = body[bodyCursor + HCDEInvasionSnapshotFlagsOffset];
 	const uint8_t stateRaw = body[bodyCursor + HCDEInvasionSnapshotStateOffset];
 	const uint8_t reserved = body[bodyCursor + HCDEInvasionSnapshotReservedOffset];
+	if (!Net_IsInvasionModeEnabled())
+	{
+		// Dedicated clients can still have sv_gametype=0 locally even while the
+		// authority is running invasion. A non-disabled invasion snapshot proves
+		// the server mode and must be accepted so mirror sync can proceed.
+		if (stateRaw == INVS_DISABLED || stateRaw > INVS_FAILURE)
+			return false;
+		Net_TraceSetSvGametype(4, "invasion-snapshot-authority");
+	}
 	const bool hasSpawnMetadata = (version >= 2u);
 	const size_t snapshotBytes = hasSpawnMetadata ? HCDEInvasionSnapshotHeaderV2Size : HCDEInvasionSnapshotHeaderV1Size;
 	if (bodyCursor > bodyBytes || bodyBytes - bodyCursor < snapshotBytes)
@@ -7347,8 +7474,16 @@ static bool HCDEApplyInvasionSnapshot(int clientNum, const uint8_t* body, size_t
 
 	const EInvasionState previousState = InvasionState;
 	const int previousWave = InvasionWaveDirector.Wave;
+	const EInvasionState newState = EInvasionState(stateRaw);
 
-	InvasionState = EInvasionState(stateRaw);
+	if (previousState != newState)
+	{
+		DebugTrace::Infof("invasion", "snapshot state %s -> %s wave=%u tics=%u client=%d room=%u",
+			Net_InvasionStateName(previousState), Net_InvasionStateName(newState),
+			unsigned(wave), unsigned(stateTics), clientNum, unsigned(CurrentRoomID));
+	}
+
+	InvasionState = newState;
 	InvasionStateTics = max<int>(int(stateTics), 0);
 	InvasionWaveDirector.Wave = max<int>(int(wave), 0);
 	InvasionWaveDirector.MaxWaves = max<int>(int(maxWaves), 0);
@@ -8346,7 +8481,7 @@ static bool HCDEBuildNativeServerSnapshotPayload(int client, uint8_t controlFlag
 	++HCDELiveProfile.ServerSnapshotNativeBuilt;
 	HCDELiveProfile.ServerSnapshotBytesBuilt += outputSize;
 	HCDERecordLiveLaneTx(HLANE_PLAYER_SNAPSHOT, client, playerSnapshotEnd);
-	DebugTrace::Markf("net", "HCDE server snapshot native build client=%d players=%u tics=%u consistencies=%u quitters=%u records=%zu deltas=%zu",
+	DebugTrace::Markf("net.snapshot", "HCDE server snapshot native build client=%d players=%u tics=%u consistencies=%u quitters=%u records=%zu deltas=%zu",
 		client, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), unsigned(quitterCount), bodyBytes, worldDeltaPlayerCount);
 	return true;
 }
@@ -8854,6 +8989,19 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 	const uint8_t consistencyTics = payload[HCDEServerSnapshotConsistencyTicsOffset];
 	const uint8_t stabilityBuffer = payload[HCDEServerSnapshotStabilityOffset];
 
+	auto& livePeer = HCDELivePeers[clientNum];
+	if (!I_IsLocalHCDEServiceAuthority() && remoteGameTic <= livePeer.LastAppliedSnapshotGameTic)
+	{
+		bool staleRoom = false;
+		HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+		if (staleRoom)
+			return fail("server-snapshot-stale-room");
+		ClearHCDELiveReplayPressure(clientNum, remoteGameTic < livePeer.LastAppliedSnapshotGameTic
+			? "server-snapshot-stale-tic" : "server-snapshot-idempotent");
+		++livePeer.DuplicateCount;
+		return true;
+	}
+
 	// Reused across every (player, tic) pair to avoid 14 KB of stack zero-init on every
 	// inner iteration; eventCursor tracks the live byte count for each event payload.
 	uint8_t eventScratch[MAX_MSGLEN];
@@ -9034,7 +9182,10 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 		return fail("server-snapshot-world-delta-invalid");
 	const bool expectActorDelta = HCDELivePeerHasCapability(clientNum, HCDELiveCapActorDeltaV2)
 		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapActorRegistryV1);
-	const bool expectInvasionSnapshot = Net_IsInvasionModeEnabled()
+	const bool hasInvasionSnapshot = bodyCursor < bodyBytes
+		&& bodyBytes - bodyCursor >= HCDEInvasionSnapshotHeaderV1Size
+		&& memcmp(&body[bodyCursor + HCDEInvasionSnapshotMagicOffset], HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic)) == 0u;
+	const bool expectInvasionSnapshot = hasInvasionSnapshot
 		&& HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2);
 	if (bodyCursor < bodyBytes
 		&& expectActorDelta
@@ -9045,16 +9196,11 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 			return fail("server-snapshot-actor-delta-invalid");
 	}
 	if (expectInvasionSnapshot
-		&& bodyCursor < bodyBytes
 		&& !HCDEApplyInvasionSnapshot(clientNum, body, bodyBytes, bodyCursor))
 	{
 		return fail("server-snapshot-invasion-invalid");
 	}
-	else if (bodyCursor < bodyBytes
-		&& Net_IsInvasionModeEnabled()
-		&& !expectInvasionSnapshot
-		&& bodyBytes - bodyCursor >= HCDEInvasionSnapshotHeaderV1Size
-		&& memcmp(&body[bodyCursor + HCDEInvasionSnapshotMagicOffset], HCDEInvasionSnapshotMagic, sizeof(HCDEInvasionSnapshotMagic)) == 0u)
+	else if (hasInvasionSnapshot && !HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2))
 	{
 		return fail("server-snapshot-invasion-capability-missing");
 	}
@@ -9063,8 +9209,10 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 
 	ClientStates[clientNum].MalformedPacketStrikes = 0u;
 	ClientStates[clientNum].MalformedWindowStartMS = 0u;
+	if (!I_IsLocalHCDEServiceAuthority())
+		livePeer.LastAppliedSnapshotGameTic = max(livePeer.LastAppliedSnapshotGameTic, remoteGameTic);
 	ClearHCDELiveReplayPressure(clientNum, "server-snapshot-native-apply");
-	DebugTrace::Markf("net", "HCDE server snapshot native-apply client=%d room=%u tic=%u players=%u tics=%u consistencies=%u quitters=%zu records=%zu",
+	DebugTrace::Markf("net.snapshot", "HCDE server snapshot native-apply client=%d room=%u tic=%u players=%u tics=%u consistencies=%u quitters=%zu records=%zu",
 		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), quitterBytes, bodyBytes);
 	++HCDELiveProfile.ServerSnapshotNativeApplied;
 	++HCDELiveProfile.ServerSnapshotPacketsReceived;
@@ -11832,7 +11980,7 @@ void Net_ClearBuffers()
 
 	LevelStartAck = 0u;
 	LevelStartDelay = LevelStartDebug = 0;
-	LevelStartStatus = LST_READY;
+	Net_SetLevelStartStatus(LST_READY, "net-reset");
 	LastTicGateStallTrace = 0;
 
 	FullLatencyCycle = MAXSENDTICS * 3;
@@ -12249,8 +12397,8 @@ void Net_SetWaiting()
 		LevelStartDelay = LevelStartDebug = 0;
 		FullLatencyCycle = 0;
 		Net_ResetAuthorityWaitWatchdog("level-wait");
-		LevelStartStatus = LST_WAITING;
-		DebugTrace::Markf("net", "level start waiting room=%u map=%s authority=%d clients=%u",
+		Net_SetLevelStartStatus(LST_WAITING, "map-load-wait");
+		DebugTrace::Markf("net.levelstart", "level start waiting room=%u map=%s authority=%d clients=%u",
 			unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 			I_IsLocalHCDEServiceAuthority() ? 1 : 0, unsigned(NetworkClients.Size()));
 	}
@@ -12399,6 +12547,9 @@ static void HSendPacket(int client, size_t size)
 	if (demoplayback)
 		return;
 
+	if (netgame && size > 0u)
+		Net_TraceOutgoingPacket(client, NetBuffer[0], size);
+
 	RemoteClient = client;
 	NetBufferLength = size;
 	if (client == consoleplayer)
@@ -12490,7 +12641,7 @@ static void ClientConnecting(int client)
 	{
 		players[client].waiting = true;
 		Net_ResetAuthorityWaitWatchdog("late-join-connect");
-		DebugTrace::Markf("net", "late-join setup active client=%d room=%u gametic=%d clienttic=%d replay-seq-from=%d replay-consistency-from=%d",
+		DebugTrace::Infof("player", "late-join connect client=%d room=%u gametic=%d clienttic=%d replay-seq=%d replay-con=%d",
 			client, unsigned(CurrentRoomID), gametic, ClientTic, state.ResendSequenceFrom, state.ResendConsistencyFrom);
 	}
 }
@@ -12504,7 +12655,7 @@ static void Net_EnsureRuntimeClientSlot(int client, int sourceClient)
 	if (!wasKnown)
 	{
 		NetworkClients += client;
-		DebugTrace::Markf("net", "runtime client slot activated client=%d source=%d room=%u gametic=%d clienttic=%d",
+		DebugTrace::Infof("player", "runtime slot activated client=%d source=%d room=%u gametic=%d clienttic=%d",
 			client, sourceClient, unsigned(CurrentRoomID), gametic, ClientTic);
 	}
 
@@ -12642,7 +12793,7 @@ static void ClientQuit(int clientNum, int newHost)
 		{
 			Printf(PRINT_HIGH, "NetGame:: Client %d '%s' sent exit; queueing quit broadcast at gametic=%d clienttic=%d room=%u\n",
 				clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
-			DebugTrace::Warningf("net", "client exit queued client=%d name=%s gametic=%d clienttic=%d room=%u",
+			DebugTrace::Infof("player", "exit queued client=%d name=%s gametic=%d room=%u",
 				clientNum, players[clientNum].userinfo.GetName(), gametic, ClientTic, unsigned(CurrentRoomID));
 			ClientStates[clientNum].Flags |= CF_QUIT;
 		}
@@ -12718,7 +12869,7 @@ static bool TryReleaseLevelStart()
 	}
 
 	LevelStartAck = 0u;
-	LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
+	Net_SetLevelStartStatus(I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY, "try-release-level-start");
 	LevelStartDelay = LevelStartDebug = 0;
 
 	// NOTE: Do not re-anchor ClientStates[*].CurrentSequence here. The authority's
@@ -12733,7 +12884,7 @@ static bool TryReleaseLevelStart()
 	Printf(PRINT_HIGH, "NetGame:: Authority released level start at gametic=%d clienttic=%d room=%u map=%s clients=%u\n",
 		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 		unsigned(NetworkClients.Size()));
-	DebugTrace::Markf("net", "authority released level start gametic=%d clienttic=%d room=%u map=%s clients=%u",
+	DebugTrace::Markf("net.levelstart", "authority released level start gametic=%d clienttic=%d room=%u map=%s clients=%u",
 		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 		unsigned(NetworkClients.Size()));
 	return true;
@@ -12764,7 +12915,7 @@ static void CheckLevelStart(int client, int delayTics)
 	if (I_IsHCDEServiceAuthoritySlot(client))
 	{
 		LevelStartAck = 0u;
-		LevelStartStatus = I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY;
+		Net_SetLevelStartStatus(I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY, "check-level-start-authority");
 		LevelStartDelay = LevelStartDebug = delayTics;
 
 		const int serverGametic = (NetBuffer[4] << 24) | (NetBuffer[5] << 16) | (NetBuffer[6] << 8) | NetBuffer[7];
@@ -12789,13 +12940,13 @@ static void CheckLevelStart(int client, int delayTics)
 		Net_ResetAuthorityWaitWatchdog("authority-start");
 		Printf(PRINT_HIGH, "NetGame:: Authority started level for client at gametic=%d clienttic=%d room=%u map=%s delay=%d\n",
 			gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", delayTics);
-		DebugTrace::Markf("net", "client accepted authority level start gametic=%d clienttic=%d room=%u map=%s delay=%d",
+		DebugTrace::Markf("net.levelstart", "client accepted authority level start gametic=%d clienttic=%d room=%u map=%s delay=%d",
 			gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", delayTics);
 		return;
 	}
 
 	LevelStartAck |= (uint64_t)1u << client;
-	DebugTrace::Markf("net", "level start ack client=%d ack=%llu mask=%llu loaded=%d room=%u",
+	DebugTrace::Markf("net.levelstart", "level start ack client=%d ack=%llu mask=%llu loaded=%d room=%u",
 		client, (unsigned long long)LevelStartAck, (unsigned long long)LevelStartPlayableMask(),
 		IsMapLoaded() ? 1 : 0, unsigned(CurrentRoomID));
 	TryReleaseLevelStart();
@@ -12820,7 +12971,7 @@ static void NoteMalformedGameplayPacket(int clientNum, const char* reason)
 	}
 
 	++state.MalformedPacketStrikes;
-	DebugTrace::Warningf("net", "malformed gameplay packet from=%d reason=%s strikes=%u window-ms=%llu room=%u",
+	DebugTrace::Warningf("net.session", "malformed gameplay packet from=%d reason=%s strikes=%u window-ms=%llu room=%u",
 		clientNum, reason, unsigned(state.MalformedPacketStrikes),
 		static_cast<unsigned long long>(now - state.MalformedWindowStartMS),
 		unsigned(CurrentRoomID));
@@ -12832,7 +12983,7 @@ static void NoteMalformedGameplayPacket(int clientNum, const char* reason)
 	state.MalformedWindowStartMS = now;
 	if (!I_IsLocalHCDEServiceAuthority() || I_IsHCDEServiceAuthoritySlot(clientNum))
 	{
-		DebugTrace::Warningf("net", "malformed packet strike limit reached but peer is authority/not locally kickable client=%d room=%u",
+		DebugTrace::Warningf("net.session", "malformed packet strike limit reached but peer is authority/not locally kickable client=%d room=%u",
 			clientNum, unsigned(CurrentRoomID));
 		return;
 	}
@@ -12862,12 +13013,13 @@ static void GetPackets()
 	{
 		const int clientNum =  RemoteClient;
 		auto& clientState = ClientStates[clientNum];
+		Net_TraceIncomingPacket(clientNum, NetBuffer[0], NetBufferLength);
 
 		if (NetBuffer[0] & NCMD_EXIT)
 		{
 			Printf(PRINT_HIGH, "NetGame:: Received exit packet from client %d at gametic=%d clienttic=%d room=%u\n",
 				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
-			DebugTrace::Warningf("net", "received exit packet client=%d gametic=%d clienttic=%d room=%u",
+			DebugTrace::Warningf("net.session", "received exit packet client=%d gametic=%d clienttic=%d room=%u",
 				clientNum, gametic, ClientTic, unsigned(CurrentRoomID));
 			ClientQuit(clientNum, I_IsHCDEServiceAuthoritySlot(clientNum) ? NetBuffer[1] : -1);
 			continue;
@@ -13118,7 +13270,7 @@ static void GetPackets()
 			if (pNum < 0 || pNum >= MAXPLAYERS)
 			{
 				malformedPacketFields = true;
-				DebugTrace::Warningf("net", "malformed packet player index=%d max=%d from=%d room=%u",
+				DebugTrace::Warningf("net.session", "malformed packet player index=%d max=%d from=%d room=%u",
 					pNum, MAXPLAYERS, clientNum, unsigned(CurrentRoomID));
 				break;
 			}
@@ -13633,7 +13785,7 @@ static bool Net_UpdateStatus()
 			// our data back over in case the host is waiting for us.
 			ClientStates[authoritySlot].Flags |= CF_MISSING;
 			HCDESetAuthorityWaiting(true);
-			DebugTrace::Warningf("net", "authority wait armed client=%d gametic=%d clienttic=%d room=%u map=%s seq=%d ack=%d levelstart=%s lag=%s",
+			DebugTrace::Warningf("net.levelstart", "authority wait armed client=%d gametic=%d clienttic=%d room=%u map=%s seq=%d ack=%d levelstart=%s lag=%s",
 				authoritySlot, gametic, ClientTic, unsigned(CurrentRoomID),
 				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 				ClientStates[authoritySlot].CurrentSequence, ClientStates[authoritySlot].SequenceAck,
@@ -13734,7 +13886,7 @@ void NetUpdate(int tics)
 		// a latency measurement tool).
 		if (I_IsLocalHCDEServiceAuthority())
 		{
-			DebugTrace::Markf("net", "host heartbeat gametic=%d", gametic);
+			DebugTrace::Debugf("net.out", "host heartbeat gametic=%d", gametic);
 			LastLatencyUpdate += tics;
 			if (FullLatencyCycle > 0)
 				FullLatencyCycle = max<int>(FullLatencyCycle - tics, 0);
@@ -13797,10 +13949,10 @@ void NetUpdate(int tics)
 			// authority's first snapshot before they release their next command.
 			if (lowestSeq >= curTic - 1)
 			{
-				DebugTrace::Markf("net", "authority level start host gate released curtic=%d lowestseq=%d room=%u map=%s",
+				DebugTrace::Markf("net.levelstart", "authority level start host gate released curtic=%d lowestseq=%d room=%u map=%s",
 					curTic, lowestSeq, unsigned(CurrentRoomID),
 					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-				LevelStartStatus = LST_READY;
+				Net_SetLevelStartStatus(LST_READY, "host-gate-released");
 			}
 		}
 	}
@@ -16341,7 +16493,7 @@ void TryRunTics()
 		if (netgame && totalTics > 0 && EnterTic - LastTicGateStallTrace >= TICRATE)
 		{
 			LastTicGateStallTrace = EnterTic;
-			DebugTrace::Warningf("net", "tic gate stalled total=%d available=%d lowest=%d gametic=%d clienttic=%d room=%u map=%s levelstart=%s delay=%d lag=%s",
+			DebugTrace::Warningf("predict", "tic gate stalled total=%d available=%d lowest=%d gametic=%d clienttic=%d room=%u map=%s levelstart=%s delay=%d lag=%s",
 				totalTics, availableTics, lowestSequence, gametic, ClientTic, unsigned(CurrentRoomID),
 				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
 				Net_LevelStartStatusName(LevelStartStatus), LevelStartDelay, Net_LagStateName(LagState));
@@ -16364,7 +16516,7 @@ void TryRunTics()
 			for (auto client : NetworkClients)
 			{
 				const auto& state = ClientStates[client];
-				DebugTrace::Warningf("net", "tic gate client=%d gate=%d network=%d playeringame=%d reserved=%d authority=%d waiting=%d seq=%d ack=%d flags=0x%x",
+				DebugTrace::Warningf("predict", "tic gate client=%d gate=%d network=%d playeringame=%d reserved=%d authority=%d waiting=%d seq=%d ack=%d flags=0x%x",
 					client, Net_IsTicGateClient(client) ? 1 : 0, NetworkClients.InGame(client) ? 1 : 0,
 					playeringame[client] ? 1 : 0, I_IsServerReservedSlot(client) ? 1 : 0,
 					I_IsHCDEServiceAuthoritySlot(client) ? 1 : 0, players[client].waiting ? 1 : 0,
@@ -17258,7 +17410,7 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 				savegamefile = G_BuildSaveName(basename.GetChars());
 			}
 		}
-		gameaction = ga_savegame;
+		G_TraceSetGameAction(ga_savegame, "net-autosave-request");
 		break;
 
 	case DEM_CHECKAUTOSAVE:
@@ -17273,7 +17425,7 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 		break;
 
 	case DEM_DOAUTOSAVE:
-		gameaction = ga_autosave;
+		G_TraceSetGameAction(ga_autosave, "net-autosave");
 		break;
 
 	case DEM_FOV:
@@ -18451,7 +18603,7 @@ CCMD(invasion_standard)
 		return;
 	}
 
-	sv_gametype = 4;
+	Net_TraceSetSvGametype(4, "invasion-preset");
 	sv_invasioncountdowntime = 30.0f;
 	sv_invasionspawntime = 8.0f;
 	sv_invasioncleanuptime = 4.0f;

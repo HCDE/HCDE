@@ -29,6 +29,7 @@ struct event_t;
 #include "dobjgc.h"
 #include "name.h"
 #include "gamestate.h"
+#include "d_event.h"
 #include "a_pickups.h"
 
 
@@ -71,6 +72,9 @@ void G_BeginRecording (const char *startmap);
 void G_PlayDemo (char* name);
 void G_TimeDemo (const char* name);
 bool G_CheckDemoStatus (void);
+
+void G_TraceSetGameAction(gameaction_t action, const char* reason);
+void G_TraceSetGameState(gamestate_t state, const char* reason);
 
 void G_Ticker (void);
 bool G_Responder (event_t*	ev);

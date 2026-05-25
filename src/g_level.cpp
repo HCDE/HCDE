@@ -60,8 +60,11 @@
 #include "sbarinfo.h"
 #include "p_lnspec.h"
 #include "cmdlib.h"
+#include "c_cvars.h"
 #include "d_net.h"
 #include "d_netinf.h"
+
+EXTERN_CVAR(Int, sv_gametype)
 #include "doommenu.h"
 #include "a_sharedglobal.h"
 #include "r_utility.h"
@@ -259,7 +262,7 @@ void G_DeferedInitNew (const char *mapname, int newskill)
 	d_mapname = mapname;
 	d_skill = newskill;
 	CheckWarpTransMap (d_mapname, true);
-	gameaction = ga_newgame2;
+	G_TraceSetGameAction(ga_newgame2, "g_level");
 }
 
 void G_DeferedInitNew (FNewGameStartup *gs)
@@ -268,7 +271,7 @@ void G_DeferedInitNew (FNewGameStartup *gs)
 	d_mapname = AllEpisodes[gs->Episode].mEpisodeMap;
 	d_skill = gs->Skill;
 	CheckWarpTransMap (d_mapname, true);
-	gameaction = ga_newgame2;
+	G_TraceSetGameAction(ga_newgame2, "g_level");
 	finishstate = FINISH_NoHub;
 
 	if (AllEpisodes[gs->Episode].mIntro.isdefined())
@@ -281,14 +284,14 @@ void G_DeferedInitNew (FNewGameStartup *gs)
 			return;
 		}
 
-		cutscene.completion = [](bool) { gameaction = ga_newgame2; };
+		cutscene.completion = [](bool) { G_TraceSetGameAction(ga_newgame2, "cutscene-completion"); };
 		if (!ScreenJobValidate())
 		{
 			DeleteScreenJob();
 			cutscene.completion = nullptr;
 			return;
 		}
-		gameaction = ga_intermission;
+		G_TraceSetGameAction(ga_intermission, "g_level-intermission");
 	}
 }
 
@@ -379,7 +382,7 @@ UNSAFE_CCMD(recordmap)
 					multiplayernext = true;
 				}
 				G_DeferedInitNew(mapname);
-				gameaction = ga_recordgame;
+				G_TraceSetGameAction(ga_recordgame, "g_level-record");
 				newdemoname = argv[1];
 				newdemomap = mapname;
 			}
@@ -428,7 +431,7 @@ UNSAFE_CCMD (open)
 				deathmatch = true;
 				multiplayernext = true;
 			}
-			gameaction = ga_newgame2;
+			G_TraceSetGameAction(ga_newgame2, "g_level");
 			d_skill = -1;
 		}
 	}
@@ -518,7 +521,7 @@ void G_DoNewGame (void)
 		gameskill = d_skill;
 	}
 	G_InitNew (d_mapname.GetChars(), false);
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_level");
 }
 
 //==========================================================================
@@ -672,11 +675,11 @@ void G_InitNew (const char *mapname, bool bTitleLevel)
 
 	if (bTitleLevel)
 	{
-		gamestate = GS_TITLELEVEL;
+		G_TraceSetGameState(GS_TITLELEVEL, "g_initnew-title");
 	}
 	else if (gamestate != GS_STARTUP)
 	{
-		gamestate = GS_LEVEL;
+		G_TraceSetGameState(GS_LEVEL, "g_initnew-level");
 	}
 
 	if (!savegamerestore)
@@ -872,7 +875,7 @@ void FLevelLocals::ChangeLevel(const char *levelname, int position, int inflags,
 		}
 	}
 	// Set global transition state.
-	gameaction = ga_completed;
+	G_TraceSetGameAction(ga_completed, "g_level-completed");
 	::nextlevel = nextlevel;
 }
 
@@ -1116,12 +1119,12 @@ void RunIntermission(level_info_t* fromMap, level_info_t* toMap, DIntermissionCo
 		cutscene.completion = nullptr;
 		return;
 	}
-	gameaction = ga_intermission;
+	G_TraceSetGameAction(ga_intermission, "g_level-exit-intermission");
 }
 
 void G_DoCompleted (void)
 {
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_level");
 
 	if (   gamestate == GS_DEMOSCREEN
 		|| gamestate == GS_FULLCONSOLE
@@ -1369,6 +1372,8 @@ extern gamestate_t 	wipegamestate;
 void G_DoLoadLevel(const FString &nextmapname, int position, bool autosave, bool newGame)
 {
 	gamestate_t oldgs = gamestate;
+	DebugTrace::Infof("level", "G_DoLoadLevel begin map=%s pos=%d autosave=%d newgame=%d oldstate=%d gametic=%d",
+		nextmapname.GetChars(), position, autosave ? 1 : 0, newGame ? 1 : 0, int(oldgs), gametic);
 
 	// Here the new level needs to be allocated.
 	primaryLevel->DoLoadLevel(nextmapname, position, autosave, newGame);
@@ -1379,10 +1384,12 @@ void G_DoLoadLevel(const FString &nextmapname, int position, bool autosave, bool
 
 	if (gamestate != GS_TITLELEVEL)
 	{
-		gamestate = GS_LEVEL;
+		G_TraceSetGameState(GS_LEVEL, "g_doloadlevel");
 	}
 
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_doloadlevel-complete");
+	DebugTrace::Infof("level", "G_DoLoadLevel end map=%s gametic=%d sv_gametype=%d",
+		nextmapname.GetChars(), gametic, int(sv_gametype));
 
 	// clear cmd building stuff
 	buttonMap.ResetButtonStates();
@@ -1582,7 +1589,7 @@ void FLevelLocals::DoLoadLevel(const FString &nextmapname, int position, bool au
 
 void FLevelLocals::WorldDone (void)
 {
-	gameaction = ga_worlddone;
+	G_TraceSetGameAction(ga_worlddone, "g_level-worlddone");
 
 	//Added by mc
 	if (deathmatch)
@@ -1607,7 +1614,7 @@ DEFINE_ACTION_FUNCTION(FLevelLocals, WorldDone)
 
 void G_DoMapWarp()
 {
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_level");
 	Net_ResetCommands(true);
 	Net_SetWaiting();
 }
@@ -1629,7 +1636,7 @@ void G_DoWorldDone (void)
 	}
 	primaryLevel->MoveTravellers();
 	G_DoLoadLevel (nextlevel, startpos, true, false);
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_level");
 	viewactive = true;
 	Net_SetWaiting();
 }

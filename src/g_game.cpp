@@ -46,6 +46,7 @@
 #include "events.h"
 #include "filesystem.h"
 #include "fs_findfile.h"
+#include "debugtrace.h"
 #include "g_game.h"
 #include "g_hub.h"
 #include "g_levellocals.h"
@@ -136,6 +137,86 @@ extern int     laststartpos;
 extern bool    playedtitlemusic;
 extern uint8_t globalfreeze;
 extern uint8_t *streamPos;
+extern int gametic;
+
+namespace
+{
+const char* GameActionName(gameaction_t action)
+{
+	switch (action)
+	{
+	case ga_nothing: return "nothing";
+	case ga_loadlevel: return "loadlevel";
+	case ga_newgame: return "newgame";
+	case ga_newgame2: return "newgame2";
+	case ga_recordgame: return "recordgame";
+	case ga_loadgame: return "loadgame";
+	case ga_loadgamehidecon: return "loadgamehidecon";
+	case ga_loadgameplaydemo: return "loadgameplaydemo";
+	case ga_autoloadgame: return "autoloadgame";
+	case ga_savegame: return "savegame";
+	case ga_autosave: return "autosave";
+	case ga_playdemo: return "playdemo";
+	case ga_completed: return "completed";
+	case ga_slideshow: return "slideshow";
+	case ga_worlddone: return "worlddone";
+	case ga_screenshot: return "screenshot";
+	case ga_togglemap: return "togglemap";
+	case ga_fullconsole: return "fullconsole";
+	case ga_resumeconversation: return "resumeconversation";
+	case ga_intro: return "intro";
+	case ga_intermission: return "intermission";
+	case ga_titleloop: return "titleloop";
+	case ga_mapwarp: return "mapwarp";
+	case ga_quicksave: return "quicksave";
+	default: return "unknown";
+	}
+}
+
+const char* GameStateName(gamestate_t state)
+{
+	switch (state)
+	{
+	case GS_LEVEL: return "level";
+	case GS_INTERMISSION: return "intermission";
+	case GS_FINALE: return "finale";
+	case GS_DEMOSCREEN: return "demoscreen";
+	case GS_FULLCONSOLE: return "fullconsole";
+	case GS_HIDECONSOLE: return "hideconsole";
+	case GS_STARTUP: return "startup";
+	case GS_TITLELEVEL: return "titlelevel";
+	case GS_INTRO: return "intro";
+	case GS_CUTSCENE: return "cutscene";
+	case GS_FORCEWIPE: return "forcewipe";
+	case GS_FORCEWIPEFADE: return "forcewipefade";
+	case GS_FORCEWIPEBURN: return "forcewipeburn";
+	case GS_FORCEWIPEMELT: return "forcewipemelt";
+	default: return "unknown";
+	}
+}
+}
+
+void G_TraceSetGameAction(gameaction_t action, const char* reason)
+{
+	if (gameaction == action)
+		return;
+
+	DebugTrace::Infof("game", "gameaction %s -> %s reason=%s gametic=%d",
+		GameActionName(gameaction), GameActionName(action),
+		reason != nullptr ? reason : "?", gametic);
+	gameaction = action;
+}
+
+void G_TraceSetGameState(gamestate_t state, const char* reason)
+{
+	if (gamestate == state)
+		return;
+
+	DebugTrace::Infof("game", "gamestate %s -> %s reason=%s gametic=%d",
+		GameStateName(gamestate), GameStateName(state),
+		reason != nullptr ? reason : "?", gametic);
+	gamestate = state;
+}
 
 EXTERN_CVAR (Float, con_midtime);
 EXTERN_CVAR (Int, net_disablepause);
@@ -474,6 +555,7 @@ CCMD (pause)
 	}
 
 	sendpause = true;
+	DebugTrace::Info("pause", "pause requested via CCMD");
 }
 
 CCMD (turn180)
@@ -949,6 +1031,17 @@ void G_BuildTiccmd (usercmd_t *cmd)
 	cmd->sidemove <<= 8;
 
 	buttons = cmd->buttons;
+
+	static int lastInputTraceTic = -1;
+	if (gametic - lastInputTraceTic >= TICRATE)
+	{
+		lastInputTraceTic = gametic;
+		if (cmd->forwardmove != 0 || cmd->sidemove != 0 || cmd->upmove != 0 || cmd->buttons != 0)
+		{
+			DebugTrace::Debugf("input", "tic=%d fwd=%d side=%d up=%d buttons=0x%08x",
+				gametic, cmd->forwardmove, cmd->sidemove, cmd->upmove, cmd->buttons);
+		}
+	}
 }
 
 static int LookAdjust(int look)
@@ -1302,7 +1395,7 @@ void G_Ticker ()
 	{
 		if (gameaction == ga_newgame2)
 		{
-			gameaction = ga_newgame;
+			G_TraceSetGameAction(ga_newgame, "g_game-ticker");
 			break;
 		}
 		switch (gameaction)
@@ -1323,19 +1416,19 @@ void G_Ticker ()
 			break;
 		case ga_savegame:
 			G_DoSaveGame (true, false, savegamefile, savedescription.GetChars());
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			savegamefile = "";
 			savedescription = "";
 			break;
 		case ga_quicksave:
 			G_DoSaveGame(true, true, savegamefile, savedescription.GetChars());
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			savegamefile = "";
 			savedescription = "";
 			break;
 		case ga_autosave:
 			G_DoAutoSave ();
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			break;
 		case ga_loadgameplaydemo:
 			G_DoLoadGame ();
@@ -1354,22 +1447,22 @@ void G_Ticker ()
 			break;
 		case ga_fullconsole:
 			G_FullConsole ();
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			break;
 		case ga_resumeconversation:
 			P_ResumeConversation ();
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			break;
 		case ga_intermission:
 			gamestate = GS_CUTSCENE;
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			break;
 		case ga_titleloop:
 			D_StartTitle();
 			break;
 		case ga_intro:
 			gamestate = GS_INTRO;
-			gameaction = ga_nothing;
+			G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 			C_HideConsole(); // On some systems, console is open during intro
 			break;
 
@@ -1435,7 +1528,7 @@ void G_Ticker ()
 		if (gameaction == ga_nothing)
 		{
 			gamestate = GS_FULLCONSOLE;
-			gameaction = ga_fullconsole;
+			G_TraceSetGameAction(ga_fullconsole, "g_game-ticker");
 		}
 		break;
 
@@ -1890,7 +1983,7 @@ void FLevelLocals::DoReborn (int playernum, bool force)
 		if (!(cl_restartondeath) && (BackupSaveName.Len() > 0 && FileExists (BackupSaveName)))
 		{ // Load game from the last point it was saved
 			savename = BackupSaveName;
-			gameaction = ga_autoloadgame;
+			G_TraceSetGameAction(ga_autoloadgame, "g_game-ticker");
 		}
 		else
 		{ // Reload the level from scratch
@@ -2143,7 +2236,7 @@ void G_DoLoadGame ()
 		demoplayback = false;
 	}
 	hidecon = gameaction == ga_loadgamehidecon;
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_game");
 
 	std::unique_ptr<FResourceFile> resfile(FResourceFile::OpenResourceFile(savename.GetChars(), true));
 	if (resfile == nullptr)
@@ -2357,13 +2450,13 @@ void G_SaveGame (const char *filename, const char *description, bool quick)
 		if (quick)
 		{
 			sendsave = false;
-			gameaction = ga_quicksave;
+			G_TraceSetGameAction(ga_quicksave, "g_game-save");
 		}
 		else
 		{
 			sendsave = true;
 			if (gameaction == ga_quicksave)
-				gameaction = ga_nothing;
+				G_TraceSetGameAction(ga_nothing, "g_game-ticker");
 		}
 	}
 }
@@ -2729,7 +2822,7 @@ void G_WriteDemoTiccmd (usercmd_t *cmd, int player, int buf)
 		G_CheckDemoStatus ();
 		if (!netgame)
 		{
-			gameaction = ga_fullconsole;
+			G_TraceSetGameAction(ga_fullconsole, "g_game-ticker");
 		}
 		return;
 	}
@@ -3045,7 +3138,7 @@ void G_DoPlayDemo (void)
 	FString mapname;
 	int demolump;
 
-	gameaction = ga_nothing;
+	G_TraceSetGameAction(ga_nothing, "g_game");
 
 	// [RH] Allow for demos not loaded as lumps
 	demolump = fileSystem.CheckNumForFullName (defdemoname.GetChars(), true);
@@ -3092,12 +3185,12 @@ void G_DoPlayDemo (void)
 		{
 			I_Error ("%s", eek);
 		}
-		gameaction = ga_nothing;
+		G_TraceSetGameAction(ga_nothing, "g_game");
 	}
 	else if (G_ProcessIFFDemo (mapname))
 	{
 		C_RestoreCVars();
-		gameaction = ga_nothing;
+		G_TraceSetGameAction(ga_nothing, "g_game");
 		demoplayback = false;
 	}
 	else
@@ -3192,7 +3285,7 @@ bool G_CheckDemoStatus (void)
 			{
 				Printf ("Demo ended.\n");
 			}
-			gameaction = ga_fullconsole;
+			G_TraceSetGameAction(ga_fullconsole, "g_game-ticker");
 			timingdemo = false;
 			return false;
 		}
@@ -3263,7 +3356,7 @@ void G_StartSlideshow(FLevelLocals *Level, FName whichone, int state)
 		primaryLevel->SetMusic();
 		gamestate = GS_LEVEL;
 		wipegamestate = GS_LEVEL;
-		gameaction = ga_resumeconversation;
+		G_TraceSetGameAction(ga_resumeconversation, "g_game-conversation");
 
 	});
 }
@@ -3289,7 +3382,7 @@ void G_MakeAutoSave()
 {
 	if (gameaction == ga_nothing)
 	{
-		gameaction = ga_autosave;
+		G_TraceSetGameAction(ga_autosave, "g_game-autosave");
 	}
 }
 

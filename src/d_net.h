@@ -212,6 +212,10 @@ double Net_ModifyParticleFrac(particle_t* part, double ticFrac);
 const char* Net_GetClientName(int client, unsigned int charLimit = 0u);
 void Net_GetKickableClientList(TArray<int>& clients, TArray<FString>& labels);
 
+void Net_TraceSetSvGametype(int value, const char* reason);
+void Net_TraceSetDeathmatch(int value, const char* reason);
+void Net_TraceSetTeamplay(int value, const char* reason);
+
 struct FHCDELagHUDMetrics
 {
 	int Gametic = 0;

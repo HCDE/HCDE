@@ -521,6 +521,10 @@ During dedicated join, HCDE negotiates and uses multiple lanes:
   - each stress report also writes a compact `DebugTrace` entry on the `net` channel for advanced-debugger and trace-file workflows
   - `tests/netcode_step12/netcode_step12_stress.py` runs repeatable invasion/coop/DM dedicated-server soak cases while launcher queries stay active
   - the Step 12 harness supports optional client join pressure, master-server advertising, mod-specific pressure commands, pressure presets, debug trace export via `--trace-save-dir`, JSON summaries via `--summary-dir`, and external high-ping/jitter/loss shaping metadata
+- runtime debug trace streams (enabled by default via `debugtrace_enable` and `debugtrace_stream`):
+  - `%LOCALAPPDATA%/hcde/hcde_trace.hcde.latest.log` for the client and `%LOCALAPPDATA%/hcde/hcde_trace.hcdeserv.latest.log` for the dedicated server
+  - session-scoped files also land as `hcde_trace.<process>.<session>.log`; match the `sess=` field across client and server logs when diagnosing net stalls
+  - in-game: `debugtraceopen` prints paths, `debugtrace [channel]` dumps the ring buffer, `debugtraceflush` / `debugtracesave` export on demand
 - live gameplay channel types:
   - control
   - client inputs

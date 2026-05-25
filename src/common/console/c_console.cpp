@@ -25,6 +25,7 @@
 #include "c_bind.h"
 #include "c_commandbuffer.h"
 #include "c_console.h"
+#include "debugtrace.h"
 #include "c_consolebuffer.h"
 #include "c_cvars.h"
 #include "c_dispatch.h"
@@ -719,6 +720,7 @@ void C_FullConsole ()
 	HistPos = NULL;
 	TabbedLast = false;
 	TabbedList = false;
+	DebugTrace::Info("console", "full console opened");
 	gamestate = GS_FULLCONSOLE;
 	C_AdjustBottom ();
 }
@@ -750,6 +752,7 @@ void C_ToggleConsole ()
 		togglestate = c_rising;
 	}
 	else return;
+	DebugTrace::Infof("console", "toggle state=%d gamestate=%d", togglestate, int(gamestate));
 	// This must be done as an event callback because the client code does not control the console toggling.
 	if (sysCallbacks.ConsoleToggled) sysCallbacks.ConsoleToggled(togglestate);
 }

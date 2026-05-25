@@ -2455,20 +2455,21 @@ static void CheckCmdLine()
 
 	if (Args->CheckParm (FArg_altdeath))
 	{
-		deathmatch = 1;
-		sv_gametype = 1;
+		Net_TraceSetDeathmatch(1, "cmdline-altdeath");
+		Net_TraceSetSvGametype(1, "cmdline-altdeath");
 		flags |= DF_ITEMS_RESPAWN;
 	}
 	else if (Args->CheckParm (FArg_deathmatch))
 	{
-		deathmatch = 1;
-		sv_gametype = 1;
+		Net_TraceSetDeathmatch(1, "cmdline-deathmatch");
+		Net_TraceSetSvGametype(1, "cmdline-deathmatch");
 		flags |= DF_WEAPONS_STAY | DF_ITEMS_RESPAWN;
 	}
 	else if (Args->CheckParm(FArg_coop))
 	{
-		deathmatch = teamplay = 0;
-		sv_gametype = 0;
+		Net_TraceSetDeathmatch(0, "cmdline-coop");
+		Net_TraceSetTeamplay(0, "cmdline-coop");
+		Net_TraceSetSvGametype(0, "cmdline-coop");
 		flags |= DF_NO_COOP_WEAPON_SPAWN;
 		flags3 |= DF3_NO_PLAYER_CLIP | DF3_COOP_SHARE_KEYS | DF3_REMEMBER_LAST_WEAP;
 		// Hexen already has a bunch of custom coop items so let it handle it.
@@ -2494,11 +2495,14 @@ static void CheckCmdLine()
 			}
 		}
 
-		if (!hasExplicitGametype)
+		// Only reset stale archived gametype for local solo launches. Dedicated
+		// servers, hosts, and joins inherit CVAR_ARCHIVE (or explicit +sv_gametype)
+		// and receive authoritative serverinfo during net setup.
+		if (!hasExplicitGametype && !launchingServer)
 		{
-			deathmatch = 0;
-			teamplay = 0;
-			sv_gametype = 0;
+			Net_TraceSetDeathmatch(0, "cmdline-solo-default");
+			Net_TraceSetTeamplay(0, "cmdline-solo-default");
+			Net_TraceSetSvGametype(0, "cmdline-solo-default");
 		}
 	}
 
@@ -4345,7 +4349,12 @@ static int D_DoomMain_Internal (void)
 
 	std::set_new_handler(NewFailure);
 	const char *batchout = Args->CheckValue(FArg_errorlog);
+	DebugTrace::InitSession();
+	if (HCDE_ServerMode_IsDedicatedExecutable())
+		DebugTrace::SetProcessTag("hcdeserv");
 	DebugTrace::Mark("startup", "D_DoomMain begin");
+	Printf(PRINT_HIGH, "Debug trace stream: %s (session=%08X, process=%s)\n",
+		DebugTrace::GetLatestStreamPath(), unsigned(DebugTrace::GetSessionId()), DebugTrace::GetProcessTag());
 
 	D_DoomInit();
 	DebugTrace::Mark("startup", "after D_DoomInit");
