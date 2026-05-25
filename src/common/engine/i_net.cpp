@@ -27,6 +27,7 @@
 #include <string.h>
 #include <array>
 #include <cerrno>
+#include <cstdio>
 #include <limits>
 #include <mutex>
 
@@ -3574,7 +3575,15 @@ static bool Guest_ContactHost(void* unused)
 				{
 					TicDup = clamp<int>(NetBuffer[HCDEServiceHeaderSize], 1, MAXTICDUP);
 					memcpy(GameID, &NetBuffer[HCDEServiceHeaderSize + 1u], 8);
-					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[HCDEServiceHeaderSize + 9u], MAX_MSGLEN - (HCDEServiceHeaderSize + 9u));
+					const size_t payloadOffset = HCDEServiceHeaderSize + 9u;
+					const size_t payloadSize = NetBufferLength > payloadOffset ? NetBufferLength - payloadOffset : 0u;
+					size_t streamSize = payloadSize;
+					if (payloadSize > 0u && payloadOffset + payloadSize < MAX_MSGLEN)
+					{
+						NetBuffer[payloadOffset + payloadSize] = 0u;
+						streamSize = payloadSize + 1u;
+					}
+					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[payloadOffset], streamSize);
 					Net_ReadServerInfo(stream);
 					Connected[consoleplayer].bHasGameInfo = true;
 					I_NetLog("Received HCDE server info");
@@ -3616,7 +3625,14 @@ static bool Guest_ContactHost(void* unused)
 					{
 						Connected[c].Status = CSTAT_READY;
 					}
-					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[byte], MAX_MSGLEN - byte);
+					const size_t infoSize = NetBufferLength > byte ? NetBufferLength - byte : 0u;
+					size_t streamSize = infoSize;
+					if (infoSize > 0u && byte + infoSize < MAX_MSGLEN)
+					{
+						NetBuffer[byte + infoSize] = 0u;
+						streamSize = infoSize + 1u;
+					}
+					TArrayView<uint8_t> stream = TArrayView(&NetBuffer[byte], streamSize);
 					Net_ReadUserInfo(c, stream);
 					SetClientAck(consoleplayer, c, true);
 
@@ -3846,9 +3862,20 @@ static bool JoinGame(int arg)
 
 	if (!I_NetLoop(Guest_ContactHost, nullptr))
 	{
+		fprintf(stderr, "[netdiag] Join setup aborted before start dedicatedjoin=%d silent=%d consoleplayer=%d flow=%s\n",
+			DedicatedJoinMode ? 1 : 0, SilentNetStartMode ? 1 : 0, consoleplayer, ConnectFlowName(NetConnectFlowState));
+		fflush(stderr);
+		Printf("NetSession:: Join setup aborted before start; sending exit packet (dedicatedjoin=%d silent=%d)\n",
+			DedicatedJoinMode ? 1 : 0, SilentNetStartMode ? 1 : 0);
+		DebugTrace::Warningf("net", "join setup aborted before start dedicatedjoin=%d silent=%d consoleplayer=%d flow=%s",
+			DedicatedJoinMode ? 1 : 0, SilentNetStartMode ? 1 : 0, consoleplayer, ConnectFlowName(NetConnectFlowState));
 		SendAbort();
 		throw CExitEvent(0);
 	}
+
+	fprintf(stderr, "[netdiag] Join setup completed - proceeding to syncing phase\n");
+	fflush(stderr);
+	Printf("NetSession:: Join setup completed - proceeding to syncing phase\n");
 
 	for (int i = 1u; i < MaxClients; ++i)
 	{

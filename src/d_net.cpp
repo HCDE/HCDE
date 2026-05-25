@@ -55,6 +55,7 @@
 #include "p_enemy.h"
 #include "p_lnspec.h"
 #include "p_local.h"
+#include "p_pspr.h"
 #include "p_spec.h"
 #include "p_trace.h"
 #include "r_utility.h"
@@ -175,6 +176,55 @@ static int Net_InvasionSecondsToTics(float seconds)
 CVAR(Bool, hcde_hud_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 // Persistent on-screen lag/invasion overlay (top-left). Also enable with `stat hcde_lag`.
 CVAR(Bool, hcde_lag_hud, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+// Prediction-loss debugger. The existing fault logger only fires when the tic
+// gate fully stalls (availableTics==0 with backlog + stale world). Most actual
+// drift sits below that bar - SequenceAck running 1-3 behind, mirrors off by
+// one, a passive resend every tic, occasional health/state repair. This cvar
+// turns on a continuous probe that samples gate + mirror + repair health each
+// frame and persists it. Levels:
+//   0 = off
+//   1 = CSV sample every `net_predict_debug_interval` tics to hcde_predict_metrics.csv
+//   2 = + soft-warning lines to hcde_prediction_softwarn.log when a threshold trips
+//   3 = + full DebugTrace snapshot dumped at most once per 5s when a warning trips
+CUSTOM_CVAR(Int, net_predict_debug, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 3)
+		self = 3;
+}
+// Sample period for the prediction debugger, in tics. Default = TICRATE (1s).
+CUSTOM_CVAR(Int, net_predict_debug_interval, 15, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 350)
+		self = 350;
+}
+// SequenceAck lag (newestTic - SequenceAck) at which the soft-warn fires.
+CUSTOM_CVAR(Int, net_predict_softwarn_ack_lag, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 60)
+		self = 60;
+}
+// |blocking-mirror-count - server-active-monster-count| at which the soft-warn fires.
+CUSTOM_CVAR(Int, net_predict_softwarn_mirror_delta, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 64)
+		self = 64;
+}
+// Number of passive-resend events within one window before the soft-warn fires.
+CUSTOM_CVAR(Int, net_predict_softwarn_passive_storm, 5, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 1)
+		self = 1;
+	else if (self > 1000)
+		self = 1000;
+}
 // Native-only gameplay policy. Pregame/setup/control traffic is still accepted,
 // but live gameplay must use HCDE `HCIN`/`HCSN` once the session is in netgame.
 CVAR(Bool, net_hcde_native_only, true, CVAR_SERVERINFO | CVAR_NOSAVE);
@@ -409,6 +459,7 @@ constexpr double HCDEInvasionMirrorVisualMaxStepPerTic = 12.0;
 constexpr double HCDEInvasionMirrorVisualSnapDistance = 384.0;
 constexpr int HCDEInvasionProjectileMirrorMaxAgeTics = TICRATE * 3;
 constexpr double HCDEServerBaselineRepairDistance = 128.0;
+constexpr int HCDEPassiveClientResendSequenceSlack = 4;
 constexpr double HCDEServerReconcileDistance = 20.0;
 constexpr double HCDEServerReconcileHardDistance = 384.0;
 // Pose repair on damage only kicks in once drift exceeds this squared distance.
@@ -595,6 +646,38 @@ static uint64_t LastHCDELiveSequenceRejectReportMS = 0u;
 static uint64_t LastHCDELiveSnapshotRejectReportMS = 0u;
 static uint64_t LastHCDELiveTicGateReportMS = 0u;
 static uint64_t LastHCDEPredictionFaultReportMS = 0u;
+static int HCDEPredictionPauseGraceUntil = 0;
+
+// =============================================================================
+// HCDE PREDICTION-LOSS DEBUGGER STATE
+// =============================================================================
+//
+// Lightweight per-frame probe that complements the (binary) prediction fault
+// logger. The fault logger only fires when the tic gate fully collapses; this
+// subsystem captures sub-threshold drift so we can see the warm-up to every
+// stall before it becomes one. See cvar `net_predict_debug` for level control.
+struct FHCDEPredictionDebugCounters
+{
+	uint64_t PassiveClientResends = 0u; // sends where we honored our own stale SequenceAck
+	uint64_t PassiveAuthorityResends = 0u; // server-side resends when client ack went stale
+};
+static FHCDEPredictionDebugCounters HCDEPredictionDebugLifetime = {};
+// Snapshot of profile + lifetime counters at the start of the current window.
+static uint64_t HCDEPredictionDebugWindowPassiveClient = 0u;
+static uint64_t HCDEPredictionDebugWindowPassiveAuth = 0u;
+static uint64_t HCDEPredictionDebugWindowLocalRepairs = 0u;
+static uint64_t HCDEPredictionDebugWindowHardRepairs = 0u;
+static uint64_t HCDEPredictionDebugWindowFaultReports = 0u;
+// Extrema observed during the current window (reset after every sample).
+static int HCDEPredictionDebugMinAvailable = INT_MAX;
+static int HCDEPredictionDebugMaxAckLag = 0;
+static int HCDEPredictionDebugMaxStaleVisual = 0;
+static int HCDEPredictionDebugMaxBacklog = 0;
+static int HCDEPredictionDebugLastSampleTic = 0;
+static uint64_t HCDEPredictionDebugLastSoftWarnMS = 0u;
+static uint64_t HCDEPredictionDebugLastTraceDumpMS = 0u;
+static bool HCDEPredictionDebugCsvHeaderProbed = false;
+
 static FHCDELivePeerState HCDELivePeers[MAXPLAYERS] = {};
 // NetUpdate() runs on the main thread, but its native send path needs sizeable
 // command/event capture arrays while translating the current packet window. Keep
@@ -2877,6 +2960,16 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				// accept a full server-authored pawn state. Otherwise the client
 				// can keep predicting from a stale corpse while the server has
 				// already put the player back in the live round.
+				//
+				// Capture death-state evidence BEFORE we clear MF_CORPSE so we
+				// can decide whether the weapon psprite needs to be rebuilt.
+				// If we're only repairing PST_ENTER/PST_REBORN -> PST_LIVE (no
+				// corpse flag, no zero-health) then the local pawn was simply
+				// finishing its initial spawn handoff: its PSprites are fresh
+				// from P_SpawnPlayer and we MUST NOT tear them down again.
+				const bool wasCorpse = (mo->flags & MF_CORPSE) != 0;
+				const bool wasDead = mo->health <= 0 || player.health <= 0;
+				const bool weaponWasLowered = wasCorpse || wasDead;
 				const DVector3 oldPos = mo->Pos();
 				const int oldPortalGroup = mo->Sector != nullptr ? mo->Sector->PortalGroup : mo->PrevPortalGroup;
 				const double defaultViewHeight = player.DefaultViewHeight();
@@ -2908,6 +3001,20 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				mo->PrevPortalGroup = oldPortalGroup;
 				mo->renderflags |= RF_NOINTERPOLATEVIEW;
 				mo->ClearInterpolation();
+				// Mirror the server's PlayerReborn() handoff: wipe stale PSprites
+				// (which may still be locked in the weapon's Lower/Death state
+				// from a prior hard-death repair or a death tic the client
+				// predicted locally) and bring the ReadyWeapon back up so the
+				// gun doesn't stay glued to the bottom of the screen after
+				// respawning. Only do this when there's actual evidence the
+				// weapon was lowered (corpse flag or zero-health); during a
+				// PST_ENTER/PST_REBORN -> PST_LIVE handoff the PSprites are
+				// already valid from P_SpawnPlayer and rebuilding them races
+				// the initial weapon-up animation.
+				if (weaponWasLowered)
+				{
+					P_SetupPsprites(&player, false);
+				}
 				P_ClearPredictionData();
 				PendingLocalHealthRepair.Valid = false;
 				++peer.HardReconciliations;
@@ -3430,23 +3537,17 @@ static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skip
 			}
 			else if (ref.IsProjectile)
 			{
-				// Authoritative pos deltas can coincide with extrapolated poses while replicated vel stays ~0,
-				// which previously skipped extrapolation entirely and glued fireballs at spawn.
-				DVector3 pv = ref.VisualTargetVel;
-				if (pv.LengthSquared() < 1e-4 && actor != nullptr && actor->Speed > 0.0)
-				{
-					pv.X = actor->Speed * ref.VisualTargetYaw.Cos();
-					pv.Y = actor->Speed * ref.VisualTargetYaw.Sin();
-					pv.Z = actor->Speed * ref.VisualTargetPitch.Sin();
-					ref.VisualTargetVel = pv;
-				}
-				const int mirrorSteps = clamp<int>(InvasionMirrorVisualWorldSteps, 1, 24);
 				const DVector3 oldRenderPos = actor->Pos();
 				const int oldPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
-				actor->SetOrigin(oldRenderPos + pv * double(mirrorSteps), false);
+				// Projectile mirrors are server-pose driven. Some mods use zero-tic
+				// seeker states (for example A_SeekerMissile(9999,9999)) that can turn
+				// a missile immediately after spawn. Extrapolating locally from Speed
+				// and the last yaw can make those projectiles visually miss walls or
+				// appear to move too fast. Trust the latest replicated pose instead.
+				actor->SetOrigin(ref.VisualTargetPos, false);
 				actor->Prev = oldRenderPos;
 				actor->PrevPortalGroup = oldPortalGroup;
-				actor->Vel = pv;
+				actor->Vel = ref.VisualTargetVel;
 			}
 			else if (distSq > 0.01)
 			{
@@ -11566,7 +11667,13 @@ static void Net_TickInvasionState()
 
 	case INVS_CLEANUP:
 		// Transition to next wave or victory once all monsters are cleared.
-		if (InvasionWaveDirector.WaveCleared >= InvasionWaveDirector.WaveBudget)
+		//
+		// Use WaveSpawned rather than WaveBudget here. Native invasion spots can
+		// intentionally miss or delay some budget entries before the spawn window
+		// ends; once cleanup has started, only monsters that actually spawned can
+		// still be killed. Waiting for the original budget makes the wave appear
+		// stuck after players clear every visible monster.
+		if (InvasionWaveDirector.WaveCleared >= InvasionWaveDirector.WaveSpawned)
 		{
 			Net_AdvanceInvasionAfterWaveClear("cleanup-complete");
 		}
@@ -13929,6 +14036,7 @@ void NetUpdate(int tics)
 				// that ack as a soft resend request so one lost authority tic cannot
 				// leave the client stuck at the tic gate forever.
 				passiveResendSequenceFrom = curState.SequenceAck + 1;
+				++HCDEPredictionDebugLifetime.PassiveAuthorityResends;
 				DebugTrace::Warningf("net", "passive authority resend client=%d from=%d start=%d end=%d seq=%d ack=%d room=%u",
 					client, passiveResendSequenceFrom, startSequence, endSequence,
 					curState.CurrentSequence, curState.SequenceAck, unsigned(CurrentRoomID));
@@ -13938,15 +14046,23 @@ void NetUpdate(int tics)
 		{
 			// Clients can occasionally stall at the tic gate because they missed the
 			// latest server snapshots or because the server duplicated their input, leaving
-			// their local SequenceAck behind. Honor that ack as a soft resend request for
-			// our own commands to ensure they stream back to the server.
+			// the authority's SequenceAck for our input stream behind. Honor that ack
+			// as a soft resend request for our own commands to ensure they stream back
+			// to the server.
 			const bool validLocalState = consoleplayer >= 0 && consoleplayer < MAXPLAYERS;
 			const auto& localState = ClientStates[validLocalState ? consoleplayer : 0];
-			if (validLocalState && localState.SequenceAck >= 0 && localState.SequenceAck + 1 < newestTic)
+			// The server's snapshot-confirmed local command stream normally trails
+			// the client generator by about 1-2 tics on localhost. Treat only a
+			// larger gap as a soft resend request; otherwise this path resends every
+			// tic and creates artificial latency pressure.
+			const int commandAck = validLocalState ? localState.SequenceAck : -1;
+			const int commandAckLag = commandAck >= 0 ? newestTic - commandAck : 0;
+			if (validLocalState && commandAck >= 0 && commandAckLag > HCDEPassiveClientResendSequenceSlack)
 			{
-				passiveResendSequenceFrom = localState.SequenceAck + 1;
-				DebugTrace::Warningf("net", "passive client resend to authority=%d from=%d newest=%d ack=%d room=%u",
-					client, passiveResendSequenceFrom, newestTic, localState.SequenceAck, unsigned(CurrentRoomID));
+				passiveResendSequenceFrom = commandAck + 1;
+				++HCDEPredictionDebugLifetime.PassiveClientResends;
+				DebugTrace::Warningf("net", "passive client resend to authority=%d from=%d newest=%d ack=%d lag=%d room=%u",
+					client, passiveResendSequenceFrom, newestTic, commandAck, commandAckLag, unsigned(CurrentRoomID));
 			}
 		}
 
@@ -15062,6 +15178,112 @@ CCMD(net_profile_reset)
 	Printf(PRINT_HIGH, "HCDE net profile counters reset.\n");
 }
 
+// On-demand snapshot for the prediction-loss debugger. Forces a full DebugTrace
+// dump plus a one-line marker into hcde_prediction_softwarn.log regardless of
+// the current `net_predict_debug` level. Use when the user observes a subtle
+// drift (gun floating, mirror twitching, monster shooting at nothing) but the
+// existing fault logger has not fired.
+CCMD(net_predict_dump)
+{
+	const uint64_t nowMS = I_msTime();
+	const player_t* localPlayer = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? &players[consoleplayer] : nullptr;
+	const AActor* localActor = localPlayer != nullptr ? localPlayer->mo : nullptr;
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	const FClientNetState* authorityState = (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+		? &ClientStates[authoritySlot] : nullptr;
+	const FHCDELivePeerState* authorityPeer = (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+		? &HCDELivePeers[authoritySlot] : nullptr;
+	const int commandBacklog = ClientTic - gametic;
+	const int newestTic = authorityState != nullptr ? authorityState->CurrentSequence : -1;
+	const int currentAck = authorityState != nullptr ? authorityState->SequenceAck : -1;
+	const int seqAckLag = (newestTic >= 0 && currentAck >= 0) ? max(newestTic - currentAck, 0) : 0;
+
+	unsigned blockingMirrors = 0u;
+	unsigned staleAttackingMirrors = 0u;
+	int maxStaleVisual = 0;
+	for (const auto& ref : InvasionReplicatedActors)
+	{
+		AActor* actor = ref.Actor.Get();
+		if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+			continue;
+		if (Net_IsInvasionActorCorpseLike(actor))
+			continue;
+		if (!ref.IsProjectile)
+			++blockingMirrors;
+		const bool attacking = ref.VisualActionState == HCDEInvasionActorActionMelee
+			|| ref.VisualActionState == HCDEInvasionActorActionMissile
+			|| ref.VisualActionState == HCDEInvasionActorActionPain;
+		if (attacking && ref.VisualTargetTic > 0)
+		{
+			const int age = gametic - ref.VisualTargetTic;
+			if (age > maxStaleVisual)
+				maxStaleVisual = age;
+			if (age > TICRATE / 2)
+				++staleAttackingMirrors;
+		}
+	}
+	const int serverActive = Net_GetInvasionActiveMonsterCount();
+	const int mirrorDelta = abs(int(blockingMirrors) - serverActive);
+
+	double pspriteY = 0.0;
+	if (localPlayer != nullptr)
+	{
+		player_t* readable = const_cast<player_t*>(localPlayer);
+		if (DPSprite* sp = readable->FindPSprite(PSP_WEAPON))
+			pspriteY = sp->y;
+	}
+
+	const FString warnPath = FStringf("%s/hcde_prediction_softwarn.log",
+		M_GetAppDataPath(true).GetChars());
+	if (FILE* warn = fopen(warnPath.GetChars(), "a"))
+	{
+		fprintf(warn,
+			"%llu HCDE predict softwarn triggers=[manual-dump] ack=%d/%d (lag=%d) "
+			"avail=- (lifetime) backlog=%d mirror=%d (blocking=%u server=%d) "
+			"stale-attack=%u max-stale=%d passive-client=%llu passive-auth=%llu "
+			"local-repairs=%llu hard-repairs=%llu fault-reports=%llu invasion=%s wave=%d "
+			"snap-count=%u input-sent=%u viewheight=%.2f view-z-off=%.2f psprite-y=%.2f "
+			"pos=(%.1f,%.1f,%.1f) vel=(%.2f,%.2f,%.2f) health=%d room=%u\n",
+			static_cast<unsigned long long>(nowMS),
+			currentAck, newestTic, seqAckLag, commandBacklog,
+			mirrorDelta, blockingMirrors, serverActive,
+			staleAttackingMirrors, maxStaleVisual,
+			static_cast<unsigned long long>(HCDEPredictionDebugLifetime.PassiveClientResends),
+			static_cast<unsigned long long>(HCDEPredictionDebugLifetime.PassiveAuthorityResends),
+			static_cast<unsigned long long>(HCDELiveProfile.PredictionLocalHealthRepairs + HCDELiveProfile.PredictionLocalStateRepairs),
+			static_cast<unsigned long long>(HCDELiveProfile.PredictionHardRespawnRepairs + HCDELiveProfile.PredictionHardDeathRepairs),
+			static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultReports),
+			Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave,
+			authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+			authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+			localPlayer != nullptr ? double(localPlayer->viewheight) : 0.0,
+			localPlayer != nullptr && localActor != nullptr ? double(localPlayer->viewz - localActor->Z()) : 0.0,
+			pspriteY,
+			localActor != nullptr ? localActor->X() : 0.0,
+			localActor != nullptr ? localActor->Y() : 0.0,
+			localActor != nullptr ? localActor->Z() : 0.0,
+			localActor != nullptr ? localActor->Vel.X : 0.0,
+			localActor != nullptr ? localActor->Vel.Y : 0.0,
+			localActor != nullptr ? localActor->Vel.Z : 0.0,
+			localActor != nullptr ? localActor->health : 0,
+			unsigned(CurrentRoomID));
+		fclose(warn);
+	}
+
+	const FString tracePath = FStringf("%s/hcde_prediction_dump_%llu.txt",
+		M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(nowMS));
+	DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+
+	Printf(PRINT_HIGH,
+		"HCDE prediction dump written: %s\n"
+		"  ack=%d/%d (lag=%d) backlog=%d mirror-delta=%d stale-attack=%u passive-client=%llu fault-reports=%llu\n",
+		tracePath.GetChars(),
+		currentAck, newestTic, seqAckLag, commandBacklog, mirrorDelta,
+		staleAttackingMirrors,
+		static_cast<unsigned long long>(HCDEPredictionDebugLifetime.PassiveClientResends),
+		static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultReports));
+}
+
 void Net_GetLagHUDMetrics(FHCDELagHUDMetrics& out)
 {
 	out = HCDELagHUDLast;
@@ -15654,6 +15876,332 @@ static void CalculateNetStabilityBuffer(int diff)
 	StabilityBuffer = unstableCount > 0 ? static_cast<int>(ceil(total / unstableCount)) : 0;
 }
 
+// =============================================================================
+// HCDE PREDICTION-LOSS DEBUGGER IMPLEMENTATION
+// =============================================================================
+//
+// Called once per `TryRunTics` invocation on the client side after the tic gate
+// metrics (`availableTics`, `lowestSequence`) have been computed. The function:
+//
+//   1) Updates per-window extrema (min available, max ack-lag, max stale-visual,
+//      max backlog) cheaply every frame.
+//   2) Once per `net_predict_debug_interval` tics it dumps a CSV row capturing
+//      gate health, peer counters, mirror divergence, repair deltas, local
+//      pose/velocity, viewheight and PSprite Y so we can correlate "gun looks
+//      wrong" / "monster shooting at nothing" with the actual netcode state
+//      (and reset the extrema for the next window).
+//   3) If level >= 2, it cross-checks the window against soft-warn thresholds
+//      and appends a tagged human-readable line to hcde_prediction_softwarn.log
+//      (rate-limited). These fire well below the existing fault threshold.
+//   4) If level >= 3, it also dumps the full DebugTrace ring to a unique trace
+//      file whenever a soft-warn fires (max once per 5s) so we can post-mortem
+//      sub-fault drift the same way we post-mortem real faults.
+//
+// Designed to be cheap when off (single int compare) and bounded when on (one
+// fopen/fprintf per sample interval, plus one fopen on soft-warn).
+static void Net_PredictionDebugTick(int totalTics, int availableTics, int lowestSequence)
+{
+	const int level = *net_predict_debug;
+	if (level <= 0)
+		return;
+	if (!netgame || gamestate != GS_LEVEL || demoplayback)
+		return;
+	// The authority does not predict against itself; nothing useful to log.
+	if (Net_IsLocalInvasionAuthority())
+		return;
+
+	const int authoritySlot = I_GetHCDEServiceAuthoritySlot();
+	const FClientNetState* authorityState = (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+		? &ClientStates[authoritySlot] : nullptr;
+	const FHCDELivePeerState* authorityPeer = (authoritySlot >= 0 && authoritySlot < MAXPLAYERS)
+		? &HCDELivePeers[authoritySlot] : nullptr;
+
+	const int commandBacklog = ClientTic - gametic;
+	const int newestTic = authorityState != nullptr ? authorityState->CurrentSequence : -1;
+	const int currentAck = authorityState != nullptr ? authorityState->SequenceAck : -1;
+	const int seqAckLag = (newestTic >= 0 && currentAck >= 0) ? max(newestTic - currentAck, 0) : 0;
+
+	// Update per-window extrema (cheap; do every frame).
+	if (availableTics < HCDEPredictionDebugMinAvailable)
+		HCDEPredictionDebugMinAvailable = availableTics;
+	if (seqAckLag > HCDEPredictionDebugMaxAckLag)
+		HCDEPredictionDebugMaxAckLag = seqAckLag;
+	if (commandBacklog > HCDEPredictionDebugMaxBacklog)
+		HCDEPredictionDebugMaxBacklog = commandBacklog;
+
+	// Walk replicated actors once to gather mirror-health metrics.
+	unsigned trackedMirrors = unsigned(InvasionReplicatedActors.Size());
+	unsigned blockingMirrors = 0u;
+	unsigned projectileMirrors = 0u;
+	unsigned staleAttackingMirrors = 0u;
+	int maxVisualStaleThisFrame = 0;
+	for (const auto& ref : InvasionReplicatedActors)
+	{
+		AActor* actor = ref.Actor.Get();
+		if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+			continue;
+		if (Net_IsInvasionActorCorpseLike(actor))
+			continue;
+		if (ref.IsProjectile)
+			++projectileMirrors;
+		else
+			++blockingMirrors;
+		const bool attacking = ref.VisualActionState == HCDEInvasionActorActionMelee
+			|| ref.VisualActionState == HCDEInvasionActorActionMissile
+			|| ref.VisualActionState == HCDEInvasionActorActionPain;
+		if (attacking && ref.VisualTargetTic > 0)
+		{
+			const int age = gametic - ref.VisualTargetTic;
+			if (age > maxVisualStaleThisFrame)
+				maxVisualStaleThisFrame = age;
+			if (age > TICRATE / 2) // 0.5s of no fresh target = noteworthy
+				++staleAttackingMirrors;
+		}
+	}
+	if (maxVisualStaleThisFrame > HCDEPredictionDebugMaxStaleVisual)
+		HCDEPredictionDebugMaxStaleVisual = maxVisualStaleThisFrame;
+
+	const int serverActive = Net_GetInvasionActiveMonsterCount();
+	const int mirrorDelta = abs(int(blockingMirrors) - serverActive);
+
+	// Only emit a sample row once per configured interval.
+	const int interval = max<int>(*net_predict_debug_interval, 1);
+	if (gametic - HCDEPredictionDebugLastSampleTic < interval)
+		return;
+
+	// Compute window deltas for the snapshot row.
+	const uint64_t lifetimeLocalRepairs = HCDELiveProfile.PredictionLocalHealthRepairs
+		+ HCDELiveProfile.PredictionLocalStateRepairs;
+	const uint64_t lifetimeHardRepairs = HCDELiveProfile.PredictionHardRespawnRepairs
+		+ HCDELiveProfile.PredictionHardDeathRepairs;
+	const uint64_t lifetimeFaultReports = HCDELiveProfile.PredictionFaultReports;
+	const uint64_t windowPassiveClient = HCDEPredictionDebugLifetime.PassiveClientResends
+		- HCDEPredictionDebugWindowPassiveClient;
+	const uint64_t windowPassiveAuth = HCDEPredictionDebugLifetime.PassiveAuthorityResends
+		- HCDEPredictionDebugWindowPassiveAuth;
+	const uint64_t windowLocalRepairs = lifetimeLocalRepairs - HCDEPredictionDebugWindowLocalRepairs;
+	const uint64_t windowHardRepairs = lifetimeHardRepairs - HCDEPredictionDebugWindowHardRepairs;
+	const uint64_t windowFaultReports = lifetimeFaultReports - HCDEPredictionDebugWindowFaultReports;
+
+	const player_t* localPlayer = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? &players[consoleplayer] : nullptr;
+	const AActor* localActor = localPlayer != nullptr ? localPlayer->mo : nullptr;
+	const int latestCommandTic = max<int>(ClientTic - 1, 0);
+	const usercmd_t& latestCmd = LocalCmds[latestCommandTic % LOCALCMDTICS];
+	const bool wantsAttack = (latestCmd.buttons & BT_ATTACK) != 0;
+	const bool wantsMove = latestCmd.forwardmove != 0 || latestCmd.sidemove != 0 || latestCmd.upmove != 0;
+	const bool compatPredicting = localPlayer != nullptr && (localPlayer->cheats & CF_PREDICTING) != 0;
+
+	// PSprite Y is the "gun floating" indicator the user joked about.
+	double pspriteX = 0.0;
+	double pspriteY = 0.0;
+	bool pspriteAlive = false;
+	if (localPlayer != nullptr)
+	{
+		// FindPSprite is non-const on player_t; cast away const purely for read.
+		player_t* readablePlayer = const_cast<player_t*>(localPlayer);
+		DPSprite* sp = readablePlayer->FindPSprite(PSP_WEAPON);
+		if (sp != nullptr)
+		{
+			pspriteX = sp->x;
+			pspriteY = sp->y;
+			pspriteAlive = (sp->GetState() != nullptr);
+		}
+	}
+
+	const uint64_t nowMS = I_msTime();
+	const FString csvPath = FStringf("%s/hcde_predict_metrics.csv", M_GetAppDataPath(true).GetChars());
+
+	// Write header once per process if file is empty/new.
+	if (!HCDEPredictionDebugCsvHeaderProbed)
+	{
+		HCDEPredictionDebugCsvHeaderProbed = true;
+		bool needsHeader = true;
+		if (FILE* probe = fopen(csvPath.GetChars(), "rb"))
+		{
+			fseek(probe, 0, SEEK_END);
+			needsHeader = ftell(probe) <= 0;
+			fclose(probe);
+		}
+		if (needsHeader)
+		{
+			if (FILE* hdr = fopen(csvPath.GetChars(), "w"))
+			{
+				fprintf(hdr,
+					"ms_time,gametic,clienttic,totaltics,availabletics,backlog,lowestseq,"
+					"authority,seq,ack,acklag,snap_rx,ctrl_rx,any_rx,snap_count,input_sent,"
+					"win_passive_client,win_passive_auth,win_local_repairs,win_hard_repairs,win_faults,"
+					"min_available_w,max_acklag_w,max_stale_visual_w,max_backlog_w,"
+					"invasion,wave,server_active,tracked_mirrors,blocking_mirrors,projectile_mirrors,"
+					"stale_attacking,mirror_delta,last_world_tics,lag_state,"
+					"predicting,compat_predicting,attack,move,fwd,side,up,buttons,"
+					"pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,bob,health,"
+					"viewheight,view_z_off,psprite_x,psprite_y,psprite_alive,room\n");
+				fclose(hdr);
+			}
+		}
+	}
+
+	if (FILE* csv = fopen(csvPath.GetChars(), "a"))
+	{
+		fprintf(csv,
+			"%llu,%d,%d,%d,%d,%d,%d,"
+			"%d,%d,%d,%d,%u,%u,%u,%u,%u,"
+			"%llu,%llu,%llu,%llu,%llu,"
+			"%d,%d,%d,%d,"
+			"%s,%d,%d,%u,%u,%u,"
+			"%u,%d,%d,%s,"
+			"%d,%d,%d,%d,%d,%d,%d,0x%08x,"
+			"%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.4f,%d,"
+			"%.2f,%.2f,%.2f,%.2f,%d,%u\n",
+			static_cast<unsigned long long>(nowMS),
+			gametic, ClientTic, totalTics, availableTics, commandBacklog, lowestSequence,
+			authoritySlot, newestTic, currentAck, seqAckLag,
+			authorityPeer != nullptr ? authorityPeer->RxServerSnapshotSequence : 0u,
+			authorityPeer != nullptr ? authorityPeer->RxControlSequence : 0u,
+			authorityPeer != nullptr ? authorityPeer->RxSequence : 0u,
+			authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+			authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+			static_cast<unsigned long long>(windowPassiveClient),
+			static_cast<unsigned long long>(windowPassiveAuth),
+			static_cast<unsigned long long>(windowLocalRepairs),
+			static_cast<unsigned long long>(windowHardRepairs),
+			static_cast<unsigned long long>(windowFaultReports),
+			HCDEPredictionDebugMinAvailable == INT_MAX ? availableTics : HCDEPredictionDebugMinAvailable,
+			HCDEPredictionDebugMaxAckLag,
+			HCDEPredictionDebugMaxStaleVisual,
+			HCDEPredictionDebugMaxBacklog,
+			Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave, serverActive,
+			trackedMirrors, blockingMirrors, projectileMirrors,
+			staleAttackingMirrors, mirrorDelta,
+			EnterTic - LastGameUpdate, Net_LagStateName(LagState),
+			NetworkEntityManager::IsPredicting() ? 1 : 0, compatPredicting ? 1 : 0,
+			wantsAttack ? 1 : 0, wantsMove ? 1 : 0,
+			latestCmd.forwardmove, latestCmd.sidemove, latestCmd.upmove, latestCmd.buttons,
+			localActor != nullptr ? localActor->X() : 0.0,
+			localActor != nullptr ? localActor->Y() : 0.0,
+			localActor != nullptr ? localActor->Z() : 0.0,
+			localActor != nullptr ? localActor->Vel.X : 0.0,
+			localActor != nullptr ? localActor->Vel.Y : 0.0,
+			localActor != nullptr ? localActor->Vel.Z : 0.0,
+			localPlayer != nullptr ? double(localPlayer->bob) : 0.0,
+			localActor != nullptr ? localActor->health : 0,
+			localPlayer != nullptr ? double(localPlayer->viewheight) : 0.0,
+			localPlayer != nullptr && localActor != nullptr ? double(localPlayer->viewz - localActor->Z()) : 0.0,
+			pspriteX, pspriteY, pspriteAlive ? 1 : 0,
+			unsigned(CurrentRoomID));
+		fclose(csv);
+	}
+
+	// Soft-warning + optional trace dump.
+	if (level >= 2 && EnterTic >= HCDEPredictionPauseGraceUntil)
+	{
+		const int ackThreshold = *net_predict_softwarn_ack_lag;
+		const int mirrorThreshold = *net_predict_softwarn_mirror_delta;
+		const int passiveThreshold = *net_predict_softwarn_passive_storm;
+		const bool warnAckLag = HCDEPredictionDebugMaxAckLag >= ackThreshold;
+		const bool warnMirror = mirrorDelta >= mirrorThreshold;
+		const bool warnAvailable = HCDEPredictionDebugMinAvailable != INT_MAX
+			&& HCDEPredictionDebugMinAvailable <= 1
+			&& HCDEPredictionDebugMaxBacklog > TicDup;
+		const bool warnStaleAttack = staleAttackingMirrors > 0;
+		const bool warnPassiveStorm = windowPassiveClient >= unsigned(passiveThreshold);
+		const bool warnHardChurn = windowHardRepairs >= 2u;
+		const bool warnAny = warnAckLag || warnMirror || warnAvailable
+			|| warnStaleAttack || warnPassiveStorm || warnHardChurn;
+
+		if (warnAny && HCDELiveReportIntervalElapsed(HCDEPredictionDebugLastSoftWarnMS, 250u))
+		{
+			const FString warnPath = FStringf("%s/hcde_prediction_softwarn.log",
+				M_GetAppDataPath(true).GetChars());
+			if (FILE* warn = fopen(warnPath.GetChars(), "a"))
+			{
+				fprintf(warn,
+					"%llu HCDE predict softwarn triggers=[%s%s%s%s%s%s] ack=%d/%d (lag=%d max=%d) "
+					"avail=%d (min=%d) backlog=%d (max=%d) mirror=%d (blocking=%u server=%d) "
+					"stale-attack=%u max-stale=%d passive-client=%llu passive-auth=%llu "
+					"local-repairs=%llu hard-repairs=%llu fault-reports=%llu invasion=%s wave=%d "
+					"snap-count=%u input-sent=%u viewheight=%.2f view-z-off=%.2f psprite-y=%.2f "
+					"pos=(%.1f,%.1f,%.1f) vel=(%.2f,%.2f,%.2f) health=%d room=%u\n",
+					static_cast<unsigned long long>(nowMS),
+					warnAckLag ? "ack-lag " : "",
+					warnAvailable ? "available-low " : "",
+					warnMirror ? "mirror-drift " : "",
+					warnStaleAttack ? "stale-attack " : "",
+					warnPassiveStorm ? "passive-storm " : "",
+					warnHardChurn ? "hard-churn " : "",
+					currentAck, newestTic, seqAckLag, HCDEPredictionDebugMaxAckLag,
+					availableTics,
+					HCDEPredictionDebugMinAvailable == INT_MAX ? availableTics : HCDEPredictionDebugMinAvailable,
+					commandBacklog, HCDEPredictionDebugMaxBacklog,
+					mirrorDelta, blockingMirrors, serverActive,
+					staleAttackingMirrors, HCDEPredictionDebugMaxStaleVisual,
+					static_cast<unsigned long long>(windowPassiveClient),
+					static_cast<unsigned long long>(windowPassiveAuth),
+					static_cast<unsigned long long>(windowLocalRepairs),
+					static_cast<unsigned long long>(windowHardRepairs),
+					static_cast<unsigned long long>(windowFaultReports),
+					Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave,
+					authorityPeer != nullptr ? authorityPeer->SnapshotReceived : 0u,
+					authorityPeer != nullptr ? authorityPeer->ClientCommandSent : 0u,
+					localPlayer != nullptr ? double(localPlayer->viewheight) : 0.0,
+					localPlayer != nullptr && localActor != nullptr ? double(localPlayer->viewz - localActor->Z()) : 0.0,
+					pspriteY,
+					localActor != nullptr ? localActor->X() : 0.0,
+					localActor != nullptr ? localActor->Y() : 0.0,
+					localActor != nullptr ? localActor->Z() : 0.0,
+					localActor != nullptr ? localActor->Vel.X : 0.0,
+					localActor != nullptr ? localActor->Vel.Y : 0.0,
+					localActor != nullptr ? localActor->Vel.Z : 0.0,
+					localActor != nullptr ? localActor->health : 0,
+					unsigned(CurrentRoomID));
+				fclose(warn);
+			}
+
+			DebugTrace::Warningf("net",
+				"HCDE predict softwarn ack=%d/%d (lag=%d) avail=%d backlog=%d mirror-delta=%d stale-attack=%u passive=%llu invasion=%s wave=%d triggers=%s%s%s%s%s%s",
+				currentAck, newestTic, seqAckLag, availableTics, commandBacklog, mirrorDelta,
+				staleAttackingMirrors,
+				static_cast<unsigned long long>(windowPassiveClient),
+				Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave,
+				warnAckLag ? "ack-lag " : "",
+				warnAvailable ? "available-low " : "",
+				warnMirror ? "mirror-drift " : "",
+				warnStaleAttack ? "stale-attack " : "",
+				warnPassiveStorm ? "passive-storm " : "",
+				warnHardChurn ? "hard-churn " : "");
+
+			if (*hcde_hud_debug)
+			{
+				Printf(PRINT_HIGH,
+					"HCDE predict softwarn ack=%d/%d (lag=%d) avail=%d backlog=%d mirror-delta=%d stale-attack=%u passive=%llu\n",
+					currentAck, newestTic, seqAckLag, availableTics, commandBacklog, mirrorDelta,
+					staleAttackingMirrors,
+					static_cast<unsigned long long>(windowPassiveClient));
+			}
+
+			if (level >= 3
+				&& HCDELiveReportIntervalElapsed(HCDEPredictionDebugLastTraceDumpMS, 5000u))
+			{
+				const FString tracePath = FStringf("%s/hcde_prediction_softwarn_trace_%llu.txt",
+					M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(nowMS));
+				DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+			}
+		}
+	}
+
+	// Roll the window forward.
+	HCDEPredictionDebugWindowPassiveClient = HCDEPredictionDebugLifetime.PassiveClientResends;
+	HCDEPredictionDebugWindowPassiveAuth = HCDEPredictionDebugLifetime.PassiveAuthorityResends;
+	HCDEPredictionDebugWindowLocalRepairs = lifetimeLocalRepairs;
+	HCDEPredictionDebugWindowHardRepairs = lifetimeHardRepairs;
+	HCDEPredictionDebugWindowFaultReports = lifetimeFaultReports;
+	HCDEPredictionDebugMinAvailable = availableTics;
+	HCDEPredictionDebugMaxAckLag = seqAckLag;
+	HCDEPredictionDebugMaxStaleVisual = maxVisualStaleThisFrame;
+	HCDEPredictionDebugMaxBacklog = commandBacklog;
+	HCDEPredictionDebugLastSampleTic = gametic;
+}
+
 //
 // TryRunTics
 //
@@ -15695,6 +16243,23 @@ void TryRunTics()
 	// Paused gameplay should not extrapolate visuals as multi-tic catch-up.
 	if (pauseext)
 	{
+		// Paused frames intentionally do not advance the world. Keep the net
+		// watchdog baseline current so pause/unpause does not look like a stale
+		// authority gate or a prediction fault.
+		LastGameUpdate = EnterTic;
+		AuthorityWaitGraceUntil = max<int>(AuthorityWaitGraceUntil, EnterTic + MAXSENDTICS * TicDup);
+		HCDEPredictionPauseGraceUntil = EnterTic + TICRATE / 2;
+		HCDEPredictionDebugWindowPassiveClient = HCDEPredictionDebugLifetime.PassiveClientResends;
+		HCDEPredictionDebugWindowPassiveAuth = HCDEPredictionDebugLifetime.PassiveAuthorityResends;
+		HCDEPredictionDebugWindowLocalRepairs = HCDELiveProfile.PredictionLocalHealthRepairs
+			+ HCDELiveProfile.PredictionLocalStateRepairs;
+		HCDEPredictionDebugWindowHardRepairs = HCDELiveProfile.PredictionHardRespawnRepairs
+			+ HCDELiveProfile.PredictionHardDeathRepairs;
+		HCDEPredictionDebugWindowFaultReports = HCDELiveProfile.PredictionFaultReports;
+		HCDEPredictionDebugMinAvailable = INT_MAX;
+		HCDEPredictionDebugMaxAckLag = 0;
+		HCDEPredictionDebugMaxStaleVisual = 0;
+		HCDEPredictionDebugMaxBacklog = 0;
 		Net_RefreshLagHUDMetrics(0, 0, totalTics, 0, false);
 		return;
 	}
@@ -15735,6 +16300,11 @@ void TryRunTics()
 	// If the lowest confirmed tic matches the server gametic or greater, allow the client
 	// to run some of them.
 	const int availableTics = (lowestSequence - gametic / TicDup) + 1;
+
+	// Sample sub-fault prediction health every frame. Cheap when off
+	// (single compare in Net_PredictionDebugTick); when on it captures the
+	// drift that does not cross the binary fault threshold.
+	Net_PredictionDebugTick(totalTics, availableTics, lowestSequence);
 
 	// If the amount of tics to run is falling behind the amount of available tics,
 	// speed the playsim up a bit to help catch up.
@@ -15884,10 +16454,11 @@ void TryRunTics()
 			const AActor* localActor = localPlayer != nullptr ? localPlayer->mo : nullptr;
 			const bool compatPredicting = localPlayer != nullptr && (localPlayer->cheats & CF_PREDICTING) != 0;
 			const bool staleAuthorityGate = availableTics <= 0
-				&& (commandBacklog > TicDup * 2 || EnterTic - LastGameUpdate > TICRATE / 4);
+				&& (commandBacklog > TicDup * 4 || EnterTic - LastGameUpdate > TICRATE / 2);
 			if (netgame
 				&& totalTics > 0
 				&& !Net_IsLocalInvasionAuthority()
+				&& EnterTic >= HCDEPredictionPauseGraceUntil
 				&& staleAuthorityGate
 				&& (wantsAttack || wantsMove || compatPredicting)
 				&& HCDELiveReportIntervalElapsed(LastHCDEPredictionFaultReportMS, 500u))

@@ -110,12 +110,10 @@ void InitDoomFonts()
 
 	if (fileSystem.CheckNumForName("FONTB_S") >= 0)
 	{
-		printf("f 1\n");
 		OriginalBigFont = new FFont("OriginalBigFont", "FONTB%02u", "defbigfont", HU_FONTSTART, HU_FONTSIZE, 1, -1, -1, false, true);
 	}
 	else
 	{
-		printf("f 2\n");
 		OriginalBigFont = new FFont("OriginalBigFont", nullptr, "bigfont", HU_FONTSTART, HU_FONTSIZE, 1, -1, -1, false, true);
 	}
 

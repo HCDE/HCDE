@@ -172,6 +172,14 @@ static const ServerGuiChoiceDefinition ServerGuiTallyChoices[] =
 	{ L"2 Force tally", "2" },
 };
 
+static const ServerGuiChoiceDefinition ServerGuiCorpseFilterChoices[] =
+{
+	{ L"0 Off", "0" },
+	{ L"1 Monsters", "1" },
+	{ L"2 Players", "2" },
+	{ L"3 Both", "3" },
+};
+
 static const ServerGuiChoiceDefinition ServerGuiCompatModeChoices[] =
 {
 	{ L"0 Default", "0" },
@@ -217,6 +225,7 @@ static const ServerGuiSettingDefinition ServerGuiAdvancedSettings[] =
 	{ L"Fast Weapons", "sv_fastweapons", ServerGuiSettingKind::Choice, L"0", 0, 3, false, 1, ServerGuiFastWeaponChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiFastWeaponChoices) },
 	{ L"Smart Aim", "sv_smartaim", ServerGuiSettingKind::Integer, L"0", 0, 2, false, 1 },
 	{ L"Drop Style", "sv_dropstyle", ServerGuiSettingKind::Integer, L"0", 0, 4, false, 1 },
+	{ L"Corpse Filter", "sv_corpsefilter", ServerGuiSettingKind::Choice, L"1", 0, 3, false, 1, ServerGuiCorpseFilterChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiCorpseFilterChoices) },
 	{ L"Compat Mode", "compatmode", ServerGuiSettingKind::Choice, L"0", 0, 9, false, 1, ServerGuiCompatModeChoices, SERVER_GUI_ARRAY_COUNT(ServerGuiCompatModeChoices) },
 	{ L"Raw Compat Flags", "compatflags", ServerGuiSettingKind::Integer, L"0", 0, 2147483647, false, 10 },
 	{ L"Raw Compat Flags 2", "compatflags2", ServerGuiSettingKind::Integer, L"0", 0, 2147483647, false, 10 },

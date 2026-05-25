@@ -27,6 +27,8 @@
 
 #include "c_cvars.h"
 #include "c_dispatch.h"
+#include "doomstat.h"
+#include "i_net.h"
 #include "cmdlib.h"
 #include "configfile.h"
 #include "engineerrors.h"
@@ -1334,6 +1336,19 @@ void C_ReadCVars (TArrayView<uint8_t>& demo_p)
 	char *ptr = (char *)demo_p.Data();
 	char *breakpt;
 
+	if (netgame && gametic == 0 && FBaseCVar::m_UseCallback)
+	{
+		// Pregame HCDE setup replicates serverinfo before play state exists.
+		// Some CVAR callbacks touch uninitialised level state and crash, so we
+		// suppress callbacks. The values themselves ARE parsed and applied so that
+		// CVARs like sv_gametype are correct when the game loop begins.
+		const bool saved = FBaseCVar::m_UseCallback;
+		FBaseCVar::m_UseCallback = false;
+		C_ReadCVars(demo_p);
+		FBaseCVar::m_UseCallback = saved;
+		return;
+	}
+
 	if (*ptr++ != '\\')
 		return;
 
@@ -1345,17 +1360,29 @@ void C_ReadCVars (TArrayView<uint8_t>& demo_p)
 
 		ptr++;
 		breakpt = strchr (ptr, '\\');
+		if (breakpt == nullptr)
+			return;
 		*breakpt = 0;
 		filter = strtoul (ptr, NULL, 16);
 		*breakpt = '\\';
 		ptr = breakpt + 1;
 
 		FilterCompactCVars (cvars, filter);
+		char *const streamEnd = (char *)demo_p.Data() + demo_p.Size();
 
 		while (cvars.Pop (cvar))
 		{
+			if (ptr >= streamEnd || cvar == nullptr)
+				break;
+
 			UCVarValue val;
 			breakpt = strchr (ptr, '\\');
+			if (breakpt != nullptr && breakpt >= streamEnd)
+				breakpt = nullptr;
+
+			if (breakpt == nullptr && (ptr >= streamEnd || *ptr == '\0'))
+				break;
+
 			if (breakpt)
 				*breakpt = 0;
 			val.String = ptr;
@@ -1394,7 +1421,11 @@ void C_ReadCVars (TArrayView<uint8_t>& demo_p)
 			}
 		}
 	}
-	AdvanceStream(demo_p, strlen((char*)demo_p.Data()) + 1);
+	{
+		const size_t consumed = static_cast<size_t>(ptr - (char *)demo_p.Data());
+		const size_t advance = consumed < demo_p.Size() ? consumed + 1u : consumed;
+		AdvanceStream(demo_p, advance);
+	}
 }
 
 struct FCVarBackup

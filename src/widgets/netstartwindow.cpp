@@ -20,11 +20,25 @@
 #include <zwidget/widgets/pushbutton/pushbutton.h>
 #include <zwidget/widgets/textlabel/textlabel.h>
 
+#include <cstdio>
+
 #include "basics.h"
 #include "debugtrace.h"
 #include "hcde_servermode.h"
 #include "i_net.h"
 #include "netstartwindow.h"
+#include "printf.h"
+
+// Writes a diagnostic line straight to stderr so it survives gameisdead/PrintString gating.
+static void NetStart_RawDiag(const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	std::vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	std::fputc('\n', stderr);
+	std::fflush(stderr);
+}
 
 NetStartWindow* NetStartWindow::Instance = nullptr;
 
@@ -265,13 +279,41 @@ int NetStartWindow::GetNetBanClient()
 bool NetStartWindow::NetLoop(bool (*loopCallback)(void*), void* data)
 {
 	if (!Instance)
+	{
+		DebugTrace::Warningf("netui", "NetLoop called but Instance==nullptr");
+		NetStart_RawDiag("[netdiag] NetLoop called without window instance");
 		return false;
+	}
 
 	Instance->timer_callback = loopCallback;
 	Instance->userdata = data;
 	Instance->CallbackException = {};
 
-	DisplayWindow::RunLoop();
+	DebugTrace::Markf("netui", "NetLoop start exitreason=%d shouldstart=%d hosting=%d",
+		Instance->exitreason ? 1 : 0, Instance->shouldstart ? 1 : 0, Instance->hosting ? 1 : 0);
+	try
+	{
+		DisplayWindow::RunLoop();
+	}
+	catch (const std::exception& ex)
+	{
+		DebugTrace::Warningf("netui", "RunLoop std::exception: %s", ex.what());
+		NetStart_RawDiag("[netdiag] NetLoop caught std::exception: %s", ex.what());
+		throw;
+	}
+	catch (...)
+	{
+		DebugTrace::Warning("netui", "RunLoop unknown exception");
+		NetStart_RawDiag("[netdiag] NetLoop caught unknown exception");
+		throw;
+	}
+
+	const bool exitReason = Instance->exitreason;
+	const bool hadException = static_cast<bool>(Instance->CallbackException);
+	DebugTrace::Markf("netui", "NetLoop end exitreason=%d exception=%d shouldstart=%d",
+		exitReason ? 1 : 0, hadException ? 1 : 0, Instance->shouldstart ? 1 : 0);
+	NetStart_RawDiag("[netdiag] NetLoop exited exitreason=%d exception=%d shouldstart=%d",
+		exitReason ? 1 : 0, hadException ? 1 : 0, Instance->shouldstart ? 1 : 0);
 
 	Instance->timer_callback = nullptr;
 	Instance->userdata = nullptr;
@@ -355,7 +397,9 @@ void NetStartWindow::RefreshSessionSummary()
 
 void NetStartWindow::OnClose()
 {
-	DebugTrace::Mark("netui", "close requested");
+	DebugTrace::Warningf("netui", "close requested hosting=%d shouldstart=%d", hosting ? 1 : 0, shouldstart ? 1 : 0);
+	NetStart_RawDiag("[netdiag] NetStartWindow OnClose triggered hosting=%d shouldstart=%d",
+		hosting ? 1 : 0, shouldstart ? 1 : 0);
 	exitreason = false;
 	DisplayWindow::ExitLoop();
 }
@@ -461,13 +505,28 @@ void NetStartWindow::OnCallbackTimerExpired()
 		{
 			result = timer_callback(userdata);
 		}
+		catch (const std::exception& ex)
+		{
+			CallbackException = std::current_exception();
+			DebugTrace::Warningf("netui", "callback threw std::exception - %s", ex.what());
+			NetStart_RawDiag("[netdiag] Net pregame callback std::exception: %s", ex.what());
+			exitreason = false;
+			DisplayWindow::ExitLoop();
+			return;
+		}
 		catch (...)
 		{
 			CallbackException = std::current_exception();
+			DebugTrace::Warning("netui", "callback threw - exiting net loop");
+			NetStart_RawDiag("[netdiag] Net pregame callback threw unknown exception; closing loop");
+			exitreason = false;
+			DisplayWindow::ExitLoop();
+			return;
 		}
 
 		if (result)
 		{
+			DebugTrace::Mark("netui", "callback returned ready - exiting net loop");
 			exitreason = true;
 			DisplayWindow::ExitLoop();
 		}

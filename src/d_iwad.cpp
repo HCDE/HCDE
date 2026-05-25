@@ -33,6 +33,7 @@
 #include "gameconfigfile.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_servermode.h"
 #include "i_interface.h"
 #include "i_system.h"
 #include "m_argv.h"
@@ -823,11 +824,14 @@ int FIWadManager::IdentifyVersion (std::vector<FileSys::ResourceName>&wadfiles, 
 	}
 	int pick = 0;
 
-	// Present the IWAD selection box.
-	bool showlauncher = Args->CheckParm(FArg_showlauncher);
+	// Present the IWAD selection box. Server/network launches cannot safely enter
+	// the interactive picker path here; choose the highest-priority IWAD instead.
+	const bool networkLaunch = HCDE_ServerMode_IsDedicatedServer() || Args->CheckParm(FArg_host) ||
+		Args->CheckParm(FArg_join) || Args->CheckParm(FArg_dedicatedjoin) || Args->CheckParm(FArg_joindedicated);
+	bool showlauncher = !networkLaunch && Args->CheckParm(FArg_showlauncher);
 	bool alwaysshow = (queryiwad && !Args->CheckParm(FArg_iwad) && !foundprio) || showlauncher;
 
-	if (!havepicked && (alwaysshow || picks.Size() > 1))
+	if (!networkLaunch && !havepicked && (alwaysshow || picks.Size() > 1))
 	{
 		TArray<WadStuff> wads;
 		for (auto & found : picks)

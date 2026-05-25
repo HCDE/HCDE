@@ -133,6 +133,7 @@
 using namespace FileSys;
 
 EXTERN_CVAR(Bool, hud_althud)
+EXTERN_CVAR(Int, sv_gametype)
 EXTERN_CVAR(Int, vr_mode)
 EXTERN_CVAR(Bool, cl_customizeinvulmap)
 EXTERN_CVAR(Bool, log_vgafont)
@@ -2455,16 +2456,19 @@ static void CheckCmdLine()
 	if (Args->CheckParm (FArg_altdeath))
 	{
 		deathmatch = 1;
+		sv_gametype = 1;
 		flags |= DF_ITEMS_RESPAWN;
 	}
 	else if (Args->CheckParm (FArg_deathmatch))
 	{
 		deathmatch = 1;
+		sv_gametype = 1;
 		flags |= DF_WEAPONS_STAY | DF_ITEMS_RESPAWN;
 	}
 	else if (Args->CheckParm(FArg_coop))
 	{
 		deathmatch = teamplay = 0;
+		sv_gametype = 0;
 		flags |= DF_NO_COOP_WEAPON_SPAWN;
 		flags3 |= DF3_NO_PLAYER_CLIP | DF3_COOP_SHARE_KEYS | DF3_REMEMBER_LAST_WEAP;
 		// Hexen already has a bunch of custom coop items so let it handle it.
@@ -4397,6 +4401,7 @@ static int D_DoomMain_Internal (void)
 
 	// Now that we have the IWADINFO, initialize the autoload ini sections.
 	GameConfig->DoAutoloadSetup(iwad_man);
+	DebugTrace::Mark("startup", "autoload setup done");
 
 	bool should_debug = vm_debug;
 	const char * debug_port_arg = Args->CheckValue(FArg_debug);
@@ -4408,8 +4413,11 @@ static int D_DoomMain_Internal (void)
 
 	do
 	{
+		DebugTrace::Mark("startup", "main loop iter begin");
 		PClass::StaticInit();
+		DebugTrace::Mark("startup", "PClass::StaticInit done");
 		PType::StaticInit();
+		DebugTrace::Mark("startup", "PType::StaticInit done");
 
 		if (restart)
 		{
@@ -4427,7 +4435,9 @@ static int D_DoomMain_Internal (void)
 
 		std::vector<FileSys::ResourceName> pwads;
 		GetCmdLineFiles(pwads, false);
+		DebugTrace::Markf("startup", "first GetCmdLineFiles: %zu files", pwads.size());
 		FString iwad = CheckGameInfo(pwads);
+		DebugTrace::Markf("startup", "CheckGameInfo -> '%s'", iwad.GetChars() ? iwad.GetChars() : "(null)");
 
 		// The IWAD selection dialogue does not show in fullscreen so if the
 		// restart is initiated without a defined IWAD assume for now that it's not going to change.
@@ -4436,11 +4446,15 @@ static int D_DoomMain_Internal (void)
 		std::vector<FileSys::ResourceName> allwads;
 
 		const FIWADInfo *iwad_info = iwad_man->FindIWAD(allwads, iwad.GetChars(), basewad.GetChars(), optionalwad.GetChars());
+		DebugTrace::Markf("startup", "FindIWAD returned %s", iwad_info ? "iwad-info" : "null");
 
 		GetCmdLineFiles(pwads, false); // [RL0] Update with files passed on the launcher extra args
+		DebugTrace::Mark("startup", "second GetCmdLineFiles done");
 		// For now these need to remain verifiable over the network.
 		GetCmdLineFiles(pwads, true);
+		DebugTrace::Mark("startup", "third GetCmdLineFiles done");
 		HCDE_ModCompat_AppendFiles(pwads, GameConfig);
+		DebugTrace::Mark("startup", "HCDE_ModCompat_AppendFiles done");
 
 		if (!iwad_info) return 0;	// user exited the selection popup via cancel button.
 		if ((iwad_info->flags & GI_SHAREWARE) && pwads.size() > 0)
@@ -4487,6 +4501,7 @@ static int D_DoomMain_Internal (void)
 				GameStartupInfo.SteamAppId = "";
 		}
 
+		DebugTrace::Markf("startup", "calling D_InitGame: %zu wads, %zu pwads", allwads.size(), pwads.size());
 		int ret = D_InitGame(iwad_info, allwads, pwads);
 		DebugTrace::Markf("startup", "D_InitGame returned %d", ret);
 		pwads.clear();

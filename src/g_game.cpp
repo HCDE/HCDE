@@ -82,6 +82,9 @@
 #include "vm.h"
 #include "wi_stuff.h"
 
+EXTERN_CVAR(Int, sv_corpsequeuesize)
+EXTERN_CVAR(Int, sv_corpsefilter)
+
 // MACROS ------------------------------------------------------------------
 
 #define MAXPLMOVE        (forwardmove[1])
@@ -1826,11 +1829,25 @@ DEFINE_ACTION_FUNCTION(FLevelLocals, PickPlayerStart)
 //
 void FLevelLocals::QueueBody (AActor *body)
 {
+	// Bit 1 routes player corpses through the same queue-size policy as monster
+	// corpses. The queue still uses the fixed player-corpse translation table
+	// ceiling, so we clamp to the existing body queue capacity here.
+	const int bodyLimit = (sv_corpsefilter & 2) != 0
+		? clamp<int>(sv_corpsequeuesize, 0, BODYQUESIZE)
+		: BODYQUESIZE;
+
+	if (bodyLimit <= 0)
+	{
+		body->player = nullptr;
+		body->Destroy();
+		return;
+	}
+
 	// flush an old corpse if needed
-	int modslot = bodyqueslot % BODYQUESIZE;
+	int modslot = bodyqueslot % bodyLimit;
 	bodyqueslot = modslot + 1;
 
-	if (bodyqueslot >= BODYQUESIZE && bodyque[modslot] != NULL)
+	if (bodyqueslot >= bodyLimit && bodyque[modslot] != NULL)
 	{
 		bodyque[modslot]->Destroy ();
 	}
@@ -1859,6 +1876,7 @@ void FLevelLocals::QueueBody (AActor *body)
 		body->Scale.Y *= skin.Scale.Y / defaultActor->Scale.Y;
 	}
 
+	body->player = nullptr;
 }
 
 //
@@ -1915,7 +1933,6 @@ void FLevelLocals::DoReborn (int playernum, bool force)
 		if (players[playernum].mo)
 		{
 			QueueBody (players[playernum].mo);
-			players[playernum].mo->player = NULL;
 		}
 
 		// spawn at random spot if in deathmatch

@@ -375,11 +375,11 @@ void HostSubPage::SetValues(FStartupSelectionInfo& info) const
 	switch (info.DefaultNetGameMode)
 	{
 	case 1:
-		info.AdditionalNetArgs.AppendFormat(" -coop");
+		info.AdditionalNetArgs.AppendFormat(" -coop +sv_gametype 0");
 		break;
 	case 3:
 		{
-			info.AdditionalNetArgs.AppendFormat(" +teamplay 1");
+			info.AdditionalNetArgs.AppendFormat(" +teamplay 1 +sv_gametype 2");
 			int team = 255;
 			if (!TeamEdit->GetText().empty())
 			{
@@ -392,9 +392,9 @@ void HostSubPage::SetValues(FStartupSelectionInfo& info) const
 		}
 	case 2:
 		if (AltDeathmatchCheckbox->GetChecked())
-			info.AdditionalNetArgs.AppendFormat(" -altdeath");
+			info.AdditionalNetArgs.AppendFormat(" -altdeath +sv_gametype 1");
 		else
-			info.AdditionalNetArgs.AppendFormat(" -deathmatch");
+			info.AdditionalNetArgs.AppendFormat(" -deathmatch +sv_gametype 1");
 		break;
 	case 4:
 		info.AdditionalNetArgs.AppendFormat(" +sv_gametype 4");

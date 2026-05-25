@@ -30,12 +30,20 @@
 #include "actorinlines.h"
 
 EXTERN_CVAR(Int, sv_corpsequeuesize)
+EXTERN_CVAR(Int, sv_corpsefilter)
 
 // Centralized corpse-queue enforcement used by both explicit A_QueueCorpse
 // states and generic A_NoBlocking deaths.
 static void HCDE_QueueCorpse(AActor* corpse)
 {
 	if (corpse == nullptr || corpse->Level == nullptr)
+	{
+		return;
+	}
+
+	// Bit 0 controls monster corpse filtering. If it is disabled, leave the
+	// body alone and let the map/mod decide its own lifetime.
+	if ((sv_corpsefilter & 1) == 0)
 	{
 		return;
 	}

@@ -30,14 +30,86 @@
 #include "i_system.h"
 #include "v_font.h"
 #include "utf8.h"
+#include "doomstat.h"
+#include "gamestate.h"
 #include "gi.h"
 #include "i_interface.h"
+#include "i_net.h"
 
 void I_UpdateWindowTitle();
+
+EXTERN_CVAR(Int, sv_corpsequeuesize)
+EXTERN_CVAR(Int, sv_corpsefilter)
 
 // Guard against the software and hardware dynamic-light toggles bouncing
 // each other through the shared sync helper.
 static bool syncingDynamicLights = false;
+
+static void HCDETrimMonsterCorpseQueue(FLevelLocals* Level, int limit)
+{
+	auto& corpsequeue = Level->CorpseQueue;
+	while (corpsequeue.Size() > (unsigned)limit)
+	{
+		AActor* corpse = corpsequeue[0];
+		if (corpse) corpse->Destroy();
+		corpsequeue.Delete(0);
+	}
+}
+
+static void HCDETrimPlayerBodyQueue(FLevelLocals* Level, int limit)
+{
+	limit = clamp<int>(limit, 0, FLevelLocals::BODYQUESIZE);
+
+	for (int i = limit; i < FLevelLocals::BODYQUESIZE; ++i)
+	{
+		if (Level->bodyque[i] != nullptr)
+		{
+			Level->bodyque[i]->Destroy();
+			Level->bodyque[i] = nullptr;
+		}
+	}
+
+	if (limit <= 0)
+	{
+		Level->bodyqueslot = 0;
+	}
+	else if (Level->bodyqueslot >= limit)
+	{
+		Level->bodyqueslot %= limit;
+	}
+}
+
+static void HCDEApplyCorpseFilter()
+{
+	// Serverinfo replication can arrive before a level is running. Trimming corpse
+	// queues during pregame setup walks level state that is not initialized yet.
+	if (netgame && gametic == 0)
+		return;
+
+	if (gamestate != GS_LEVEL && gamestate != GS_TITLELEVEL)
+		return;
+
+	if (primaryLevel == nullptr)
+		return;
+
+	const int limit = max<int>(sv_corpsequeuesize, 0);
+	const int filter = clamp<int>(sv_corpsefilter, 0, 3);
+
+	for (auto Level : AllLevels())
+	{
+		if (Level == nullptr)
+			continue;
+
+		if ((filter & 1) != 0)
+		{
+			HCDETrimMonsterCorpseQueue(Level, limit);
+		}
+		if ((filter & 2) != 0)
+		{
+			HCDETrimPlayerBodyQueue(Level, limit);
+		}
+	}
+}
 
 void SyncDynamicLightsState(bool enabled)
 {
@@ -100,6 +172,15 @@ CUSTOM_CVAR (Bool, gl_lights, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOIN
 	}
 }
 
+// 0 = no corpse filtering, 1 = monsters, 2 = players, 3 = both.
+CUSTOM_CVAR(Int, sv_corpsefilter, 1, CVAR_ARCHIVE|CVAR_SERVERINFO|CVAR_NOINITCALL)
+{
+	self = clamp<int>(self, 0, 3);
+	// Values are replicated during pregame setup; defer live queue trimming.
+	if (!(netgame && gametic == 0))
+		HCDEApplyCorpseFilter();
+}
+
 CUSTOM_CVAR(Int, sv_corpsequeuesize, 64, CVAR_ARCHIVE|CVAR_SERVERINFO|CVAR_NOINITCALL)
 {
 	if (self < 0)
@@ -107,16 +188,8 @@ CUSTOM_CVAR(Int, sv_corpsequeuesize, 64, CVAR_ARCHIVE|CVAR_SERVERINFO|CVAR_NOINI
 		self = 0;
 	}
 
-	for (auto Level : AllLevels())
-	{
-		auto &corpsequeue = Level->CorpseQueue;
-		while (corpsequeue.Size() > (unsigned)self)
-		{
-			AActor *corpse = corpsequeue[0];
-			if (corpse) corpse->Destroy();
-			corpsequeue.Delete(0);
-		}
-	}
+	if (!(netgame && gametic == 0))
+		HCDEApplyCorpseFilter();
 }
 
 CUSTOM_CVAR (Int, cl_maxdecals, 1024, CVAR_ARCHIVE|CVAR_NOINITCALL)

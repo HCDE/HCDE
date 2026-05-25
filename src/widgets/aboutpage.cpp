@@ -521,7 +521,7 @@ static bool ValidateUpdateUrl(const FString& sourceUrl, FString& normalizedUrl, 
 
 // Robust version number parser. Extracts all numeric components from a string,
 // ignoring leading 'v' or other non-digit separators.
-// Example: "v0.4.4" -> {0, 4, 4, 0}
+// Example: "v0.4.5" -> {0, 4, 5, 0}
 static bool ParseVersionNumbers(const FString& version, std::vector<int>& outParts)
 {
 	const std::string input = version.GetChars();

@@ -804,7 +804,7 @@ class PlayerPawn : Actor
 		if (((player.cmd.buttons & wantRespawnButtons) != 0 ||
 			((deathmatch || alwaysapplydmflags) && sv_forcerespawn)) && !sv_norespawn)
 		{
-			if (Level.maptime >= player.respawn_time || (((player.cmd.buttons & wantRespawnButtons) != 0) && player.Bot == NULL))
+			if (Level.maptime >= player.respawn_time)
 			{
 				player.cls = NULL;		// Force a new class if the player is using a random class
 				player.playerstate = (multiplayer || level.AllowRespawn || sv_singleplayerrespawn || G_SkillPropertyInt(SKILLP_PlayerRespawn)) ? PST_REBORN : PST_ENTER;
