@@ -800,9 +800,22 @@ class PlayerPawn : Actor
 		}
 
 		// Accept use or fire (many players expect the attack key; classic Doom used use/space).
+		// HCDE: Require a *fresh* press of one of the respawn buttons rather
+		// than just "any of them held". Without this, holding fire when you
+		// die (which is extremely common with the chainsaw / fast weapons)
+		// makes the death wait timer fire and respawn the moment maptime
+		// catches up to respawn_time -- the user never gets to see their
+		// own death animation, and the view appears to jerk straight from
+		// the corpse to the spawn point. With the rising-edge check the
+		// player has to release and re-press a respawn button, which is
+		// the behavior most users actually expect from coop/MP. The
+		// deathmatch sv_forcerespawn path is preserved exactly as before
+		// because that intentionally auto-respawns after the wait.
 		uint wantRespawnButtons = BT_USE | BT_ATTACK | BT_ALTATTACK;
-		if (((player.cmd.buttons & wantRespawnButtons) != 0 ||
-			((deathmatch || alwaysapplydmflags) && sv_forcerespawn)) && !sv_norespawn)
+		uint freshRespawnPress = (player.cmd.buttons & wantRespawnButtons)
+			& ~(player.oldbuttons & wantRespawnButtons);
+		bool forcedRespawn = (deathmatch || alwaysapplydmflags) && sv_forcerespawn;
+		if ((freshRespawnPress != 0 || forcedRespawn) && !sv_norespawn)
 		{
 			if (Level.maptime >= player.respawn_time)
 			{

@@ -77,6 +77,7 @@ void G_TraceSetGameAction(gameaction_t action, const char* reason);
 void G_TraceSetGameState(gamestate_t state, const char* reason);
 
 void G_Ticker (void);
+void G_TickStalledCutscene(void);
 bool G_Responder (event_t*	ev);
 
 enum

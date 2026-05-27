@@ -803,6 +803,11 @@ set (PCH_SOURCES
 	d_anonstats.cpp
 	d_net.cpp
 	d_net_diag.cpp
+	d_net_diagnostics.cpp
+	d_net_blackbox.cpp
+	d_net_checksum.cpp
+	d_net_movement_diag.cpp
+	d_net_rewind.cpp
 	d_netinfo.cpp
 	d_protocol.cpp
 	d_steam.cpp

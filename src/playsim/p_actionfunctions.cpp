@@ -748,11 +748,29 @@ DEFINE_ACTION_FUNCTION(AActor, A_SeekerMissile)
 	PARAM_INT(chance);
 	PARAM_INT(distance);
 
+	// Compatibility behavior for common Zandronum mod patterns:
+	// when LOOK is not requested, keep existing player tracers sticky so
+	// seeker projectiles do not drift to non-player actors via incidental
+	// target/tracer churn during heavy combat.
+	if (!(flags & SMF_LOOK))
+	{
+		if (self->target != nullptr && self->target->player != nullptr
+			&& (self->tracer == nullptr || self->tracer->player == nullptr))
+		{
+			self->tracer = self->target;
+		}
+	}
+
 	if ((flags & SMF_LOOK) && (self->tracer == nullptr) && (pr_seekermissile()<chance))
 	{
 		self->tracer = P_RoughMonsterSearch (self, distance, true);
 	}
-	if (!P_SeekerMissile(self, DAngle::fromDeg(clamp<int>(ang1, 0, 90)), DAngle::fromDeg(clamp<int>(ang2, 0, 90)), !!(flags & SMF_PRECISE), !!(flags & SMF_CURSPEED)))
+	// Keep lower-bound validation but allow larger turn thresholds/rates for
+	// compatibility with mods that intentionally use large constants such as
+	// A_SeekerMissile(9999,9999) for aggressive tracking behavior.
+	const int thresholdDeg = max<int>(ang1, 0);
+	const int turnMaxDeg = max<int>(ang2, 0);
+	if (!P_SeekerMissile(self, DAngle::fromDeg(thresholdDeg), DAngle::fromDeg(turnMaxDeg), !!(flags & SMF_PRECISE), !!(flags & SMF_CURSPEED)))
 	{
 		if (flags & SMF_LOOK)
 		{ // This monster is no longer seekable, so let us look for another one next time.

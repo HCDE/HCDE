@@ -42,6 +42,7 @@
 #include "actorinlines.h"
 #include "d_event.h"
 #include "d_player.h"
+#include "d_net_diagnostics.h"
 #include "doomdata.h"
 #include "doomdef.h"
 #include "doomstat.h"
@@ -187,6 +188,9 @@ bool P_ActivateLine (line_t *line, AActor *mo, int side, int activationType, DVe
 	{
 		Printf ("Line special %d activated on line %i\n", special, line->Index());
 	}
+	const int playerNum = (mo != nullptr && mo->player != nullptr) ? int(mo->player - players) : -1;
+	Net_DiagTraceLineSpec(playerNum, line->Index(), int(special), line->args[0], buttonSuccess != 0, false);
+	Net_ChecksumNoteLineSpec(line->Index(), int(special), buttonSuccess != 0);
 	return true;
 }
 
@@ -389,6 +393,8 @@ bool P_PredictLine(line_t *line, AActor *mo, int side, int activationType)
 	{
 		Printf("Line special %d predicted on line %i\n", special, line->Index());
 	}
+	const int playerNum = (mo != nullptr && mo->player != nullptr) ? int(mo->player - players) : -1;
+	Net_DiagTraceLineSpec(playerNum, line->Index(), int(special), line->args[0], buttonSuccess != 0, true);
 	return true;
 }
 

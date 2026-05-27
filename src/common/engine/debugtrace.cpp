@@ -43,7 +43,7 @@
 CVAR(Bool, debugtrace_enable, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(String, debugtrace_filter, "", CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, debugtrace_minseverity, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
-CVAR(Bool, debugtrace_stats, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, debugtrace_stats, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, debugtrace_capacity, 16384, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, debugtrace_stream, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Int, debugtrace_stream_rotate_mb, 10, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -79,6 +79,16 @@ constexpr size_t ChannelSize = 32u;
 constexpr size_t MessageSize = 496u;
 constexpr size_t ProcessTagSize = 16u;
 constexpr size_t StreamFlushIntervalMS = 250u;
+// Throttle for the "latest.log" mirror copy. Copying the full stream file to
+// hcde_trace.<proc>.latest.log on every Warning entry was a primary contributor
+// to user-visible lag: with even one Warning every ~250ms the playsim thread
+// spent its time blocking on a 2-3MB file copy that the OS cache then had to
+// re-write. The mirror is meant to be a "convenient pointer to the most recent
+// session log" for shipping diagnostics, not a per-event tail. We keep a slow
+// timer-driven refresh (so the file isn't stale by more than a few seconds in
+// a long session) and still mirror unconditionally on Errors and on explicit
+// FlushStream/rotation/shutdown calls.
+constexpr uint64_t LatestStreamMirrorIntervalMS = 5000u;
 
 struct TraceEntry
 {
@@ -118,6 +128,11 @@ static FString StreamPath;
 static FString LatestStreamPath;
 static FILE* StreamFile = nullptr;
 static uint64_t LastStreamFlushMS = 0u;
+// Stamp of the last CopyFileToLatest() call; gated by LatestStreamMirrorIntervalMS
+// in the per-Warning severity-flush path so a steady stream of warnings cannot
+// turn the playsim thread into a synchronous file-copier. Errors and explicit
+// flushes still mirror immediately and overwrite this stamp.
+static uint64_t LastLatestCopyMS = 0u;
 static bool StreamHeaderWritten = false;
 
 static std::unordered_map<std::string, size_t> ChannelCounts;
@@ -312,6 +327,7 @@ static void RotateStreamFiles()
 
 	CloseStreamFile();
 	CopyFileToLatest();
+	LastLatestCopyMS = I_msTime();
 
 	const int rotateCount = clamp<int>(SafeInt(debugtrace_stream_rotate_count, 4), 1, 32);
 	const FString base = StreamPath;
@@ -419,14 +435,23 @@ static void WriteStreamLine(const TraceSnapshot& snapshot, bool forceFlush)
 		snapshot.Message);
 
 	const uint64_t nowMS = I_msTime();
-	const bool severityFlush = snapshot.SeverityLevel == DebugTrace::Severity::Warning
-		|| snapshot.SeverityLevel == DebugTrace::Severity::Error;
+	const bool isError = snapshot.SeverityLevel == DebugTrace::Severity::Error;
+	const bool isWarning = snapshot.SeverityLevel == DebugTrace::Severity::Warning;
+	const bool severityFlush = isError || isWarning;
 	if (forceFlush || severityFlush || nowMS - LastStreamFlushMS >= StreamFlushIntervalMS)
 	{
 		fflush(StreamFile);
 		LastStreamFlushMS = nowMS;
-		if (severityFlush)
+		// Mirror to "latest.log" only on Errors (always, since errors are rare and
+		// usually post-mortem signals) or on a periodic timer for Warnings (so a
+		// pathological mismatch loop cannot pin the playsim thread on file I/O).
+		// Info/Debug entries never trigger a mirror; the explicit FlushStream(),
+		// stream rotation, and shutdown paths take care of the final sync.
+		if (isError || (isWarning && (LastLatestCopyMS == 0u || nowMS - LastLatestCopyMS >= LatestStreamMirrorIntervalMS)))
+		{
 			CopyFileToLatest();
+			LastLatestCopyMS = nowMS;
+		}
 	}
 }
 
@@ -629,7 +654,9 @@ void FlushStream()
 	if (StreamFile != nullptr)
 	{
 		fflush(StreamFile);
-		LastStreamFlushMS = I_msTime();
+		const uint64_t nowMS = I_msTime();
+		LastStreamFlushMS = nowMS;
+		LastLatestCopyMS = nowMS;
 		CopyFileToLatest();
 	}
 }

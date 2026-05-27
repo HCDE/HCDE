@@ -63,6 +63,7 @@
 #include "cmdlib.h"
 #include "c_cvars.h"
 #include "d_net.h"
+#include "d_net_diagnostics.h"
 #include "d_netinf.h"
 
 EXTERN_CVAR(Int, sv_gametype)
@@ -516,7 +517,16 @@ void G_NewInit ()
 void G_DoNewGame (void)
 {
 	G_NewInit ();
-	playeringame[consoleplayer] = 1;
+	// G_NewInit just reset consoleplayer to 0 and cleared playeringame[].
+	// On a dedicated server (-server) slot 0 is the reserved transport-only
+	// authority slot, so we must NOT promote it to a playable slot here, or
+	// the level loader will spawn a ghost pawn for the server itself and a
+	// single connected client looks like two in-game players. The reserved
+	// slot stays out of playeringame[]; the first real player joins at
+	// I_GetFirstPlayableClientSlot() and gets its own playeringame[] entry
+	// when AddClientConnection runs.
+	if (!I_IsServerReservedSlot(consoleplayer))
+		playeringame[consoleplayer] = 1;
 	if (d_skill != -1)
 	{
 		gameskill = d_skill;
@@ -743,6 +753,9 @@ bool FLevelLocals::ShouldDoIntermission(cluster_info_t* nextcluster, cluster_inf
 void FLevelLocals::ChangeLevel(const char *levelname, int position, int inflags, int nextSkill)
 {
 	if (!isPrimaryLevel()) return;	// only the primary level may exit.
+
+	if (MapName.IsNotEmpty())
+		Net_DiagMapEnd(MapName.GetChars(), "change-level");
 
 	FString nextlevel;
 	level_info_t *nextinfo = nullptr;
@@ -1389,6 +1402,7 @@ void G_DoLoadLevel(const FString &nextmapname, int position, bool autosave, bool
 	}
 
 	G_TraceSetGameAction(ga_nothing, "g_doloadlevel-complete");
+	Net_DiagMapBegin(nextmapname.GetChars());
 	DebugTrace::Infof("level", "G_DoLoadLevel end map=%s gametic=%d sv_gametype=%d",
 		nextmapname.GetChars(), gametic, int(sv_gametype));
 

@@ -179,6 +179,7 @@ void TryRunTics (void);
 // [RH] Functions for making and using special "ticcmds"
 void Net_NewClientTic();
 void Net_Initialize();
+uint8_t Net_GetCurrentRoomID();
 void Net_WriteInt8(uint8_t);
 void Net_WriteInt16(int16_t);
 void Net_WriteInt32(int32_t);
@@ -193,6 +194,8 @@ void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream);
 
 bool Net_CheckCutsceneReady();
 void Net_AdvanceCutscene();
+void Net_StartCutscene();
+void Net_PlayerReadiedUp(int player);
 EInvasionState Net_GetInvasionState();
 const char* Net_GetInvasionStateName();
 int Net_GetInvasionStateTics();

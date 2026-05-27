@@ -867,7 +867,11 @@ CCMD(net_profile_reset)
 // the current `net_predict_debug` level. Use when the user observes a subtle
 // drift (gun floating, mirror twitching, monster shooting at nothing) but the
 // existing fault logger has not fired.
-CCMD(net_predict_dump)
+//
+// Callable both from the `net_predict_dump` console command and from the
+// diagnostic moment-capture path (Net_DiagRunMarkLocally) so a `net_mark`
+// invocation always pulls a fresh prediction dump alongside the trace anchor.
+void Net_DiagRunPredictDump()
 {
 	const uint64_t nowMS = I_msTime();
 	const player_t* localPlayer = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? &players[consoleplayer] : nullptr;
@@ -966,6 +970,15 @@ CCMD(net_predict_dump)
 		staleAttackingMirrors,
 		static_cast<unsigned long long>(HCDEPredictionDebugLifetime.PassiveClientResends),
 		static_cast<unsigned long long>(HCDELiveProfile.PredictionFaultReports));
+}
+
+// Console wrapper around Net_DiagRunPredictDump so the user can trigger a
+// dump from the menu/console. The implementation lives in the shared helper
+// because the moment-capture path needs to invoke the same logic without
+// re-entering the CCMD dispatcher.
+CCMD(net_predict_dump)
+{
+	Net_DiagRunPredictDump();
 }
 
 void Net_GetLagHUDMetrics(FHCDELagHUDMetrics& out)
@@ -1367,6 +1380,52 @@ CCMD(net_simlod)
 CCMD(net_stressreport)
 {
 	HCDEPrintLiveStressReport();
+}
+
+// `net_invasion_missing_classes` - report the table of authoritative actor
+// classes the local client has been asked to mirror but does not have loaded
+// (most often: the dedicated server has a Doom 2 remake / monster pack the
+// client is missing). Each row corresponds to a single ZScript class; the
+// running totals tell you how many spawn events were silently swallowed.
+//
+// Symptoms that indicate this command is worth running:
+//   * "I'm getting shot but nothing is visibly shooting me" - the missing
+//     mirror means the server's monster has full collision and AI but no
+//     client-side render proxy was ever built.
+//   * Random shots into the air "hit" something - your inputs are forwarded
+//     to the authoritative monster which the server is still simulating.
+//   * `net.desync` traces with category=actors that don't correlate with
+//     real movement drift (the count diverges because mirrors are missing).
+CCMD(net_invasion_missing_classes)
+{
+	if (InvasionMissingClassTable.CountUsed() == 0u)
+	{
+		Printf(PRINT_HIGH,
+			"No missing invasion mirror classes recorded since the last map / wave reset.\n"
+			"(Total spawn events swallowed: %u)\n",
+			unsigned(InvasionMissingClassTotalSpawns));
+		return;
+	}
+	Printf(PRINT_HIGH,
+		"HCDE invasion missing-class table: %u distinct class(es), %u spawn event(s) swallowed.\n",
+		unsigned(InvasionMissingClassTable.CountUsed()),
+		unsigned(InvasionMissingClassTotalSpawns));
+	TMap<FString, FInvasionMissingClassRecord>::Iterator it(InvasionMissingClassTable);
+	TMap<FString, FInvasionMissingClassRecord>::Pair* pair = nullptr;
+	while (it.NextPair(pair))
+	{
+		Printf(PRINT_HIGH,
+			"  class=%s count=%u first-tic=%d last-tic=%d first-wave=%d\n",
+			pair->Key.GetChars(),
+			unsigned(pair->Value.Count),
+			pair->Value.FirstSeenTic,
+			pair->Value.LastSeenTic,
+			pair->Value.FirstSeenWave);
+	}
+	Printf(PRINT_HIGH,
+		"If any of these are from a mod (e.g. a monster pack), the client is missing\n"
+		"the PK3/WAD that defines the class. Load it on the client side to make those\n"
+		"monsters visible. The server-authoritative monster is already shooting at you.\n");
 }
 
 ADD_STAT(network)

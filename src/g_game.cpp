@@ -1367,6 +1367,26 @@ static void D_CheckCutsceneAdvance()
 		Net_AdvanceCutscene();
 }
 
+// Cutscene/intermission progression that must keep running even when the tic
+// gate has stalled (available=0). Without this, EndScreenJob can queue
+// ga_worlddone during room-desync recovery but G_Ticker never runs to finish
+// the map transition.
+void G_TickStalledCutscene()
+{
+	if (gamestate != GS_CUTSCENE && gamestate != GS_INTRO)
+		return;
+
+	if (netgame && !demoplayback && Net_CheckCutsceneReady())
+	{
+		Net_AdvanceCutscene();
+		if (I_IsLocalHCDEServiceAuthority())
+			EndScreenJob();
+	}
+
+	if (gameaction == ga_worlddone)
+		G_DoWorldDone();
+}
+
 //
 // G_Ticker
 // Make ticcmd_ts for the players.

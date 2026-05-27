@@ -4,6 +4,10 @@ static uint64_t LastHCDELiveTicGateReportMS = 0u;
 static uint64_t LastHCDEPredictionLeadCapReportMS = 0u;
 static uint64_t LastHCDEMonsterProximityDumpMS = 0u;
 static uint64_t LastHCDEPredictionFaultReportMS = 0u;
+// Cooldown for the multi-megabyte prediction_fault forensic bundle (trace
+// snapshot + blackbox flush + Net_DiagWriteBundle). Matches the checksum
+// mismatch bundle gate so a burst of faults cannot pin the playsim on I/O.
+static uint64_t LastPredictionFaultBundleMS = 0u;
 static int HCDEPredictionPauseGraceUntil = 0;
 
 // =============================================================================
@@ -450,3 +454,20 @@ struct FHCDEPendingLocalHealthRepair
 };
 
 static FHCDEPendingLocalHealthRepair PendingLocalHealthRepair = {};
+
+#include "d_net_diagnostics.h"
+
+void HCDEGetLiveProfileSummary(FHCDENetDiagProfileSummary& out)
+{
+	out = {};
+	out.PredictionFaultReports = HCDELiveProfile.PredictionFaultReports;
+	out.PredictionLocalHealthRepairs = HCDELiveProfile.PredictionLocalHealthRepairs;
+	out.PredictionLocalStateRepairs = HCDELiveProfile.PredictionLocalStateRepairs;
+	out.PredictionHardRespawnRepairs = HCDELiveProfile.PredictionHardRespawnRepairs;
+	out.PredictionHardDeathRepairs = HCDELiveProfile.PredictionHardDeathRepairs;
+	out.RemotePlayerBaselineRepairs = HCDELiveProfile.RemotePlayerBaselineRepairs;
+	out.ActorDeltaV2RecordsMissing = HCDELiveProfile.ActorDeltaV2RecordsMissing;
+	out.WorldDeltaRecordsReceived = HCDELiveProfile.WorldDeltaRecordsReceived;
+	out.ClientInputNativeApplied = HCDELiveProfile.ClientInputNativeApplied;
+	out.ServerSnapshotNativeApplied = HCDELiveProfile.ServerSnapshotNativeApplied;
+}

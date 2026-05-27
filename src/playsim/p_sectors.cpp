@@ -33,6 +33,7 @@
 #include "p_terrain.h"
 #include "po_man.h"
 #include "serializer.h"
+#include "d_net_diagnostics.h"
 #include "r_utility.h"
 #include "a_sharedglobal.h"
 #include "p_local.h"
@@ -1329,6 +1330,7 @@ double GetFriction(const sector_t *self, int plane, double *pMoveFac)
 				 {
 					 act->Destroy();
 				 }
+				 Net_DiagTraceSectorAction(this->sectornum, activation, true);
 			 }
 			 act = next;
 			 res |= !!didit;

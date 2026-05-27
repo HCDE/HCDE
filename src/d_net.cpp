@@ -22,6 +22,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <chrono>
+#include <climits>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -35,6 +36,11 @@
 #include "d_main.h"
 #include "d_net.h"
 #include "d_net_diag.h"
+#include "d_net_diagnostics.h"
+#include "d_net_blackbox.h"
+#include "d_net_checksum.h"
+#include "d_net_movement_diag.h"
+#include "d_net_rewind.h"
 #include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "events.h"
@@ -175,7 +181,7 @@ static int Net_InvasionSecondsToTics(float seconds)
 
 // When true, mirror selected HCDE net/invasion diagnostics to the HUD console so
 // local testers can capture issues without a DebugTrace-aware host/session.
-CVAR(Bool, hcde_hud_debug, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+CVAR(Bool, hcde_hud_debug, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 // Dedicated invasion debugger. Level 1 mirrors important state/spawn/result
 // events to console, level 2 adds timing safety warnings, and level 3 is for
 // noisy per-phase traces while chasing bad map/mod metadata.
@@ -198,7 +204,7 @@ CVAR(Bool, hcde_lag_hud, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 //   1 = CSV sample every `net_predict_debug_interval` tics to hcde_predict_metrics.csv
 //   2 = + soft-warning lines to hcde_prediction_softwarn.log when a threshold trips
 //   3 = + full DebugTrace snapshot dumped at most once per 5s when a warning trips
-CUSTOM_CVAR(Int, net_predict_debug, 2, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, net_predict_debug, 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	if (self < 0)
 		self = 0;
@@ -213,12 +219,21 @@ CUSTOM_CVAR(Int, net_predict_debug_interval, 15, CVAR_ARCHIVE | CVAR_GLOBALCONFI
 	else if (self > 350)
 		self = 350;
 }
-CUSTOM_CVAR(Int, net_echo_debug, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, net_echo_debug, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
 	if (self < 0)
 		self = 0;
 	else if (self > 1)
 		self = 1;
+}
+// Reconcile decision tracing for local pose repair. 0=off, 1=log apply/skip at
+// baseline threshold, 2=also log lead/allowance breakdown.
+CUSTOM_CVAR(Int, net_reconcile_debug, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 2)
+		self = 2;
 }
 CUSTOM_CVAR(Int, net_self_test_run_client, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {
@@ -334,16 +349,28 @@ constexpr uint8_t HCDELiveProtocolVersion = 1u;
 constexpr uint8_t HCDELiveMagic[4] = { 'H', 'L', 'I', 'V' };
 // HCDE live control packet payload layout (after the 15-byte HCDELive header):
 //   [0..5]   base 6 bytes (legacy v0 keepalive payload)
-//   [6..19]  capability extension (HCAP magic + version + flags + 64-bit mask)
+//   [6..9]   HCAP magic
+//   [10]     capability extension version
+//   [11]     capability extension flags (HCDELiveControlCapFlagSessionId)
+//   [12..19] big-endian 64-bit capability mask
+//   [20..23] big-endian 32-bit local session ID (only when SessionId flag is set)
+// The capability extension is variable-length: peers built before the session
+// ID extension was added still send 14 bytes (no session ID), so the parser
+// must accept the shorter form to preserve cross-version compatibility.
 constexpr size_t HCDELiveControlBasePayloadSize = 6u;
 constexpr size_t HCDELiveControlCapabilitiesOffset = HCDELiveControlBasePayloadSize;
 constexpr size_t HCDELiveControlCapabilitiesMagicOffset = HCDELiveControlCapabilitiesOffset;
 constexpr size_t HCDELiveControlCapabilitiesVersionOffset = HCDELiveControlCapabilitiesOffset + 4u;
 constexpr size_t HCDELiveControlCapabilitiesFlagsOffset = HCDELiveControlCapabilitiesOffset + 5u;
 constexpr size_t HCDELiveControlCapabilitiesMaskOffset = HCDELiveControlCapabilitiesOffset + 6u;
-constexpr size_t HCDELiveControlCapabilitiesSize = 14u;
+// Minimum capability block (no session ID extension): 4 magic + 1 ver + 1 flags + 8 mask = 14 bytes.
+constexpr size_t HCDELiveControlCapabilitiesMinSize = 14u;
+// Full capability block (session ID extension present): 14 + 4 = 18 bytes.
+constexpr size_t HCDELiveControlCapabilitiesSize = HCDELiveControlCapabilitiesMinSize + 4u;
+constexpr size_t HCDELiveControlMinPayloadSize = HCDELiveControlBasePayloadSize + HCDELiveControlCapabilitiesMinSize;
 constexpr size_t HCDELiveControlPayloadSize = HCDELiveControlBasePayloadSize + HCDELiveControlCapabilitiesSize;
 constexpr uint8_t HCDELiveControlCapabilitiesVersion = 1u;
+constexpr uint8_t HCDELiveControlCapFlagSessionId = 1u << 0;
 constexpr uint8_t HCDELiveControlCapabilitiesMagic[4] = { 'H', 'C', 'A', 'P' };
 constexpr uint64_t HCDELiveCapControlV1 = 1ull << 0;
 constexpr uint64_t HCDELiveCapClientInputV5 = 1ull << 1;
@@ -800,6 +827,7 @@ static uint64_t CutsceneReady = 0u; // If in a cutscene, check if we're ready to
 static int CutsceneReadyLastToggle[MAXPLAYERS] = {};
 static EInvasionState InvasionState = INVS_DISABLED; // Authoritative game phase.
 static int InvasionStateTics = 0;                  // Time remaining in current phase (if applicable).
+static int InvasionPendingWave = 0;                // Wave queued during countdown; committed on wave start.
 static int InvasionNoParticipantTics = 0;          // Grace window for dedicated server reconnects with no participants.
 static EInvasionState InvasionAnnouncementState = INVS_DISABLED; // Local last-seen state for HUD/console announcement dedupe.
 static int InvasionAnnouncementWave = 0;              // Local last-seen wave for announcement transitions.
@@ -1146,7 +1174,10 @@ static void Net_TickInvasionAnnouncements()
 			&& prevState != INVS_SPAWNING)
 		{
 			FString msg;
-			msg.Format("Wave %d begins", wave);
+			if (wave == 1)
+				msg = "FIGHT";
+			else
+				msg.Format("Wave %d begins", wave);
 			Net_ShowInvasionStatusMessage(msg.GetChars());
 		}
 
@@ -1164,7 +1195,23 @@ static void Net_TickInvasionAnnouncements()
 		if (seconds > 0 && seconds != InvasionAnnouncementLastCountdownSecond)
 		{
 			FString msg;
-			msg.Format("Prepare for invasion: %d", seconds);
+			const int pendingWave = max(InvasionPendingWave, 0);
+			const int maxWaves = max(InvasionWaveDirector.MaxWaves, 0);
+			if (pendingWave > 0 && pendingWave == maxWaves)
+				msg.Format("Final wave in: %d", seconds);
+			else
+				msg.Format("Prepare for invasion: %d", seconds);
+			Net_ShowInvasionStatusMessage(msg.GetChars());
+			InvasionAnnouncementLastCountdownSecond = seconds;
+		}
+	}
+	else if (state == INVS_INTERMISSION)
+	{
+		const int seconds = (max(InvasionStateTics, 0) + TICRATE - 1) / TICRATE;
+		if (seconds > 0 && seconds != InvasionAnnouncementLastCountdownSecond)
+		{
+			FString msg;
+			msg.Format("Next wave in: %d", seconds);
 			Net_ShowInvasionStatusMessage(msg.GetChars());
 			InvasionAnnouncementLastCountdownSecond = seconds;
 		}
@@ -1185,6 +1232,8 @@ static void Net_SetLevelStartStatus(ELevelStartStatus status, const char* reason
 		reason != nullptr ? reason : "?", gametic, ClientTic, unsigned(CurrentRoomID),
 		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 	LevelStartStatus = status;
+	if (status == LST_READY && netgame)
+		Net_DiagSessionNetReady();
 }
 
 static uint64_t	LevelStartAck = 0u; // Used by the host to determine if everyone has loaded in.
@@ -1275,6 +1324,8 @@ static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int a
 extern	bool	 advancedemo;
 
 static size_t GetNetBufferSize();
+static unsigned Net_PlayableNetworkClientCount();
+static bool Net_HasPlayableNetworkClients();
 static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream);
 static bool Net_TrySkipUserCmdMessage(TArrayView<uint8_t>& stream, bool allowImplicitEmptyAtEnd = false);
 static bool Net_TrySkipUserCmdMessageWithBoundary(const uint8_t* data, size_t dataSize,
@@ -1597,20 +1648,23 @@ static void HCDEPrintLiveCapabilityNames(uint64_t capabilities, uint64_t unsuppo
 	Printf(PRINT_HIGH, "\n");
 }
 
-// Serialize the local capability advertisement (capability mask + the
-// authority's chosen consistency ready tic) into the live control packet
-// payload. Capability v2 layout:
+// Serialize the local capability advertisement and (optionally) a 32-bit
+// session ID into the live control packet payload. Layout:
 //   [0..3]  HCAP magic
 //   [4]     version byte (must equal HCDELiveControlCapabilitiesVersion)
-//   [5]     reserved flags byte (must be zero)
-//   [6..13] big-endian capability mask
-//   [14..17] big-endian ready tic, UINT32_MAX when not yet latched
+//   [5]     flags byte (HCDELiveControlCapFlagSessionId when session ID follows)
+//   [6..13] big-endian 64-bit capability mask
+//   [14..17] big-endian 32-bit local DebugTrace session ID (when flag is set)
+// Older HCDE peers omit bytes [14..17] entirely; the parser MUST stay tolerant
+// of that legacy layout, so we only emit the session ID when our diagnostic
+// session has actually allocated one.
 static void HCDEAppendLiveControlCapabilities(uint8_t* output, size_t payloadOffset)
 {
 	memcpy(&output[payloadOffset + HCDELiveControlCapabilitiesMagicOffset], HCDELiveControlCapabilitiesMagic, sizeof(HCDELiveControlCapabilitiesMagic));
 	output[payloadOffset + HCDELiveControlCapabilitiesVersionOffset] = HCDELiveControlCapabilitiesVersion;
-	output[payloadOffset + HCDELiveControlCapabilitiesFlagsOffset] = 0u;
+	output[payloadOffset + HCDELiveControlCapabilitiesFlagsOffset] = HCDELiveControlCapFlagSessionId;
 	HCDELiveWriteBE64(&output[payloadOffset + HCDELiveControlCapabilitiesMaskOffset], HCDELiveLocalCapabilities());
+	HCDELiveWriteBE32(&output[payloadOffset + HCDELiveControlCapabilitiesMaskOffset + 8u], DebugTrace::GetSessionId());
 }
 
 // Parse the capability extension that arrived inside a live control packet
@@ -1622,7 +1676,10 @@ static void HCDEAppendLiveControlCapabilities(uint8_t* output, size_t payloadOff
 static void HCDEApplyLiveControlCapabilities(int client, size_t payloadSize)
 {
 	auto& peer = HCDELivePeers[client];
-	if (payloadSize < HCDELiveControlPayloadSize
+	// Accept either the minimum 14-byte capability block (legacy diag-less peers)
+	// or the extended 18-byte form that includes the session ID. Anything shorter
+	// or with a missing/garbled HCAP magic is treated as an old v0 keepalive.
+	if (payloadSize < HCDELiveControlMinPayloadSize
 		|| memcmp(&NetBuffer[HCDELiveHeaderSize + HCDELiveControlCapabilitiesMagicOffset], HCDELiveControlCapabilitiesMagic, sizeof(HCDELiveControlCapabilitiesMagic)) != 0)
 	{
 		peer.RemoteCapabilities = 0u;
@@ -1635,7 +1692,8 @@ static void HCDEApplyLiveControlCapabilities(int client, size_t payloadSize)
 
 	const uint8_t capabilityVersion = NetBuffer[HCDELiveHeaderSize + HCDELiveControlCapabilitiesVersionOffset];
 	const uint8_t capabilityFlags = NetBuffer[HCDELiveHeaderSize + HCDELiveControlCapabilitiesFlagsOffset];
-	if (capabilityVersion == 0u || capabilityVersion > HCDELiveControlCapabilitiesVersion || capabilityFlags != 0u)
+	if (capabilityVersion == 0u || capabilityVersion > HCDELiveControlCapabilitiesVersion
+		|| (capabilityFlags & ~HCDELiveControlCapFlagSessionId) != 0u)
 	{
 		peer.RemoteCapabilities = 0u;
 		peer.NegotiatedCapabilities = 0u;
@@ -1658,6 +1716,12 @@ static void HCDEApplyLiveControlCapabilities(int client, size_t payloadSize)
 			client,
 			static_cast<unsigned long long>(peer.RemoteCapabilities),
 			static_cast<unsigned long long>(peer.NegotiatedCapabilities));
+	}
+	if ((capabilityFlags & HCDELiveControlCapFlagSessionId) != 0u
+		&& payloadSize >= HCDELiveControlPayloadSize)
+	{
+		const uint32_t remoteSessionId = HCDELiveReadBE32(&NetBuffer[HCDELiveHeaderSize + HCDELiveControlCapabilitiesMaskOffset + 8u]);
+		Net_DiagPeerCorrelate(client, remoteSessionId, peer.NegotiatedCapabilities);
 	}
 	if (peer.UnsupportedCapabilities != 0u)
 	{
@@ -1939,7 +2003,13 @@ static bool HCDEInputRecordAuthorized(int senderClient, int playerNum, uint8_t p
 	if (!HCDEEnforcesDedicatedInputAuthority())
 		return true;
 
-	return playerCount <= 1u && playerNum == senderClient;
+	const bool authorized = playerCount <= 1u && playerNum == senderClient;
+	if (!authorized)
+	{
+		Net_DiagTraceInputAuthority(senderClient, "reject-unauthorized-player",
+			FStringf("player=%d count=%u", playerNum, unsigned(playerCount)).GetChars());
+	}
+	return authorized;
 }
 
 static bool HCDEWorldDeltasCanMutatePlaysim()
@@ -2086,6 +2156,65 @@ static bool UnwrapHCDEGameplayEnvelope(int clientNum, size_t payloadSize, const 
 		++peer.UnsupportedReceived;
 		DebugTrace::Markf("net", "ignored stale HCDE live %s envelope from client=%d room=%u current=%u tic=%u",
 			label, clientNum, unsigned(room), unsigned(CurrentRoomID), remoteGameTic);
+
+		// Cutscene/intermission deadlock recovery for non-authority peers.
+		//
+		// In coop, the cutscene-end transition is driven by the authority writing
+		// DEM_ENDSCREENJOB into its NetEvents stream during the same gametic that
+		// `Net_AdvanceCutscene` fires. Each peer is supposed to deserialize that
+		// DEM byte from the next snapshot and run `EndScreenJob` locally so all
+		// peers walk through `G_DoWorldDone` together (which is what bumps
+		// `CurrentRoomID`).
+		//
+		// What we have observed in the field is that the authority can advance
+		// CurrentRoomID on its own (via its local Net_RunCommand pass) before the
+		// snapshot that contains the DEM byte actually lands on the client - the
+		// snapshot send window can lag the playsim by a tic, and the per-tic
+		// NetEvents bucket the byte ends up in might never be replayed to the
+		// client because the next packet from the authority is already tagged
+		// with room=N+1 and gets rejected here as "stale". The result is a
+		// mutual deadlock:
+		//   * authority is in room=N+1 (MAP02), waiting for the client's
+		//     NCMD_LEVELREADY to release the level start;
+		//   * client is in room=N (cutscene), rejecting every authority envelope
+		//     it sees, so it never receives DEM_ENDSCREENJOB and never moves on;
+		//   * client never reaches `IsMapLoaded() == true`, so it never sends
+		//     NCMD_LEVELREADY back; the server's `TryReleaseLevelStart` watchdog
+		//     stays armed for many seconds before falling back to a forced
+		//     advance, well past the point the user has given up and quit.
+		//
+		// When the authority is exactly one room ahead and we are still parked
+		// on a cutscene, treat it as a definitive signal that the authority has
+		// already crossed the world-done boundary and run `EndScreenJob`
+		// locally. The completion lambda queues `ga_worlddone`, the next
+		// G_Ticker pass calls G_DoWorldDone -> Net_ResetCommands -> CurrentRoomID
+		// catches up to the authority, and the normal NCMD_LEVELREADY
+		// handshake takes over. Throttle by wall clock (not gametic) so a
+		// recovery attempt still fires promptly after a map transition even
+		// when gametic resets to a small value while LastForceCutsceneEndTic
+		// still holds a large tic from the previous map.
+		const uint8_t expectedNext = static_cast<uint8_t>(CurrentRoomID + 1u);
+		const bool authorityIsAhead = (room == expectedNext) && I_IsHCDEServiceAuthoritySlot(clientNum);
+		const bool stuckInCutscene = (gamestate == GS_CUTSCENE || gamestate == GS_INTRO)
+			&& cutscene.runner != nullptr;
+		if (authorityIsAhead && stuckInCutscene && !I_IsLocalHCDEServiceAuthority())
+		{
+			static uint64_t LastForceCutsceneEndMS = 0u;
+			const uint64_t nowMS = I_msTime();
+			if (LastForceCutsceneEndMS == 0u || nowMS - LastForceCutsceneEndMS >= 1000u)
+			{
+				LastForceCutsceneEndMS = nowMS;
+				DebugTrace::Warningf("net",
+					"client room desync recovery: authority (client=%d) is one room ahead "
+					"(room=%u local=%u) while we're still on a cutscene (gamestate=%d gametic=%d clienttic=%d). "
+					"Forcing local EndScreenJob so the world-done handshake can complete.",
+					clientNum, unsigned(room), unsigned(CurrentRoomID),
+					int(gamestate), gametic, ClientTic);
+				EndScreenJob();
+				G_TickStalledCutscene();
+			}
+		}
+
 		return false;
 	}
 
@@ -3489,6 +3618,7 @@ void Net_ClearBuffers()
 	LastHCDEPredictionLeadCapReportMS = 0u;
 	LastHCDEMonsterProximityDumpMS = 0u;
 	LastHCDEPredictionFaultReportMS = 0u;
+	LastPredictionFaultBundleMS = 0u;
 	// Rate-limit timestamps for the prediction-debug warn/dump and the mirror
 	// visual pass time also need to drop back to zero on netstate reset, or
 	// the *first* event of the next netgame is silently suppressed by an
@@ -3535,7 +3665,18 @@ void Net_ClearBuffers()
 	FullLatencyCycle = MAXSENDTICS * 3;
 	LastLatencyUpdate = 0;
 
-	playeringame[0] = true;
+	// On a dedicated server (-server) slot 0 is the reserved transport-only
+	// authority slot, NOT a player. Marking playeringame[0]=true here causes
+	// FLevelLocals::SpawnPlayer to give the dedicated server a real pawn at
+	// player start #1, so a single connected client ends up looking like two
+	// players in the game (the ghost server pawn + the actual joiner). Skip
+	// the playable-slot bookkeeping for the reserved authority slot.
+	//
+	// NetworkClients += 0 is preserved unconditionally because the dedicated
+	// server still needs slot 0 in NetworkClients as its transport identity
+	// (HCDE service authority); the engine just must not treat it as a pawn.
+	if (!I_IsServerReservedSlot(0))
+		playeringame[0] = true;
 	NetworkClients += 0;
 }
 
@@ -3714,6 +3855,26 @@ bool Net_CheckCutsceneReady()
 	if (type == ST_UNSKIPPABLE)
 		return false;
 
+	// Keep the countdown progressing for every skippable cutscene mode. Without
+	// this, RT_ANYONE / RT_HOST_ONLY can deadlock forever when ready input never
+	// survives a tic-gate stall or DEM_READIED round-trip during map transitions.
+	if (CutsceneCountdown > 0)
+	{
+		--CutsceneCountdown;
+		if (CutsceneCountdown <= 0)
+		{
+			DebugTrace::Markf("net", "cutscene countdown auto-advance room=%u map=%s readytype=%d",
+				unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+				int(net_cutscenereadytype));
+			return true;
+		}
+		DebugTrace::Markf("net", "cutscene countdown ticking seconds=%.3f room=%u map=%s readytype=%d",
+			double(CutsceneCountdown) / TICRATE, unsigned(CurrentRoomID),
+			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
+			int(net_cutscenereadytype));
+		return false;
+	}
+
 	if (net_cutscenereadytype == RT_ANYONE)
 	{
 		for (auto client : NetworkClients)
@@ -3766,27 +3927,6 @@ bool Net_CheckCutsceneReady()
 			if (ready)
 				++humanReady;
 		}
-	}
-
-	// Keep the countdown progressing even when nobody reaches the ready threshold.
-	// This avoids an intermission deadlock if input focus is lost or clients never
-	// send DEM_READIED during map transitions. Run it before the single-human
-	// fast path so solo tests still auto-advance after the configured timeout.
-	if (CutsceneCountdown > 0)
-	{
-		--CutsceneCountdown;
-		if (CutsceneCountdown <= 0)
-		{
-			const float readyRatio = totalClients > 0 ? (float)totalReady / totalClients : 0.f;
-			DebugTrace::Markf("net", "cutscene countdown auto-advance ratio=%.3f ready=%d/%d room=%u map=%s",
-				double(readyRatio), totalReady, totalClients, unsigned(CurrentRoomID),
-				primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-			return true;
-		}
-		DebugTrace::Markf("net", "cutscene countdown ticking seconds=%.3f ready=%d/%d room=%u map=%s",
-			double(CutsceneCountdown) / TICRATE, totalReady, totalClients, unsigned(CurrentRoomID),
-			primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-		return false;
 	}
 
 	if (humanClients <= 1)
@@ -3936,20 +4076,22 @@ void Net_ResetCommands(bool midTic)
 
 	NetEvents.ResetStream();
 	Net_ResetInvasionState("reset-commands");
+	HCDEMovementResetJitter();
+	HCDERewind_Reset("reset-commands");
 }
 
 void Net_SetWaiting()
 {
-	if (netgame && !demoplayback && NetworkClients.Size() > 1)
+	if (netgame && !demoplayback && Net_HasPlayableNetworkClients())
 	{
 		LevelStartAck = 0u;
 		LevelStartDelay = LevelStartDebug = 0;
 		FullLatencyCycle = 0;
 		Net_ResetAuthorityWaitWatchdog("level-wait");
 		Net_SetLevelStartStatus(LST_WAITING, "map-load-wait");
-		DebugTrace::Markf("net.levelstart", "level start waiting room=%u map=%s authority=%d clients=%u",
+		DebugTrace::Markf("net.levelstart", "level start waiting room=%u map=%s authority=%d transport-clients=%u playable-clients=%u",
 			unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
-			I_IsLocalHCDEServiceAuthority() ? 1 : 0, unsigned(NetworkClients.Size()));
+			I_IsLocalHCDEServiceAuthority() ? 1 : 0, unsigned(NetworkClients.Size()), Net_PlayableNetworkClientCount());
 	}
 }
 
@@ -4383,6 +4525,29 @@ static uint64_t LevelStartPlayableMask()
 	return mask;
 }
 
+static ELevelStartStatus Net_AuthorityLevelStartStatusAfterRelease()
+{
+	// Server-authoritative model: no UZDoom listen-host lockstep sequence gate.
+	(void)I_IsLocalHCDEServiceAuthority();
+	return LST_READY;
+}
+
+static unsigned Net_PlayableNetworkClientCount()
+{
+	unsigned count = 0u;
+	for (auto pNum : NetworkClients)
+	{
+		if (!I_IsHCDEServiceAuthoritySlot(pNum) && !Net_IsLateJoinSyncPending(pNum))
+			++count;
+	}
+	return count;
+}
+
+static bool Net_HasPlayableNetworkClients()
+{
+	return Net_PlayableNetworkClientCount() > 0u;
+}
+
 static bool TryReleaseLevelStart()
 {
 	const uint64_t mask = LevelStartPlayableMask();
@@ -4422,7 +4587,7 @@ static bool TryReleaseLevelStart()
 	}
 
 	LevelStartAck = 0u;
-	Net_SetLevelStartStatus(I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY, "try-release-level-start");
+	Net_SetLevelStartStatus(Net_AuthorityLevelStartStatusAfterRelease(), "try-release-level-start");
 	LevelStartDelay = LevelStartDebug = 0;
 
 	// NOTE: Do not re-anchor ClientStates[*].CurrentSequence here. The authority's
@@ -4434,12 +4599,12 @@ static bool TryReleaseLevelStart()
 	// where the authority never advances `lowestSeq` and the client never
 	// receives any sequence updates back.
 	Net_ResetAuthorityWaitWatchdog("authority-release");
-	Printf(PRINT_HIGH, "NetGame:: Authority released level start at gametic=%d clienttic=%d room=%u map=%s clients=%u\n",
+	Printf(PRINT_HIGH, "NetGame:: Authority released level start at gametic=%d clienttic=%d room=%u map=%s transport-clients=%u playable-clients=%u\n",
 		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
-		unsigned(NetworkClients.Size()));
-	DebugTrace::Markf("net.levelstart", "authority released level start gametic=%d clienttic=%d room=%u map=%s clients=%u",
+		unsigned(NetworkClients.Size()), Net_PlayableNetworkClientCount());
+	DebugTrace::Markf("net.levelstart", "authority released level start gametic=%d clienttic=%d room=%u map=%s transport-clients=%u playable-clients=%u",
 		gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
-		unsigned(NetworkClients.Size()));
+		unsigned(NetworkClients.Size()), Net_PlayableNetworkClientCount());
 	return true;
 }
 
@@ -4468,7 +4633,7 @@ static void CheckLevelStart(int client, int delayTics)
 	if (I_IsHCDEServiceAuthoritySlot(client))
 	{
 		LevelStartAck = 0u;
-		Net_SetLevelStartStatus(I_IsLocalHCDEServiceAuthority() ? LST_HOST : LST_READY, "check-level-start-authority");
+		Net_SetLevelStartStatus(Net_AuthorityLevelStartStatusAfterRelease(), "check-level-start-authority");
 		LevelStartDelay = LevelStartDebug = delayTics;
 
 		const int serverGametic = (NetBuffer[4] << 24) | (NetBuffer[5] << 16) | (NetBuffer[6] << 8) | NetBuffer[7];
@@ -4566,6 +4731,7 @@ static void GetPackets()
 	{
 		const int clientNum =  RemoteClient;
 		auto& clientState = ClientStates[clientNum];
+		Net_BlackboxRecordPacket(1, clientNum, 0u, 0u, 0u, uint8_t(CurrentRoomID), NetBuffer, NetBufferLength);
 		Net_TraceIncomingPacket(clientNum, NetBuffer[0], NetBufferLength);
 
 		if (NetBuffer[0] & NCMD_EXIT)
@@ -5037,6 +5203,22 @@ static void Net_DumpSyncDiagnostics(int client, int consistency, int16_t localCo
 
 static void CheckConsistencies()
 {
+	// Phase 4 (UZDoom legacy removal): HCDE checksum is the canonical desync
+	// signal in netgame. Skip the legacy hash comparison loop entirely when
+	// the session uses server-authoritative consistency (which is now every
+	// netgame). The bookkeeping below is still needed for single-player /
+	// demo playback paths that touch this function via shared callsites,
+	// even though MakeConsistencies short-circuits earlier in those modes -
+	// keep the participant-filter loop running so LastVerifiedConsistency
+	// stays consistent with CurrentNetConsistency for any code that reads
+	// those fields.
+	if (Net_UsesServerAuthoritativeConsistency())
+	{
+		for (auto client : NetworkClients)
+			ClientStates[client].LastVerifiedConsistency = ClientStates[client].CurrentNetConsistency;
+		return;
+	}
+
 	// Check consistencies retroactively to see if there was a desync at some point. We still
 	// check the local client here because these could realistically desync
 	// if the client's current position doesn't agree with the host.
@@ -5133,26 +5315,27 @@ static int16_t CalculateConsistency(int client, uint32_t seed)
 	return (seed & 0xFFFF) ? seed : 1;
 }
 
-// HCDE is prediction-based: at any gametic, the client's mo->X/Y/Z, angles,
-// and health are *predicted* values derived from local input replay, while
-// the server's same fields are *authoritative*. The two will deterministically
-// diverge during the prediction window. The legacy CalculateConsistency()
-// hash compares those exact fields, so it produces guaranteed false positives
-// in HCDE multiplayer regardless of any seed agreement.
+// Phase 4 (UZDoom legacy removal): HCDE's snapshot checksum chunk
+// (`d_net_checksum.cpp`) is the canonical "is the world the same on both
+// sides?" signal. The legacy ZDoom consistency hash compared the
+// (predicted) client pawn pose/health to the (authoritative) server pose/
+// health, which deterministically diverges during the prediction window
+// and therefore produced guaranteed false positives in HCDE multiplayer
+// regardless of any seed agreement. With HCDE service mandatory at the
+// connect gate (Phase 3), every netgame session has the snapshot checksum
+// stream available, so we always prefer it.
 //
-// Server snapshots already carry authoritative state and the snapshot/echo
-// pipeline (gated by net_echo_debug) is what actually detects real desyncs.
-// We therefore disable the legacy consistency check unconditionally for any
-// dedicated-server-slot game; MakeConsistencies()/CheckConsistencies() will
-// stamp the LocalConsistency slot with a constant marker and the
-// participants array filter (Net_IsGameplayConsistencyParticipant) skips
-// the actual hash comparison.
-//
-// Single-player and demo playback never run MakeConsistencies() at all
-// (early-out in the function), so this predicate has no effect there.
+// Returning true here makes Net_IsGameplayConsistencyParticipant return
+// false for every player, which short-circuits the hash comparison loop in
+// CheckConsistencies() and makes MakeConsistencies() stamp a constant
+// nonzero marker (1) into LocalConsistency[]. The marker is still required
+// because the resend parser treats a zero entry as missing data; once the
+// consistency stream is fully removed from the wire (post-Phase-4 cleanup)
+// the marker can go too. Single-player and demo playback short-circuit at
+// the top of MakeConsistencies(), so this predicate has no effect there.
 static bool Net_UsesServerAuthoritativeConsistency()
 {
-	return I_UsesDedicatedServerSlot();
+	return netgame;
 }
 
 static void Net_TraceUserCmdSnapshot(const char* label, int client, int tic, const usercmd_t& cmd)
@@ -5336,14 +5519,29 @@ static bool Net_UpdateStatus()
 	}
 
 	if (LevelStartStatus == LST_HOST)
-		return false;
-
-	for (auto client : NetworkClients)
 	{
-		if (Net_IsLateJoinSyncPending(client))
-			continue;
-		if (players[client].waiting)
-			return false;
+		// Legacy status: release immediately; authority no longer waits on peer sequences.
+		if (I_IsLocalHCDEServiceAuthority())
+			Net_SetLevelStartStatus(LST_READY, "authority-host-gate-skip");
+	}
+
+	// Phase 1 (UZDoom lockstep removal): only non-authority peers honor the
+	// "any waiting client blocks the world" gate. The authority must keep
+	// simulating at TICRATE no matter how far behind a peer is - that's the
+	// difference between the legacy lockstep model (everyone advances at the
+	// slowest peer) and Odamex/Zandronum-style server authority (server
+	// owns the clock; lagging clients lag themselves). The waiting flag is
+	// still set above so CF_MISSING / CF_RETRANSMIT can drive resends, but it
+	// no longer freezes the host world.
+	if (!localAuthority)
+	{
+		for (auto client : NetworkClients)
+		{
+			if (Net_IsLateJoinSyncPending(client))
+				continue;
+			if (players[client].waiting)
+				return false;
+		}
 	}
 
 	// Wait for the game to stabilize a bit after launch before skipping commands.
@@ -5399,11 +5597,18 @@ static bool Net_UpdateStatus()
 		lowestDiff -= StabilityBuffer;
 		if (lowestDiff > 0)
 		{
-			if (SkipCommandTimer++ > TICRATE / 2)
+			// Phase 1: SkipCommandAmount throttles local command generation when
+			// the session looks "ahead" of peers. That made sense in lockstep,
+			// but on authority the world no longer waits for clients, so
+			// starving the host's own command stream just adds input delay.
+			if (!localAuthority)
 			{
-				SkipCommandTimer = 0;
-				if (SkipCommandAmount <= 0)
-					SkipCommandAmount = lowestDiff * TicDup;
+				if (SkipCommandTimer++ > TICRATE / 2)
+				{
+					SkipCommandTimer = 0;
+					if (SkipCommandAmount <= 0)
+						SkipCommandAmount = lowestDiff * TicDup;
+				}
 			}
 		}
 		else
@@ -5455,9 +5660,13 @@ void NetUpdate(int tics)
 	{
 		if (LevelStartStatus == LST_WAITING)
 		{
-			if (NetworkClients.Size() == 1)
+			if (!Net_HasPlayableNetworkClients())
 			{
-				// If we got stuck in limbo waiting, force start the map.
+				// Solo authority (listen host alone, or dedicated server before
+				// any joiner). The old `NetworkClients.Size() == 1` check failed
+				// on dedicated servers because slot 0 is always in NetworkClients
+				// as transport, so Size()==2 with one real client never hit this
+				// path and the server could stall in LST_WAITING forever.
 				CheckLevelStart(I_GetHCDEServiceAuthoritySlot(), 0);
 			}
 			else if (I_IsLocalHCDEServiceAuthority())
@@ -5474,28 +5683,9 @@ void NetUpdate(int tics)
 				}
 			}
 		}
-		else if (LevelStartStatus == LST_HOST)
+		else if (LevelStartStatus == LST_HOST && I_IsLocalHCDEServiceAuthority())
 		{
-			// If we're the host, idly wait until all packets have arrived. There's no point in predicting since we
-			// know for a fact the game won't be started until everyone is accounted for.
-			const int curTic = gametic / TicDup;
-			int lowestSeq = curTic;
-			for (auto client : NetworkClients)
-			{
-				if (!I_IsHCDEServiceAuthoritySlot(client) && ClientStates[client].CurrentSequence < lowestSeq)
-					lowestSeq = ClientStates[client].CurrentSequence;
-			}
-
-			// Let normal tic availability gate the actual playsim. Requiring the
-			// first post-load tic here can deadlock clients that are waiting for the
-			// authority's first snapshot before they release their next command.
-			if (lowestSeq >= curTic - 1)
-			{
-				DebugTrace::Markf("net.levelstart", "authority level start host gate released curtic=%d lowestseq=%d room=%u map=%s",
-					curTic, lowestSeq, unsigned(CurrentRoomID),
-					primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
-				Net_SetLevelStartStatus(LST_READY, "host-gate-released");
-			}
+			Net_SetLevelStartStatus(LST_READY, "authority-host-gate-skip");
 		}
 	}
 	else if (LevelStartDelay > 0)
@@ -5509,14 +5699,26 @@ void NetUpdate(int tics)
 	bool netGood = Net_UpdateStatus();
 	const int startTic = ClientTic;
 	tics = min<int>(tics, MAXSENDTICS * TicDup);
-	const int commandLeadLimit = I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority()
-		? BACKUPTICS - MAXSENDTICS
-		: BACKUPTICS / 2;
+	// Hard ceiling on how many commands the client may generate ahead of the
+	// server gametic. The world-tic cap further down is the active lead
+	// limiter (it slows down the world loop so ClientTic - gametic stays at
+	// desiredLead), so this command cap is just a runaway safety net for the
+	// rare case where the world-tic cap is disabled (cl_net_prediction_lead=0).
+	// Phase 3 originally tightened this to a single-digit value, but that
+	// caused command generation to choke on routine jitter; the user observed
+	// rubber banding once the lead naturally crossed that pinhole. Use the
+	// legacy BACKUPTICS/2 ceiling so the safety net only fires for actually
+	// pathological lead growth.
+	const int commandLeadLimit = BACKUPTICS / 2;
 	if ((startTic + tics - gametic) / TicDup > commandLeadLimit)
 	{
 		tics = (gametic + commandLeadLimit * TicDup) - startTic;
 		if (tics <= 0)
 		{
+			// Legacy escape hatch: still enter the loop once so I_StartTic /
+			// D_ProcessEvents drain pending input even when over the lead
+			// ceiling. The body's `if (!netGood) break;` then prevents an
+			// extra command from being generated.
 			tics = 1;
 			netGood = false;
 		}
@@ -5537,6 +5739,33 @@ void NetUpdate(int tics)
 
 		G_BuildTiccmd(&LocalCmds[ClientTic++ % LOCALCMDTICS]);
 		Net_ApplySelfTestInputs(&LocalCmds[(ClientTic - 1) % LOCALCMDTICS], ClientTic - 1);
+		// Listen-host authority: mirror local input into ClientStates so confirmed
+		// G_Ticker uses the same cmds as prediction (dedicated clients get echo).
+		if (I_IsLocalHCDEServiceAuthority()
+			&& consoleplayer >= 0
+			&& consoleplayer < MAXPLAYERS
+			&& !I_IsServerReservedSlot(consoleplayer)
+			&& TicDup == 1)
+		{
+			const int seq = ClientTic - 1;
+			ClientStates[consoleplayer].Tics[seq % BACKUPTICS].Command =
+				LocalCmds[seq % LOCALCMDTICS];
+		}
+		// Movement diagnostics: track rising-edge of attack/use so we can
+		// measure tic latency between local issue and authority echo. The
+		// function-local static persists across frames; on a Net_ResetCommands
+		// the worst case is one missed rising edge if the same button is held
+		// across the reset, which is acceptable for diagnostic purposes.
+		{
+			static uint32_t LastLocalCmdButtons = 0u;
+			const uint32_t curButtons = LocalCmds[(ClientTic - 1) % LOCALCMDTICS].buttons;
+			const uint32_t rising = curButtons & ~LastLocalCmdButtons;
+			if (rising & BT_ATTACK)
+				HCDEMovementOnInputButton(BT_ATTACK, ClientTic - 1);
+			if (rising & BT_USE)
+				HCDEMovementOnInputButton(BT_USE, ClientTic - 1);
+			LastLocalCmdButtons = curButtons;
+		}
 		if (TicDup == 1)
 		{
 			Net_NewClientTic();
@@ -5628,13 +5857,25 @@ void NetUpdate(int tics)
 		// Ensure the host only sends out available tics when ready instead of constantly shotgunning
 		// them out as they're made locally.
 		startSequence = gametic / TicDup;
-		int lowestSeq = endSequence - 1;
+		// Phase 1 (UZDoom lockstep removal): the authority sends each client
+		// up to its own newest produced tic. The legacy formula was
+		// `endSequence = lowestSeq + 1` which capped EVERY client's window
+		// at the slowest client's ack, so one lagging peer would starve all
+		// the others' snapshot streams (the visible "rubber banding for the
+		// whole match because one player's RTT spiked"). Per-client catchup
+		// is naturally bounded below by curState.SequenceAck (or
+		// CurrentSequence) and above by MAXSENDTICS in the inner numTics
+		// clamp; we no longer need a peer-cross window cap here.
+		//
+		// We still walk NetworkClients to (a) count players for the
+		// fragmentation heuristic and (b) collect quitters. Late-join
+		// pending clients are skipped from the player count for packet
+		// sizing because their snapshot stream doesn't ride this loop.
 		for (auto client : NetworkClients)
 		{
 			if (I_IsHCDEServiceAuthoritySlot(client))
 				continue;
 
-			const bool lateJoinPending = Net_IsLateJoinSyncPending(client);
 			if (ClientStates[client].Flags & CF_QUIT)
 			{
 				quitNums[quitters++] = client;
@@ -5642,12 +5883,8 @@ void NetUpdate(int tics)
 			else
 			{
 				++players;
-				if (!lateJoinPending && ClientStates[client].CurrentSequence < lowestSeq)
-					lowestSeq = ClientStates[client].CurrentSequence;
 			}
 		}
-
-		endSequence = lowestSeq + 1;
 
 		// To avoid fragmenting, split up commands into groups of 16p with only 2 commands per packet.
 		// If the average packet size with 16p is ~500b, this gives up to ~1000b per packet of data
@@ -6095,6 +6332,8 @@ void TryRunTics()
 	else
 		EnterTic = I_GetTime();
 
+	HCDEMovementOnFrame(I_msTime());
+
 	const int startCommand = ClientTic;
 	int totalTics = EnterTic - LastEnterTic;
 	if (totalTics > 1 && singletics)
@@ -6134,8 +6373,18 @@ void TryRunTics()
 
 	InvasionMirrorVisualWorldSteps = 1;
 
-	// Get the amount of tics the client can actually run. This accounts for waiting for other
-	// players over the network.
+	// Phase 1 (UZDoom lockstep removal): the authority simulates on its own
+	// wall-clock and never waits on client command sequences. Each client
+	// independently caps its world via the prediction-lead block further down.
+	//
+	// `lowestSequence` is still computed for diagnostics (prediction debug,
+	// stall traces, send-window construction) but on the authority it is no
+	// longer the gating signal for `availableTics`. Pre-Phase-1 the formula
+	// `availableTics = (lowestSequence - gametic) + 1` made the host world
+	// freeze whenever any peer fell a few tics behind, which is exactly the
+	// "feels like UZDoom" lag the user reported. Odamex/Zandronum-style
+	// authority instead simulates at TICRATE regardless of peer state and
+	// catches each client up via per-client snapshot deltas.
 	int lowestSequence = INT_MAX;
 	bool hasTicGateClient = false;
 	for (auto client : NetworkClients)
@@ -6165,14 +6414,41 @@ void TryRunTics()
 		}
 	}
 
-	// If the lowest confirmed tic matches the server gametic or greater, allow the client
-	// to run some of them. Dedicated server clients have an inherent 1-frame roundtrip
-	// in the ack pipeline (send → server process → ack back → client read) that keeps
-	// availableTics pinned at 0-1 even on localhost. Grant them one extra tic of
-	// prediction headroom so the playsim doesn't starve while waiting for the ack.
-	const int dedicatedPipelineBonus =
-		(I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority()) ? 1 : 0;
-	const int availableTics = (lowestSequence - gametic / TicDup) + 1 + dedicatedPipelineBonus;
+	int availableTics;
+	if (I_IsLocalHCDEServiceAuthority() && netgame && !singletics && !demoplayback)
+	{
+		// Authority path: drive the world from wall-clock tics. `totalTics`
+		// is `EnterTic - LastEnterTic`, i.e. the number of TICRATE-clock
+		// tics elapsed since the last frame. The +1 lookahead keeps the
+		// stability/runTics math identical to the legacy formula's behavior
+		// on a healthy connection, where (lowestSequence - gametic) usually
+		// equaled totalTics + 0..1.
+		availableTics = totalTics + 1;
+	}
+	else
+	{
+		// Client / singleplayer path: the legacy lockstep formula still
+		// applies because a non-authority client cannot get ahead of the
+		// authority's snapshot stream. Dedicated-mode HCDE clients have an
+		// inherent 1-frame roundtrip in the ack pipeline (send → server
+		// process → ack back → client read) that keeps availableTics pinned
+		// at 0-1 even on localhost; grant them one extra tic of prediction
+		// headroom so the playsim doesn't starve while waiting for the ack.
+		const int dedicatedPipelineBonus =
+			(I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority()) ? 1 : 0;
+		availableTics = (lowestSequence - gametic / TicDup) + 1 + dedicatedPipelineBonus;
+		// Dedicated clients intentionally hold ClientTic ahead of gametic for
+		// prediction lead. When that lead is healthy the legacy sequence formula
+		// can pin availableTics at 0 even though snapshots are flowing, which
+		// starves the world loop and amplifies position drift/reconcile churn.
+		if (I_UsesDedicatedServerSlot() && !I_IsLocalHCDEServiceAuthority() && availableTics <= 0)
+		{
+			const int desiredLead = clamp<int>(*cl_net_prediction_lead, 0, 8);
+			const int currentLead = ClientTic / TicDup - gametic / TicDup;
+			if (currentLead > 0 && currentLead <= desiredLead + 1)
+				availableTics = 1;
+		}
+	}
 
 	// Sample sub-fault prediction health every frame. Cheap when off
 	// (single compare in Net_PredictionDebugTick); when on it captures the
@@ -6182,6 +6458,11 @@ void TryRunTics()
 	// If the amount of tics to run is falling behind the amount of available tics,
 	// speed the playsim up a bit to help catch up.
 	int runTics = min<int>(totalTics, availableTics);
+
+	// Do not tick the world during level-start handshaking before LST_READY.
+	if (netgame && !demoplayback && LevelStartStatus != LST_READY && LevelStartDelay <= 0)
+		runTics = 0;
+
 	if (!singletics && totalTics > 0)
 	{
 		CalculateNetStabilityBuffer(availableTics - totalTics);
@@ -6223,7 +6504,7 @@ void TryRunTics()
 		&& gamestate == GS_LEVEL
 		&& LevelStartStatus == LST_READY)
 	{
-		const int desiredLead = clamp<int>(*cl_net_prediction_lead, 0, 8);
+		const int desiredLead = HCDEMovementGetAdaptiveDesiredLead(int(*cl_net_prediction_lead));
 		if (desiredLead > 0)
 		{
 			// Both halves of `currentLead` are divided by TicDup to keep the
@@ -6260,7 +6541,12 @@ void TryRunTics()
 		// can reach this branch on a non-authority netgame client - so this
 		// single flag covers every scenario where the runTics<=0 fallthrough
 		// is *expected*.
-		if (!predictionLeadHeldWorld && netgame && totalTics > 0 && EnterTic - LastTicGateStallTrace >= TICRATE)
+		if (!predictionLeadHeldWorld
+			&& !(netgame && !demoplayback && (LevelStartStatus != LST_READY || LevelStartDelay > 0))
+			&& !(netgame && !demoplayback && !I_IsLocalHCDEServiceAuthority()
+				&& availableTics <= 0 && clamp<int>(*cl_net_prediction_lead, 0, 8) > 0
+				&& (ClientTic / TicDup - gametic / TicDup) <= clamp<int>(*cl_net_prediction_lead, 0, 8) + 1)
+			&& netgame && totalTics > 0 && EnterTic - LastTicGateStallTrace >= TICRATE)
 		{
 			LastTicGateStallTrace = EnterTic;
 			DebugTrace::Warningf("predict", "tic gate stalled total=%d available=%d lowest=%d gametic=%d clienttic=%d room=%u map=%s levelstart=%s delay=%d lag=%s",
@@ -6503,9 +6789,27 @@ void TryRunTics()
 						localActor != nullptr ? localActor->health : 0);
 					fclose(faultLog);
 				}
-				const FString tracePath = FStringf("%s/hcde_prediction_fault_trace_%llu.txt",
-					M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(faultTimeMS));
-				DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+				// Forensic capture for the fault is gated by a long cooldown so a
+				// stretch of consecutive faults can't lock the playsim thread on
+				// disk I/O. The diagnostic warning above ALWAYS fires (so the
+				// trace file still records every fault), but the multi-megabyte
+				// trace snapshot, blackbox flush, and full bundle write happen
+				// at most once per minute. Without this, a string of faults
+				// (e.g. while the user fights through a heavy room) produces a
+				// fresh ~2-3MB bundle every 500ms - the same I/O storm pattern
+				// that the checksum mismatch path was already gated against.
+				constexpr uint64_t PredictionFaultBundleCooldownMS = 60000u;
+				if (LastPredictionFaultBundleMS == 0u
+					|| faultTimeMS - LastPredictionFaultBundleMS >= PredictionFaultBundleCooldownMS)
+				{
+					LastPredictionFaultBundleMS = faultTimeMS;
+					const FString tracePath = FStringf("%s/hcde_prediction_fault_trace_%llu.txt",
+						M_GetAppDataPath(true).GetChars(), static_cast<unsigned long long>(faultTimeMS));
+					DebugTrace::SaveToFile(tracePath.GetChars(), "net", DebugTrace::Severity::Debug);
+					Net_BlackboxAutoSave("prediction_fault");
+					FString faultBundlePath;
+					Net_DiagWriteBundle("prediction_fault", faultBundlePath);
+				}
 				if (*hcde_hud_debug)
 				{
 					Printf(PRINT_HIGH,
@@ -6561,6 +6865,8 @@ void TryRunTics()
 			&& (availableTics < 0
 				|| (availableTics <= 0 && ClientTic - gametic > TicDup * 3)
 				|| (availableTics <= 0 && EnterTic - LastGameUpdate > TICRATE / 2));
+		if (ticGateStalled)
+			G_TickStalledCutscene();
 		Net_RefreshLagHUDMetrics(availableTics, 0, totalTics, 0, ticGateStalled);
 		return;
 	}
@@ -6591,6 +6897,8 @@ void TryRunTics()
 			Net_PrepareInvasionSimulationLOD();
 		G_Ticker();
 		++gametic;
+		Net_ChecksumTick();
+		Net_BlackboxRecordTicIndex();
 		if (Net_IsLocalInvasionAuthority())
 			Net_TickInvasionState();
 		else
@@ -6598,6 +6906,7 @@ void TryRunTics()
 		Net_TickHCDEModeActorMigration();
 		Net_TickInvasionAnnouncements();
 		MakeConsistencies();
+		HCDERewind_OnServerTick();
 		HCDEProfileRecordWorldTic(HCDEProfileNowUS() - worldTicStartUS);
 
 		if (stabilize)
@@ -6641,6 +6950,11 @@ void Net_NewClientTic()
 void Net_Initialize()
 {
 	NetEvents.InitializeEventData();
+}
+
+uint8_t Net_GetCurrentRoomID()
+{
+	return CurrentRoomID;
 }
 
 void Net_WriteInt8(uint8_t it)
@@ -8312,7 +8626,13 @@ DEFINE_ACTION_FUNCTION_NATIVE(_ScreenJobRunner, IsPlayerReadyParticipant, IsPlay
 static void ReadyPlayer()
 {
 	if (netgame && !demoplayback)
+	{
+		// Apply ready locally so skip works even when the tic gate is stalled and
+		// DEM_READIED cannot round-trip through the authority snapshot yet.
+		if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+			Net_PlayerReadiedUp(consoleplayer);
 		Net_WriteInt8(DEM_READIED);
+	}
 }
 
 DEFINE_ACTION_FUNCTION_NATIVE(_ScreenJobRunner, ReadyPlayer, ReadyPlayer)

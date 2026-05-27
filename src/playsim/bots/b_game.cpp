@@ -126,7 +126,13 @@ void FCajunMaster::Main(FLevelLocals *Level)
 	{
 		if (t_join == ((wanted_botnum - botnum) * SPAWN_DELAY))
 		{
-			if (!SpawnBot (getspawned[spawn_tries].GetChars()))
+			const char* botName = nullptr;
+			if (spawn_tries >= 0 && spawn_tries < int(getspawned.Size()))
+			{
+				botName = getspawned[spawn_tries].GetChars();
+			}
+
+			if (!SpawnBot(botName))
 				wanted_botnum--;
 			spawn_tries++;
 		}
@@ -165,6 +171,11 @@ void FCajunMaster::Init ()
 			thebot = thebot->next;
 		}
 	}
+
+	if (wanted_botnum < 0)
+		wanted_botnum = 0;
+	if (wanted_botnum > int(getspawned.Size()))
+		wanted_botnum = int(getspawned.Size());
 }
 
 //Called on each level exit (from g_game.c).
@@ -185,6 +196,13 @@ void FCajunMaster::End ()
 		}
 
 		wanted_botnum = botnum;
+	}
+	else
+	{
+		// Outside deathmatch we intentionally do not carry bots across map
+		// transitions. Keep wanted count in sync with the cleared spawn list so
+		// next-map spawn scheduling cannot index past getspawned.
+		wanted_botnum = 0;
 	}
 }
 

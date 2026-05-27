@@ -37,7 +37,9 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "d_net_diagnostics.h"
 #include "playsim/playerstate_trace.h"
+#include "d_net_diagnostics.h"
 #include "d_player.h"
 #include "doomdef.h"
 #include "doomstat.h"
@@ -1583,6 +1585,7 @@ void P_CheckUse(player_t *player)
 		if (!player->usedown)
 		{
 			player->usedown = true;
+			Net_DiagTraceUseEdge(player - players, player->cmd.buttons, true);
 			if (!P_TalkFacing(player->mo))
 			{
 				P_UseLines(player);

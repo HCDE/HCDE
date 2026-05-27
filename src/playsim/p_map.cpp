@@ -35,6 +35,8 @@
 #include "c_dispatch.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "d_net_diagnostics.h"
+#include "d_net_rewind.h"
 #include "d_player.h"
 #include "decallib.h"
 #include "doomdef.h"
@@ -1357,6 +1359,25 @@ DEFINE_ACTION_FUNCTION_NATIVE(AActor, DoMissileDamage, P_DoMissileDamage)
 //
 //==========================================================================
 
+static bool HCDEPredictionShouldIgnoreCorpseObstacle(const AActor* mover, const AActor* obstacle)
+{
+	if (mover == nullptr
+		|| obstacle == nullptr
+		|| mover->player == nullptr
+		|| (mover->player->cheats & CF_PREDICTING) == 0)
+	{
+		return false;
+	}
+
+	if (!netgame || !I_UsesDedicatedServerSlot() || I_IsLocalHCDEServiceAuthority())
+		return false;
+
+	if (obstacle->player != nullptr)
+		return false;
+
+	return obstacle->health <= 0 || (obstacle->flags & MF_CORPSE) != 0;
+}
+
 bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::CheckResult &cres, const FBoundingBox &box, FCheckPosition &tm)
 {
 	AActor *thing = cres.thing;
@@ -1372,6 +1393,9 @@ bool PIT_CheckThing(FMultiBlockThingsIterator &it, FMultiBlockThingsIterator::Ch
 		return true;
 
 	if ((thing->ThruBits & tm.thing->ThruBits) && ((thing->flags8 | tm.thing->flags8) & MF8_ALLOWTHRUBITS))
+		return true;
+
+	if (HCDEPredictionShouldIgnoreCorpseObstacle(tm.thing, thing))
 		return true;
 
 	// HCDE: Invasion client mirrors currently never block the local player -
@@ -2095,6 +2119,10 @@ int P_TestMobjZ(AActor *actor, bool quick, AActor **pOnmobj)
 			continue;
 		}
 		if ((actor->ThruBits & thing->ThruBits) && ((actor->flags8 | thing->flags8) & MF8_ALLOWTHRUBITS))
+		{
+			continue;
+		}
+		if (HCDEPredictionShouldIgnoreCorpseObstacle(actor, thing))
 		{
 			continue;
 		}
@@ -4665,6 +4693,11 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 		return nullptr;
 	}
 
+	// Phase 5: server-side lag compensation for player hitscan. The scope
+	// rewinds the authority world to the shooter's view tic for the trace,
+	// then restores live state and replays captured damage events.
+	const HCDELagCompScope lagComp(t1, "lineattack");
+
 	bool nointeract = !!(flags & LAF_NOINTERACT);
 	DVector3 direction;
 	double shootz;
@@ -5960,6 +5993,7 @@ void P_UseLines(player_t *player)
 			P_NoWayTraverse(player->mo, start, end))
 		{
 			S_Sound(player->mo, CHAN_VOICE, 0, "*usefail", 1, ATTN_IDLE);
+			Net_DiagTraceUseLine(player - players, -1, false, true);
 		}
 	}
 }

@@ -47,6 +47,7 @@
 #include "sbar.h"
 #include "d_net.h"
 #include "d_netinf.h"
+#include "d_net_rewind.h"
 #include "a_morph.h"
 #include "vm.h"
 #include "g_levellocals.h"
@@ -1602,21 +1603,31 @@ int P_DamageMobj(AActor *target, AActor *inflictor, AActor *source, int damage, 
 		return 0;
 	}
 
+	int retval = 0;
 	IFVIRTUALPTR(target, AActor, DamageMobj)
 	{
 		VMValue params[7] = { target, inflictor, source, damage, mod.GetIndex(), flags, angle.Degrees() };
 		VMReturn ret;
-		int retval;
 		ret.IntAt(&retval);
 		VMCall(func, params, 7, &ret, 1);
-		if (retval > 0)
-			Net_RecordInvasionActorAttack(source, target);
-		return retval;
 	}
 	else
 	{
-		return DoDamageMobj(target, inflictor, source, damage, mod, flags, angle);
+		retval = DoDamageMobj(target, inflictor, source, damage, mod, flags, angle);
 	}
+
+	if (retval > 0)
+	{
+		// Record the original requested damage for lag-comp replay. The
+		// historical bracket runs DoDamageMobj once (throwaway world); on
+		// live restore we replay with the same request so armor runs once.
+		if (HCDERewind_LagCompActive() && !HCDERewind_LagCompReplaying())
+			HCDERewind_LagCompRecordDamage(target, inflictor, source, damage, mod.GetIndex(), flags, angle.Degrees());
+		if (source != nullptr && (!HCDERewind_LagCompActive() || HCDERewind_LagCompReplaying()))
+			Net_RecordInvasionActorAttack(source, target);
+	}
+
+	return retval;
 }
 
 

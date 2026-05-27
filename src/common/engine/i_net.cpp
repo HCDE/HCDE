@@ -65,6 +65,7 @@
 #include "printf.h"
 #include "version.h"
 #include "d_net.h"
+#include "d_net_blackbox.h"
 #include "startupinfo.h"
 #include "sv_master.h"
 #include "widgets/netstartwindow.h"
@@ -96,6 +97,16 @@ CUSTOM_CVAR(Int, sv_maxplayers, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 		self = MAXPLAYERS - 1;
 	}
 }
+
+// Open-entry / late-join admission control. When true, a host (listen server)
+// also accepts new connections while the match is already in progress, just
+// like a dedicated server would. Default true so HCDE listen servers behave
+// like an "open-entry listen dedicated" by default; the host can disable
+// this CVar to enforce a closed roster after start.
+//
+// Dedicated servers (-server) always allow late-join admission regardless of
+// this CVar; this knob only controls the listen-server (-host) path.
+CVAR(Bool, sv_lateJoin, true, CVAR_ARCHIVE | CVAR_SERVERINFO)
 
 /* [Petteri] Get more portable: */
 #ifndef _WIN32
@@ -306,6 +317,12 @@ struct FConnection
 	uint32_t HCDEServiceDuplicateCount = 0u;
 	uint32_t HCDEServiceMalformedStrikes = 0u;
 	uint64_t HCDEServiceMalformedUntil = 0u;
+	// True when this client was admitted while the host was already mid-match
+	// (the dedicated runtime late-join path). Used to advertise dedicated /
+	// server-authority ACK flags to the joiner even when the host itself is a
+	// listen server, so the joiner takes the proper late-join sync path
+	// instead of treating the session like a fresh pregame setup.
+	bool bRuntimeJoin = false;
 	FHCDEPendingService HCDEReliableServices[MaxHCDEReliableServices] = {};
 
 	void Clear()
@@ -326,6 +343,7 @@ struct FConnection
 		HCDEServiceDuplicateCount = 0u;
 		HCDEServiceMalformedStrikes = 0u;
 		HCDEServiceMalformedUntil = 0u;
+		bRuntimeJoin = false;
 		for (auto& service : HCDEReliableServices)
 			service.Clear();
 	}
@@ -1706,6 +1724,7 @@ static void SendPacket(const sockaddr_in& to)
 	TransmitBuffer[3] = crc;
 
 	sendto(MySocket, (const char*)TransmitBuffer, size + 4, 0, (const sockaddr*)&to, sizeof(to));
+	Net_BlackboxRecordPacket(0, RemoteClient, 0u, 0u, 0u, 0u, NetBuffer, NetBufferLength);
 }
 
 static bool FlushHCDEReliableServices(const sockaddr_in& to, FConnection& connection, bool force = false)
@@ -1918,13 +1937,22 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 						}
 					}
 
-					// During an active dedicated match, allow setup/connect packets to
-					// enter the dedicated late-join admission path instead of rejecting
-					// unknown peers immediately as PRE_IN_PROGRESS.
+					// During an active match, allow setup/connect packets to enter
+					// the dedicated runtime late-join admission path instead of
+					// rejecting unknown peers immediately as PRE_IN_PROGRESS.
+					//
+					// Admission is allowed when this node is the HCDE service
+					// authority AND either (a) we were launched as a true
+					// dedicated server (-server) or (b) we are a listen-server
+					// host (-host) with sv_lateJoin enabled. The latter is what
+					// makes a listen server feel like an "open-entry dedicated"
+					// from the joiner's perspective.
 					if (client == -1 && bGameStarted)
 					{
-						const bool admitted = DedicatedServerMode
-							&& I_IsLocalHCDEServiceAuthority()
+						const bool authority = I_IsLocalHCDEServiceAuthority();
+						const bool listenLateJoinAllowed = !DedicatedServerMode && *sv_lateJoin;
+						const bool admissionAllowed = authority && (DedicatedServerMode || listenLateJoinAllowed);
+						const bool admitted = admissionAllowed
 							&& TryProcessSetupConnectPacket(fromAddress, strlen(net_password) > 0, false, true, nullptr);
 						if (admitted)
 						{
@@ -2094,9 +2122,19 @@ static bool TryProcessSetupConnectPacket(const sockaddr_in& from, bool hasPasswo
 		RejectConnection(from, PRE_PROTOCOL_ERROR);
 		return true;
 	}
-	if (DedicatedServerMode && !connectInfo.Present)
+	// Phase 3 (UZDoom legacy removal): HCDE service is mandatory. A peer that
+	// does not advertise HCDE connect info in its PRE_CONNECT packet is either
+	// a stock UZDoom/ZDoom client or a HCDE client that bypassed the
+	// `-join` / `-dedicatedjoin` launcher path. Either way the peer cannot
+	// participate in the HCDE Live snapshot stream, and admitting them would
+	// only re-enable the legacy P2P lockstep code paths we are removing.
+	// Reject them as a protocol-error here so the server stays HCDE-only.
+	if (!connectInfo.Present)
 	{
-		Printf("NetServer:: Legacy setup connect from %s; launcher should use -dedicatedjoin (or legacy -joindedicated) for HCDE service connect.\n", inet_ntoa(from.sin_addr));
+		Printf("NetServer:: Rejecting non-HCDE setup connect from %s (HCDE service is required; relaunch with -join or -dedicatedjoin).\n", inet_ntoa(from.sin_addr));
+		DebugTrace::Warningf("net", "rejecting non-HCDE PRE_CONNECT from %s; HCDE service required", inet_ntoa(from.sin_addr));
+		RejectConnection(from, PRE_PROTOCOL_ERROR);
+		return true;
 	}
 
 	if (hasPassword && strcmp(net_password, (const char*)&NetBuffer[passwordStart]))
@@ -2215,6 +2253,7 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	Connected[client].bHCDEConnect = connectInfo.Present;
 	Connected[client].HCDEConnectVersion = connectInfo.Version;
 	Connected[client].HCDEConnectFlags = connectInfo.Flags;
+	Connected[client].bRuntimeJoin = runtimeJoin;
 	NetworkClients += client;
 	if (connectInfo.Present)
 	{
@@ -2318,10 +2357,18 @@ static void DriveRuntimeSetupStateForClient(int client, int connectedPlayers)
 		NetBuffer[2] = client;
 		NetBuffer[3] = connectedPlayers;
 		NetBuffer[4] = MaxClients;
-		uint8_t ackFlags = DedicatedServerMode ? PRE_CONNECT_ACK_DEDICATED : 0u;
+		// Advertise dedicated/server-authority semantics whenever we are a
+		// true dedicated server OR we admitted this client through the
+		// runtime late-join path (open-entry listen server). The joiner uses
+		// PRE_CONNECT_ACK_DEDICATED to mark itself as DedicatedJoinMode so
+		// it follows the late-join sync flow on its end; without this flag a
+		// listen-server's late-joiner would otherwise re-enter the legacy
+		// pregame path and the host would already have advanced past it.
+		const bool advertiseDedicated = DedicatedServerMode || con.bRuntimeJoin;
+		uint8_t ackFlags = advertiseDedicated ? PRE_CONNECT_ACK_DEDICATED : 0u;
 		if (con.bHCDEConnect)
 			ackFlags |= PRE_CONNECT_ACK_HCDE_SERVICE;
-		if (DedicatedServerMode)
+		if (advertiseDedicated)
 			ackFlags |= PRE_CONNECT_ACK_SERVER_AUTHORITY;
 		NetBuffer[9] = ackFlags;
 		NetBufferLength = 10u;
@@ -2834,10 +2881,15 @@ static bool Host_CheckForConnections(void* connected)
 			NetBuffer[2] = client;
 			NetBuffer[3] = *connectedPlayers;
 			NetBuffer[4] = MaxClients;
-			uint8_t ackFlags = DedicatedServerMode ? PRE_CONNECT_ACK_DEDICATED : 0u;
+			// Mirror DriveRuntimeSetupStateForClient: a listen-server's late
+			// joiner (bRuntimeJoin) needs to be told this is a dedicated /
+			// server-authority connection so its client-side state machine
+			// takes the late-join code path.
+			const bool advertiseDedicated = DedicatedServerMode || con.bRuntimeJoin;
+			uint8_t ackFlags = advertiseDedicated ? PRE_CONNECT_ACK_DEDICATED : 0u;
 			if (con.bHCDEConnect)
 				ackFlags |= PRE_CONNECT_ACK_HCDE_SERVICE;
-			if (DedicatedServerMode)
+			if (advertiseDedicated)
 				ackFlags |= PRE_CONNECT_ACK_SERVER_AUTHORITY;
 			NetBuffer[9] = ackFlags;
 			NetBufferLength = 10u;
@@ -3778,8 +3830,15 @@ static bool Guest_ContactHost(void* unused)
 			const size_t passSize = strlen(net_password) + 1;
 			memcpy(&NetBuffer[end], net_password, passSize);
 			NetBufferLength = end + passSize;
-			if (DedicatedJoinMode || SilentNetStartMode)
-				AppendHCDEConnectInfo(BuildLocalHCDEConnectFlags());
+			// Phase 3 (UZDoom legacy removal): always advertise HCDE connect
+			// info on outgoing PRE_CONNECT. The legacy gate
+			// `DedicatedJoinMode || SilentNetStartMode` only emitted it on
+			// dedicated-join / silent-launcher flows, which meant a plain
+			// `-join` guest looked indistinguishable from a stock UZDoom/
+			// ZDoom client and would now be rejected by the host's
+			// HCDE-mandatory admission check. Every HCDE binary always
+			// supports HCDE service, so we just always declare it.
+			AppendHCDEConnectInfo(BuildLocalHCDEConnectFlags());
 			SendPacket(Connected[0].Address);
 			if (DedicatedLateJoinRetryPendingSend)
 			{

@@ -33,6 +33,7 @@
 #include "animations.h"
 #include "texturemanager.h"
 #include "vm.h"
+#include "d_net_diagnostics.h"
 
 EXTERN_CVAR(Bool, net_repeatableactioncooldown)
 
@@ -517,6 +518,8 @@ bool FLevelLocals::EV_DoDoor (DDoor::EVlDoor type, line_t *line, AActor *thing,
 		}
 
 	}
+	if (rtn)
+		Net_DiagTraceDoorEvent(tag, int(type), 0, speed);
 	return rtn;
 }
 

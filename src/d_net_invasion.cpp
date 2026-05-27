@@ -1122,6 +1122,12 @@ static int Net_DestroyTrackedInvasionMonsters(const char* reason)
 	Net_ClearInvasionReplicatedActorIndexes();
 	Net_ClearHCDEReplicatedActors();
 	InvasionPendingMirrorSpawns.Clear();
+	// Drop the missing-class accounting at the same time we drop the mirror
+	// tables so a level/wave transition starts each map with a clean slate.
+	// Keeping the table around across maps would let stale entries from a
+	// previous level confuse net_invasion_missing_classes after the user
+	// loaded the missing PK3.
+	Net_ClearInvasionMissingClassTable();
 	for (int client = 0; client < MAXPLAYERS; ++client)
 	{
 		HCDEInvasionActorDeltaV2SendCursor[client] = 0u;
@@ -1619,8 +1625,9 @@ static void Net_LogInvasionSpawnDiagnostic(const char* event, const FInvasionSpa
 
 	++consoleCount;
 	lastConsoleTic = gametic;
+	const double nextReadySeconds = nextReadyDelayTics >= 0 ? (double(nextReadyDelayTics) / TICRATE) : -1.0;
 	Printf(PRINT_HIGH,
-		"Invasion spawn %s: reason=%s wave=%d/%d budget=%d spawned=%d ready=%d next-ready=%d spots=%d active=%d tag=%d spot=%s tid=%d planned=%d spot-spawned=%d\n",
+		"Invasion spawn %s: reason=%s wave=%d/%d budget=%d spawned=%d ready=%d next-ready=%d (%.2fs) spots=%d active=%d tag=%d spot=%s tid=%d planned=%d spot-spawned=%d\n",
 		event != nullptr ? event : "diagnostic",
 		reason != nullptr ? reason : "unknown",
 		InvasionWaveDirector.Wave,
@@ -1629,6 +1636,7 @@ static void Net_LogInvasionSpawnDiagnostic(const char* event, const FInvasionSpa
 		InvasionWaveDirector.WaveSpawned,
 		readySpots,
 		nextReadyDelayTics,
+		nextReadySeconds,
 		InvasionSpawnDirectory.TotalSpotCount,
 		InvasionSpawnDirectory.ActiveSpotCount,
 		InvasionSpawnDirectory.ActiveTag,
@@ -1745,6 +1753,7 @@ static bool Net_TryConsumeInvasionSpawnSlot()
 static void Net_ResetInvasionState(const char* reason)
 {
 	Net_DestroyTrackedInvasionMonsters(reason != nullptr ? reason : "reset");
+	InvasionPendingWave = 0;
 	InvasionWaveDirector.Reset();
 	InvasionSpawnDirectory.Reset();
 	HCDERecentAuthorityEvents.Clear();
@@ -1753,6 +1762,7 @@ static void Net_ResetInvasionState(const char* reason)
 	InvasionReplicatedActors.Clear();
 	Net_ClearInvasionReplicatedActorIndexes();
 	Net_ClearHCDEReplicatedActors();
+	Net_ClearInvasionMissingClassTable();
 	for (int client = 0; client < MAXPLAYERS; ++client)
 	{
 		HCDEInvasionActorDeltaV2SendCursor[client] = 0u;
@@ -1891,18 +1901,18 @@ static void Net_StartInvasionWave(const char* reason);
 static void Net_StartInvasionCountdownForNextWave(const char* reason)
 {
 	InvasionWaveDirector.MaxWaves = Net_ResolveInvasionMaxWaves();
-	if (InvasionWaveDirector.Wave >= InvasionWaveDirector.MaxWaves)
+	const int pendingWave = InvasionWaveDirector.Wave + 1;
+	if (pendingWave > InvasionWaveDirector.MaxWaves)
 	{
 		Net_SetInvasionState(INVS_VICTORY, Net_InvasionSecondsToTics(sv_invasionresulttime),
 			reason != nullptr ? reason : "waves-complete");
 		return;
 	}
 
-	// Skulltag invasion ACS expects GetInvasionWave() to already report the
-	// pending wave while GetInvasionState() is IS_COUNTDOWN.
+	// Keep active wave state unchanged during prepare/countdown so maps that gate
+	// areas by current wave don't trigger too early before combat starts.
+	InvasionPendingWave = pendingWave;
 	Net_DestroyTrackedInvasionMonsters("wave-countdown");
-	++InvasionWaveDirector.Wave;
-	InvasionWaveDirector.WaveFlags = Net_IsInvasionBossWave(InvasionWaveDirector.Wave) ? INV_WAVEF_BOSS : 0u;
 	InvasionWaveDirector.WaveBudget = 0;
 	InvasionWaveDirector.WaveSpawned = 0;
 	InvasionWaveDirector.WaveCleared = 0;
@@ -1924,11 +1934,10 @@ static void Net_StartInvasionCountdownForNextWave(const char* reason)
 static void Net_StartInvasionWave(const char* reason)
 {
 	InvasionWaveDirector.MaxWaves = Net_ResolveInvasionMaxWaves();
-	const bool usingPendingCountdownWave = InvasionState == INVS_COUNTDOWN
-		&& InvasionWaveDirector.Wave > 0
-		&& InvasionWaveDirector.WaveSpawned == 0
-		&& InvasionWaveDirector.ActiveMonsters.Size() == 0;
-	if (!usingPendingCountdownWave && InvasionWaveDirector.Wave >= InvasionWaveDirector.MaxWaves)
+	const bool usingPendingCountdownWave = InvasionPendingWave > 0
+		&& InvasionState == INVS_COUNTDOWN;
+	const int waveToStart = usingPendingCountdownWave ? InvasionPendingWave : InvasionWaveDirector.Wave + 1;
+	if (waveToStart > InvasionWaveDirector.MaxWaves)
 	{
 		Net_SetInvasionState(INVS_VICTORY, Net_InvasionSecondsToTics(sv_invasionresulttime),
 			reason != nullptr ? reason : "waves-complete");
@@ -1939,8 +1948,8 @@ static void Net_StartInvasionWave(const char* reason)
 	// inherits live actors from an older wave.
 	Net_DestroyTrackedInvasionMonsters("wave-start");
 
-	if (!usingPendingCountdownWave)
-		++InvasionWaveDirector.Wave;
+	InvasionWaveDirector.Wave = waveToStart;
+	InvasionPendingWave = 0;
 
 	if ((dmflags & DF_FAST_MONSTERS) != 0)
 	{

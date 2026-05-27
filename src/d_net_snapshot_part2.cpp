@@ -143,11 +143,9 @@ static bool HCDEBuildNativeServerSnapshotPayload(int client, uint8_t controlFlag
 	const size_t playerSnapshotEnd = bodyCursor;
 	if (!HCDEAppendServerWorldDeltas(client, output, outputCapacity, bodyCursor, worldDeltaPlayers, worldDeltaPlayerCount))
 		return fail("server-snapshot-world-delta-build");
-	if (*net_echo_debug != 0)
-	{
-		if (!HCDEAppendPresentationEcho(client, output, outputCapacity, bodyCursor, worldDeltaPlayers, worldDeltaPlayerCount))
-			return fail("server-snapshot-presentation-echo-build");
-	}
+	// Body chunk order must match HCDEApplyNativeServerSnapshotPayload: world,
+	// actor/invasion, presentation echo, checksum. Echo before actor breaks apply
+	// when net_echo_debug is on (default) and clients negotiate actor-delta-v2.
 	if (!Net_IsInvasionModeEnabled()
 		&& !HCDEAppendSharedActorDeltasV2(client, output,
 			HCDELiveLaneBudgetEnd(client, HLANE_ACTOR_DELTA, bodyCursor, outputCapacity), bodyCursor))
@@ -159,6 +157,12 @@ static bool HCDEBuildNativeServerSnapshotPayload(int client, uint8_t controlFlag
 	{
 		return fail("server-snapshot-invasion-build");
 	}
+	if (*net_echo_debug != 0)
+	{
+		if (!HCDEAppendPresentationEcho(client, output, outputCapacity, bodyCursor, worldDeltaPlayers, worldDeltaPlayerCount))
+			return fail("server-snapshot-presentation-echo-build");
+	}
+	Net_ChecksumApplyServerChunk(output, outputCapacity, bodyCursor);
 
 	const size_t bodyBytes = bodyCursor - HCDEServerSnapshotHeaderSize - quitterBytes;
 	if (bodyBytes > UINT16_MAX)
@@ -255,6 +259,9 @@ static bool HCDEBuildNativeClientInputPayload(int client, uint8_t controlFlags, 
 		}
 	}
 
+	if (!Net_DiagTryAppendMarkChunk(output, outputCapacity, bodyCursor))
+		return fail("client-input-mark-chunk-overflow");
+
 	const size_t bodyBytes = bodyCursor - HCDEClientInputHeaderSize;
 	if (bodyBytes > UINT16_MAX)
 		return fail("client-input-body-too-large");
@@ -344,6 +351,8 @@ static void HCDEApplyNativeGameplayHeader(int clientNum, uint8_t controlFlags, u
 	if (routingByte != CurrentRoomID)
 	{
 		staleRoom = true;
+		Net_DiagTraceInputAuthority(clientNum, "stale-room",
+			FStringf("packet-room=%u current-room=%u", unsigned(routingByte), unsigned(CurrentRoomID)).GetChars());
 		DebugTrace::Markf("net", "ignored stale-room native packet client=%d packet-room=%u current-room=%u gametic=%d clienttic=%d",
 			clientNum, unsigned(routingByte), unsigned(CurrentRoomID), gametic, ClientTic);
 		return;
@@ -447,7 +456,12 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 			return fail("client-input-duplicate-player-record");
 		playersSeen |= playerMask;
 		if (!HCDEInputRecordAuthorized(clientNum, playerNum, playerCount))
+		{
+			Net_DiagTraceInputAuthority(clientNum, "reject-unauthorized-record",
+				FStringf("player=%u count=%u", unsigned(playerNum), unsigned(playerCount)).GetChars());
 			return fail("client-input-unauthorized-player-record");
+		}
+		HCDERewind_RecordClientViewTic(playerNum, int(sequenceAck));
 
 		uint64_t consistencyOffsetsSeen = 0u;
 		for (uint8_t r = 0u; r < consistencyCount; ++r)
@@ -488,6 +502,16 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 			if (!HCDEReadUserCmdFields(body, bodyBytes, bodyCursor, command))
 				return fail("client-input-usercmd-invalid");
 		}
+	}
+	// The optional HCMK diagnostic mark chunk is appended after the per-player
+	// records by HCDEBuildNativeClientInputPayload; tolerate (and skip past)
+	// it during validation so the trailing-bytes check below still catches
+	// genuinely malformed payloads.
+	if (bodyCursor < bodyBytes)
+	{
+		size_t markChunkBytes = 0u;
+		if (Net_DiagPeekMarkChunk(body, bodyBytes, bodyCursor, markChunkBytes))
+			bodyCursor += markChunkBytes;
 	}
 	if (bodyCursor != bodyBytes)
 		return fail("client-input-body-trailing-bytes");
@@ -587,6 +611,9 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 	ClientStates[clientNum].MalformedPacketStrikes = 0u;
 	ClientStates[clientNum].MalformedWindowStartMS = 0u;
 	ClearHCDELiveReplayPressure(clientNum, "client-input-native-apply");
+	Net_DiagTryConsumeMarkChunk(body, bodyBytes, bodyCursor, clientNum);
+	Net_DiagTraceInputAuthority(clientNum, "native-apply",
+		FStringf("players=%u tics=%u consistencies=%u records=%zu", unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes).GetChars());
 	DebugTrace::Markf("net", "HCDE client input native-apply client=%d room=%u tic=%u players=%u tics=%u consistencies=%u records=%zu",
 		clientNum, unsigned(CurrentRoomID), remoteGameTic, unsigned(playerCount), unsigned(commandTics), unsigned(consistencyTics), bodyBytes);
 	++HCDELiveProfile.ClientInputNativeApplied;
@@ -921,6 +948,7 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 		if (!HCDEReadPresentationEcho(clientNum, body, bodyBytes, bodyCursor))
 			return fail("server-snapshot-presentation-echo-invalid");
 	}
+	Net_ChecksumReadAndCompare(body, bodyBytes, bodyCursor, remoteGameTic);
 	if (bodyCursor != bodyBytes)
 		return fail("server-snapshot-body-trailing-bytes");
 
@@ -1154,6 +1182,15 @@ static bool HandleHCDELivePacket(int clientNum)
 		AcceptHCDELiveSequence(clientNum, type, sequence);
 		peer.PeerAck = ack;
 		++peer.SnapshotReceived;
+		HCDEMovementOnSnapshotRx(clientNum, I_msTime());
+		// When the authority snapshot lands, echo any pending input buttons:
+		// any button issued before this tic has now had a chance to be
+		// observed by the server. This is a proxy for input-to-effect latency.
+		if (I_IsHCDEServiceAuthoritySlot(clientNum))
+		{
+			HCDEMovementOnInputEcho(BT_ATTACK, ClientTic);
+			HCDEMovementOnInputEcho(BT_USE, ClientTic);
+		}
 		if (peer.SnapshotReceived == 1u)
 			Printf("NetSession:: HCDE live server snapshots active with client %d\n", clientNum);
 		DebugTrace::Markf("net", "HCDE live snapshot boundary recv client=%d payload=%zu from-authority=%d",
@@ -1229,17 +1266,28 @@ static void HCDEAbortLiveGameplaySend(int client, EHCDELiveMessage type, const c
 	}
 }
 
-// Final guard for the legacy NetBuffer send path. Non-HCDE peers (or anything not
-// classified as live gameplay) still send through the classic NCMD packet shaped
-// in NetBuffer. For HCDE gameplay we must have already gone through the native
-// HSendNative* wrappers; reaching here means the native build was bypassed, so we
-// abort with a native-only diagnostic instead of leaking NCMD onto the wire.
+// Phase 2 (UZDoom NCMD removal): the legacy NetBuffer send path no longer
+// exists for gameplay packets. HCDE service is mandatory after the connect
+// handshake, so every peer that reaches gameplay state has negotiated native
+// HCIN/HCSN. Reaching this function with a non-native gameplay packet means
+// the build path was skipped or a stray NCMD-shaped packet was queued; in
+// either case we drop the peer (HCDEEnforcesNativeGameplayForPeer is now
+// effectively always true for connected clients) instead of leaking a raw
+// NCMD packet onto the wire. The function name is kept because callers in
+// d_net.cpp's NetUpdate still funnel through it; the body is now strictly a
+// guard rail rather than a fallback.
 static void HSendLiveGameplayPacket(int client, size_t size)
 {
 	const bool clientCommand = ShouldWrapHCDEClientCommandPacket(client);
 	const bool serverSnapshot = ShouldWrapHCDEServerSnapshotPacket(client);
 	if (!clientCommand && !serverSnapshot)
 	{
+		// Non-gameplay setup/control packets still exist (heartbeats,
+		// PRE_CONNECT_ACK, etc.) and ride the same wire wrapper, so a non-
+		// gameplay packet to a non-HCDE-gameplay peer is still legitimate
+		// and must reach HSendPacket. The HCDE-peer reject branch handles
+		// the case where someone tried to slip a legacy gameplay shape
+		// through the gameplay codepath.
 		if (HCDEEnforcesNativeGameplayForPeer(client))
 		{
 			HCDERejectLegacyGameplayPeer(client, "send", I_ClientUsesHCDEService(client) ? "native-route-unavailable" : "non-hcde-peer");

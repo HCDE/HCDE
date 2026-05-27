@@ -67,6 +67,9 @@ static bool HCDEAppendServerWorldDeltas(int client, uint8_t* output, size_t outp
 		{
 			return false;
 		}
+		Net_DiagTraceServerPlayerTruth(client, uint32_t(gametic), int(playerNum),
+			pos.X, pos.Y, pos.Z, vel.X, vel.Y, vel.Z, health, (flags & HCDEServerWorldDeltaPoseOnGround) != 0u,
+			uint8_t(player.playerstate));
 	}
 	++HCDELiveProfile.WorldDeltaPacketsBuilt;
 	HCDELiveProfile.WorldDeltaRecordsBuilt += playerCount;
@@ -294,7 +297,7 @@ static void HCDEApplyLocalHealthFields(player_t& player, int serverHealth, bool 
 }
 
 static void HCDEApplyLocalPoseRepair(player_t& player, const DVector3& serverPos, const DVector3& serverVel,
-	uint32_t yawBam, uint32_t pitchBam, bool onGround, bool clearPrediction)
+	uint32_t yawBam, uint32_t pitchBam, bool onGround, bool clearPrediction, bool preserveViewAngles = false)
 {
 	AActor* mo = player.mo;
 	if (mo == nullptr)
@@ -310,8 +313,15 @@ static void HCDEApplyLocalPoseRepair(player_t& player, const DVector3& serverPos
 	const DVector3 oldPos = mo->Pos();
 	mo->SetOrigin(serverPos, false);
 	mo->Vel = serverVel;
-	mo->SetAngle(DAngle::fromBam(yawBam), 0);
-	mo->SetPitch(DAngle::fromBam(pitchBam), 0);
+	// Baseline drift repair snaps XY/Z to the authority pawn but must not
+	// overwrite the local mouse-look vector: server snapshots carry the
+	// authoritative movement-facing angle, which lags usercmd pitch on the
+	// client by the prediction lead and was yanking the view (often down).
+	if (!preserveViewAngles)
+	{
+		mo->SetAngle(DAngle::fromBam(yawBam), 0);
+		mo->SetPitch(DAngle::fromBam(pitchBam), 0);
+	}
 	player.onground = onGround;
 	if (player.viewheight > 0.0)
 		player.viewz = serverPos.Z + player.viewheight;
@@ -323,13 +333,96 @@ static void HCDEApplyLocalPoseRepair(player_t& player, const DVector3& serverPos
 		P_ClearPredictionData();
 }
 
-static bool HCDELocalPlayerNeedsPoseRepair(const player_t& player, int serverHealth, double driftSq)
+static DVector3 HCDELocalReconcileReferenceVelocity(const AActor& mo, const DVector3& serverVel)
+{
+	return serverVel.LengthSquared() > mo.Vel.LengthSquared() ? serverVel : mo.Vel;
+}
+
+// Allowance covering normal client prediction lead vs authoritative pose:
+//   gap_tics = (gametic - serverTic) [snapshot age] + (ClientTic - gametic) [render lead]
+// Prediction is allowed to place the pawn that many tics worth of movement
+// ahead of the authority snapshot. We measure on PREDICTED render pose so the
+// visible pawn never has to be rolled back just to compute drift; un-predict
+// is reserved for actual repairs further down.
+static double HCDEComputeExpectedPredictionDriftAllowance(const DVector3& velocity, uint32_t serverTic)
+{
+	const int ticDup = max<int>(TicDup, 1);
+	const int snapshotAgeTics = max<int>((gametic - int(serverTic)) / ticDup, 0);
+	const int renderLeadTics = max<int>((ClientTic - gametic) / ticDup, 0);
+	const int configuredLeadTics = clamp<int>(*cl_net_prediction_lead, 0, 8);
+	const int leadTics = max(snapshotAgeTics + renderLeadTics, configuredLeadTics);
+	const double speed = max(velocity.Length(), 0.0);
+	// Steady-state speed * leadTics is the geometric mid-line. Real movement
+	// also accelerates / decelerates / strafes within the lead window, so
+	// add a per-tic acceleration slack term plus a fixed floor that absorbs
+	// sub-tic timing jitter (TICRATE wallclock vs render frame).
+	const double accelSlackPerTic = 8.0;
+	const double margin = HCDEServerReconcileDistance + HCDEServerBaselineRepairDistance * 0.25
+		+ accelSlackPerTic * double(max(leadTics, 1));
+	return speed * double(leadTics) + margin;
+}
+
+static double HCDELocalPlayerDriftSqVsServer(const player_t& player, const DVector3& serverPos)
+{
+	const AActor* mo = player.mo;
+	if (mo == nullptr)
+		return 0.0;
+
+	DVector3 delta = mo->Pos() - serverPos;
+	if (mo->Level != nullptr && mo->Sector != nullptr)
+	{
+		sector_t* serverSector = mo->Level->PointInSector(serverPos);
+		if (serverSector != nullptr)
+			delta += mo->Level->Displacements.getOffset(mo->Sector->PortalGroup, serverSector->PortalGroup);
+	}
+	return delta.LengthSquared();
+}
+
+static bool HCDELocalDriftExceedsPredictionAllowance(double driftSq, const DVector3& velocity, uint32_t serverTic)
+{
+	const double allowance = HCDEComputeExpectedPredictionDriftAllowance(velocity, serverTic);
+	return driftSq > allowance * allowance;
+}
+
+static void HCDELocalReconcileDebugTrace(uint32_t serverTic, double drift, const DVector3& velocity,
+	bool applyPose, const char* reason)
+{
+	if (*net_reconcile_debug <= 0)
+		return;
+	if (drift < HCDEServerBaselineRepairDistance)
+		return;
+
+	const double allowance = HCDEComputeExpectedPredictionDriftAllowance(velocity, serverTic);
+	if (*net_reconcile_debug >= 2 || applyPose)
+	{
+		const int ticDup = max<int>(TicDup, 1);
+		const int snapshotAgeTics = max<int>((gametic - int(serverTic)) / ticDup, 0);
+		const int renderLeadTics = max<int>((ClientTic - gametic) / ticDup, 0);
+		DebugTrace::Markf("net",
+			"HCDE reconcile %s drift=%.2f allowance=%.2f speed=%.2f lead=(snap=%d render=%d cfg=%d) serverTic=%u gametic=%d clienttic=%d pose=%d",
+			reason, drift, allowance, velocity.Length(),
+			snapshotAgeTics, renderLeadTics, int(*cl_net_prediction_lead),
+			unsigned(serverTic), gametic, ClientTic, applyPose ? 1 : 0);
+	}
+}
+
+static bool HCDELocalPlayerNeedsPoseRepair(const player_t& player, int serverHealth, double driftSq,
+	uint32_t serverTic, const DVector3& serverVel)
 {
 	if (player.mo == nullptr)
 		return false;
 
 	if (driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance)
 		return true;
+
+	const DVector3 refVel = HCDELocalReconcileReferenceVelocity(*player.mo, serverVel);
+	// Compare against predicted render pose with a lead-aware allowance that
+	// fully covers (snapshot age + render lead) tics of movement plus
+	// acceleration slack. Repairing for ordinary lead caused snap-back loops.
+	if (HCDELocalDriftExceedsPredictionAllowance(driftSq, refVel, serverTic))
+	{
+		return true;
+	}
 
 	const int previousHealth = max<int>(player.health, player.mo->health);
 	if (serverHealth >= previousHealth)
@@ -372,8 +465,9 @@ static void HCDEQueuePredictedLocalHealthRepair(uint32_t serverTic, int serverHe
 		if (applyPose && serverPos != nullptr && serverVel != nullptr && player.mo != nullptr)
 		{
 			const double driftSq = (player.mo->Pos() - *serverPos).LengthSquared();
+			const bool hardRepair = driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance;
 			HCDEApplyLocalPoseRepair(player, *serverPos, *serverVel, yawBam, pitchBam, onGround,
-				driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+				hardRepair, !hardRepair);
 		}
 		HCDEApplyLocalHealthFields(player, serverHealth, onGround);
 	}
@@ -392,13 +486,14 @@ static void HCDEApplyPendingLocalHealthRepair()
 			const double driftSq = player.mo != nullptr
 				? (player.mo->Pos() - PendingLocalHealthRepair.Pos).LengthSquared()
 				: 0.0;
+			const bool hardRepair = driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance;
 			HCDEApplyLocalPoseRepair(player,
 				PendingLocalHealthRepair.Pos,
 				PendingLocalHealthRepair.Vel,
 				PendingLocalHealthRepair.Yaw,
 				PendingLocalHealthRepair.Pitch,
 				PendingLocalHealthRepair.OnGround,
-				driftSq > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+				hardRepair, !hardRepair);
 		}
 		HCDEApplyLocalHealthFields(player,
 			PendingLocalHealthRepair.Health,
@@ -485,14 +580,7 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 		++peer.WorldDeltaReceived;
 		const DVector3 serverPos = { values[0], values[1], values[2] };
 		const DVector3 serverVel = { values[3], values[4], values[5] };
-		DVector3 delta = mo->Pos() - serverPos;
-		if (mo->Level != nullptr && mo->Sector != nullptr)
-		{
-			sector_t* serverSector = mo->Level->PointInSector(serverPos);
-			if (serverSector != nullptr)
-				delta += mo->Level->Displacements.getOffset(mo->Sector->PortalGroup, serverSector->PortalGroup);
-		}
-		const double drift = delta.LengthSquared();
+		const double drift = HCDELocalPlayerDriftSqVsServer(player, serverPos);
 		const int serverHealth = int(int16_t(healthBits));
 		if (playerNum == consoleplayer)
 		{
@@ -517,19 +605,35 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 			// destination. Every input the client sends from that point would
 			// be against the wrong sector / wrong line-side, which is exactly
 			// the desync users report after walking through a teleporter. The
-			// drift threshold is shared with HCDELocalPlayerNeedsPoseRepair so
-			// the "did the server move us against our will" decision stays in
-			// one place; the soft-drift damage path keeps its tighter rule
-			// (HCDEServerReconcilePoseDamageDistance) because that one is
-			// designed to bias against snapping during ordinary movement.
-			const bool localNeedsPoseRepair = drift > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance;
+			// Hard drift = teleport / line-portal signature (384+). Baseline drift
+			// beyond prediction-lead allowance catches real movement desync.
+			const DVector3 refVel = HCDELocalReconcileReferenceVelocity(*mo, serverVel);
+			const bool localNeedsHardPoseRepair = drift > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance;
+			const bool localNeedsBaselinePoseRepair = HCDELocalDriftExceedsPredictionAllowance(drift, refVel, serverTic);
 			const bool serverHealthMatchesLocal = mo->health == serverHealth && player.health == serverHealth;
 			const bool serverOnGroundMatchesLocal = player.onground == serverReportsOnGround;
 			const bool needsLocalStateRepair = localNeedsRespawnRepair
 				|| localNeedsDeathRepair
-				|| localNeedsPoseRepair
+				|| localNeedsHardPoseRepair
+				|| localNeedsBaselinePoseRepair
 				|| !serverHealthMatchesLocal
 				|| !serverOnGroundMatchesLocal;
+
+			// Movement diagnostics: record per-snapshot drift for the local
+			// player even when no repair is needed. Tier indicates the most
+			// severe repair required; 0 means the snapshot was within
+			// prediction tolerance.
+			{
+				const int repairTier = localNeedsRespawnRepair ? 3
+					: localNeedsDeathRepair ? 4
+					: localNeedsHardPoseRepair ? 2
+					: localNeedsBaselinePoseRepair ? 1
+					: 0;
+				const double velDeltaUnits = (mo->Vel - serverVel).Length();
+				HCDEMovementOnReconcile(serverTic, sqrt(drift), velDeltaUnits,
+					serverHealth, player.health, repairTier);
+			}
+
 			if (!needsLocalStateRepair)
 				continue;
 			// "Drift-only" = the pose-drift threshold is the SOLE reason we're
@@ -540,19 +644,32 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 			// Kept structurally aligned with `needsLocalStateRepair` above so
 			// adding a future trigger to the OR-chain forces us to revisit
 			// this label too instead of silently mis-tagging the new path.
-			const bool driftOnlyRepair = localNeedsPoseRepair
+			const bool driftOnlyRepair = (localNeedsHardPoseRepair || localNeedsBaselinePoseRepair)
 				&& !localNeedsRespawnRepair
 				&& !localNeedsDeathRepair
 				&& serverHealthMatchesLocal
 				&& serverOnGroundMatchesLocal;
 			if (driftOnlyRepair)
 			{
-				DebugTrace::Markf("net",
-					"HCDE client teleport reconcile player=%u drift=%.2f local=(%.1f,%.1f,%.1f) server=(%.1f,%.1f,%.1f) tic=%u",
-					unsigned(playerNum), sqrt(drift),
-					mo->X(), mo->Y(), mo->Z(),
-					serverPos.X, serverPos.Y, serverPos.Z,
-					unsigned(serverTic));
+				if (localNeedsHardPoseRepair)
+				{
+					DebugTrace::Markf("net",
+						"HCDE client teleport reconcile player=%u drift=%.2f local=(%.1f,%.1f,%.1f) server=(%.1f,%.1f,%.1f) tic=%u",
+						unsigned(playerNum), sqrt(drift),
+						mo->X(), mo->Y(), mo->Z(),
+						serverPos.X, serverPos.Y, serverPos.Z,
+						unsigned(serverTic));
+				}
+				else
+				{
+					DebugTrace::Markf("net",
+						"HCDE client excess baseline reconcile player=%u drift=%.2f allowance=%.2f local=(%.1f,%.1f,%.1f) server=(%.1f,%.1f,%.1f) tic=%u",
+						unsigned(playerNum), sqrt(drift),
+						HCDEComputeExpectedPredictionDriftAllowance(refVel, serverTic),
+						mo->X(), mo->Y(), mo->Z(),
+						serverPos.X, serverPos.Y, serverPos.Z,
+						unsigned(serverTic));
+				}
 			}
 
 			++peer.BaselineLocalDrift;
@@ -567,11 +684,37 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				&& !localNeedsRespawnRepair
 				&& !localNeedsDeathRepair)
 			{
-				const bool applyPose = HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift);
+				const bool localNeedsPoseDriftRepair = localNeedsHardPoseRepair || localNeedsBaselinePoseRepair;
+				if (localNeedsPoseDriftRepair)
+				{
+					// Pose drift beyond the prediction allowance needs a new
+					// authoritative base immediately. Queuing it as a predicted
+					// health repair can let the next prediction replay keep
+					// walking away from the server for another snapshot.
+					P_UnPredictClient();
+					mo = player.mo;
+					if (mo == nullptr)
+						continue;
+					PendingLocalHealthRepair.Valid = false;
+					HCDEApplyLocalPoseRepair(player, serverPos, serverVel, yaw, pitch, serverReportsOnGround, true,
+						!localNeedsHardPoseRepair);
+					HCDEApplyLocalHealthFields(player, serverHealth, serverReportsOnGround);
+					HCDELocalReconcileDebugTrace(serverTic, sqrt(drift), refVel, true, "apply-predict-pose");
+					++HCDELiveProfile.PredictionLocalStateRepairs;
+					++peer.Reconciliations;
+					DebugTrace::Markf("net", "HCDE client local pose repair from=%d player=%u drift=%.2f health=%d baseline=%d hard=%d reconciliations=%u",
+						clientNum, unsigned(playerNum), sqrt(drift), serverHealth,
+						localNeedsBaselinePoseRepair ? 1 : 0, localNeedsHardPoseRepair ? 1 : 0, peer.Reconciliations);
+					continue;
+				}
+
+				const bool applyPose = HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift, serverTic, serverVel);
 				HCDEQueuePredictedLocalHealthRepair(serverTic, serverHealth, serverReportsOnGround,
 					applyPose ? &serverPos : nullptr,
 					applyPose ? &serverVel : nullptr,
 					yaw, pitch, applyPose);
+				HCDELocalReconcileDebugTrace(serverTic, sqrt(drift), refVel, applyPose,
+					applyPose ? "apply-predict-queue" : "skip-predict-queue");
 				++HCDELiveProfile.PredictionLocalHealthRepairs;
 				++peer.Reconciliations;
 				DebugTrace::Markf("net", "HCDE client local health repair queued from=%d player=%u drift=%.2f health=%d pose=%d reconciliations=%u",
@@ -819,16 +962,20 @@ static bool HCDEValidateServerWorldDeltas(int clientNum, const uint8_t* body, si
 				continue;
 			}
 
-			// Local clients own prediction for their own pawn. Do not apply
-			// server-authored position during normal movement; doing so can pin
-			// movement if the dedicated input route lags. When the server reports
-			// damage with meaningful drift, snap to the authoritative pose so melee
-			// and other hitscan/contact deaths line up with what the player sees.
-			const bool applyPose = HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift);
+			// Local clients own prediction for their own pawn. Keep ordinary
+			// prediction lead untouched, but snap to the authoritative pose when
+			// drift exceeds the allowance computed from snapshot age/render lead
+			// (or when damage/death state needs the pose to line up).
+			const bool applyPose = localNeedsHardPoseRepair
+				|| localNeedsBaselinePoseRepair
+				|| HCDELocalPlayerNeedsPoseRepair(player, serverHealth, drift, serverTic, serverVel);
+			HCDELocalReconcileDebugTrace(serverTic, sqrt(drift), refVel, applyPose,
+				applyPose ? "apply-state-repair" : "skip-state-repair");
 			if (applyPose)
 			{
+				const bool hardRepair = localNeedsHardPoseRepair;
 				HCDEApplyLocalPoseRepair(player, serverPos, serverVel, yaw, pitch, serverReportsOnGround,
-					drift > HCDEServerReconcileHardDistance * HCDEServerReconcileHardDistance);
+					hardRepair, !hardRepair);
 			}
 			HCDEApplyLocalHealthFields(player, serverHealth, serverReportsOnGround);
 			PendingLocalHealthRepair.Valid = false;
@@ -1362,6 +1509,70 @@ static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skip
 
 }
 
+// Per-class accounting for authoritative spawns whose ZScript class is not
+// loaded on this client (e.g. server has a Doom 2 remake pack the client
+// doesn't have, or load order disagreement between client and server). The
+// authority-side monster still exists in the server playsim and can damage
+// the local player; the client just has no mirror to render. That matches
+// the "invisible monster shooting me" symptom exactly, so we count and
+// surface these so the user has a fast way to identify the missing pack
+// rather than chasing it as a desync.
+struct FInvasionMissingClassRecord
+{
+	uint32_t Count = 0u;
+	int FirstSeenTic = 0;
+	int LastSeenTic = 0;
+	int FirstSeenWave = 0;
+};
+static TMap<FString, FInvasionMissingClassRecord> InvasionMissingClassTable = {};
+static uint32_t InvasionMissingClassTotalSpawns = 0u;
+
+static void Net_NoteMissingMirrorClass(const char* className, const char* source)
+{
+	if (className == nullptr || *className == '\0')
+		return;
+	++InvasionMissingClassTotalSpawns;
+	FString key(className);
+	if (auto* existing = InvasionMissingClassTable.CheckKey(key); existing != nullptr)
+	{
+		++existing->Count;
+		existing->LastSeenTic = gametic;
+		// Quiet on subsequent sightings; the per-class warning was already
+		// emitted on first occurrence and the running total is exposed via
+		// `net_invasion_missing_classes`.
+		return;
+	}
+
+	FInvasionMissingClassRecord rec = {};
+	rec.Count = 1u;
+	rec.FirstSeenTic = gametic;
+	rec.LastSeenTic = gametic;
+	rec.FirstSeenWave = InvasionWaveDirector.Wave;
+	InvasionMissingClassTable.Insert(key, rec);
+
+	// Promote first occurrence to a Warning so users see this at default
+	// trace severity. A `Markf` was the previous behavior but it sits behind
+	// "invasion" channel debug verbosity, which most users never enable -
+	// this is exactly the failure mode that produces the "I'm getting shot
+	// by an invisible monster" report so it deserves to be loud the first
+	// time it happens.
+	DebugTrace::Warningf("invasion",
+		"MIRROR_CLASS_MISSING class=%s source=%s gametic=%d wave=%d "
+		"(server is spawning monsters of this class but the client doesn't "
+		"have it loaded; these monsters can damage you but won't be visible. "
+		"Run net_invasion_missing_classes to see the full table.)",
+		className,
+		source != nullptr ? source : "unknown",
+		gametic,
+		InvasionWaveDirector.Wave);
+}
+
+static void Net_ClearInvasionMissingClassTable()
+{
+	InvasionMissingClassTable.Clear();
+	InvasionMissingClassTotalSpawns = 0u;
+}
+
 static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& className,
 	const DVector3& pos, const DVector3& vel, DAngle yaw, DAngle pitch, int health, const char* source, bool markApplied,
 	uint8_t authorityCategoryHint = HREP_ACTOR_UNKNOWN)
@@ -1406,6 +1617,11 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 	{
 		if (markApplied && id > InvasionLastAppliedSpawnEventId)
 			InvasionLastAppliedSpawnEventId = id;
+		// Track + surface this so users can tell apart "client/server WAD
+		// mismatch" from "true desync" without enabling verbose tracing. We
+		// still mark the spawn applied above so we don't keep retrying the
+		// same id - the class is genuinely absent and retrying won't fix it.
+		Net_NoteMissingMirrorClass(className.GetChars(), source);
 		DebugTrace::Markf("invasion", "mirror spawn skipped id=%u wave=%d class=%s source=%s reason=missing-class",
 			unsigned(id), wave, className.GetChars(), source != nullptr ? source : "unknown");
 		return true;
@@ -1416,8 +1632,20 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 	{
 		if (markApplied && id > InvasionLastAppliedSpawnEventId)
 			InvasionLastAppliedSpawnEventId = id;
-		DebugTrace::Markf("invasion", "mirror spawn skipped id=%u wave=%d class=%s source=%s reason=spawn-null",
-			unsigned(id), wave, className.GetChars(), source != nullptr ? source : "unknown");
+		// Promote to a Warning so this is visible at default trace severity.
+		// Spawn() returning null on a class that exists is exactly the failure
+		// shape that produces "the server keeps shooting me but no monster is
+		// there" with a vanilla doom2.wad load - it means the authority's
+		// spawn position is geometry-blocked on the client (e.g. a floor that
+		// has been moved by line action and not yet replicated, or a portal
+		// crossing). The mirror is then permanently absent for this id, and
+		// the authority-side actor is still live and dangerous.
+		DebugTrace::Warningf("invasion",
+			"mirror spawn skipped id=%u wave=%d class=%s source=%s reason=spawn-null pos=(%.1f,%.1f,%.1f) "
+			"(authority-side actor exists; client-side spawn at this position was rejected. "
+			"This means damage may arrive from an invisible source.)",
+			unsigned(id), wave, className.GetChars(), source != nullptr ? source : "unknown",
+			pos.X, pos.Y, pos.Z);
 		return true;
 	}
 
@@ -3476,23 +3704,9 @@ static void Net_TickHCDEModeActorMigration()
 			++HCDEModeMigrationLastInvasion;
 		}
 	}
-	else if (netgame || multiplayer)
-	{
-		const bool dmMode = deathmatch != 0;
-		auto iterator = primaryLevel->GetThinkerIterator<AActor>();
-		while (AActor* actor = iterator.Next())
-		{
-			++HCDEModeMigrationLastConsidered;
-			uint8_t category = HREP_ACTOR_UNKNOWN;
-			if (!Net_ShouldMigrateHCDEModeActor(actor, dmMode, category))
-				continue;
-			Net_MigrateHCDEModeActor(actor, category, dmMode ? HREP_SOURCE_DM : HREP_SOURCE_COOP, HCDEModeMigrationLastRegistered);
-			if (dmMode)
-				++HCDEModeMigrationLastDM;
-			else
-				++HCDEModeMigrationLastCoop;
-		}
-	}
+	// Co-op/DM actor migration stays off while shared actor-delta-v2 send/apply
+	// remains invasion-only. Scanning every thinker here only fills
+	// HCDEReplicatedActors with baselines the client cannot reconcile.
 
 	HCDELiveProfile.ModeMigrationActorsConsidered += HCDEModeMigrationLastConsidered;
 	HCDELiveProfile.ModeMigrationActorsRegistered += HCDEModeMigrationLastRegistered;
@@ -3858,6 +4072,13 @@ static bool Net_ApplyHCDEPickupSpawnEvent(uint32_t actorId, uint16_t classId, ui
 		{
 			if (ref == nullptr && classId != 0u)
 				Net_RegisterHCDEReplicatedActorBaseline(actorId, classId, category, source);
+			// Pickups don't damage the local player so this is less urgent
+			// than the monster mirror case, but we still want the operator to
+			// be able to see "your client is missing class X used by N
+			// pickups" in the same table the monster path populates.
+			Net_NoteMissingMirrorClass(
+				className.IsNotEmpty() ? className.GetChars() : "<unknown>",
+				HCDEReplicatedActorSourceName(source));
 			DebugTrace::Markf("net", "HCDE authority pickup spawn skipped id=%u source=%s class=%s reason=missing-class",
 				unsigned(actorId),
 				HCDEReplicatedActorSourceName(source),
@@ -4207,6 +4428,15 @@ void Net_RegisterInvasionReplicatedMissile(AActor* missile, const AActor* source
 		missile->Vel.Z);
 }
 
+static bool HCDEAppendEmptyActorDeltasV2(uint8_t* output, size_t outputCapacity, size_t& cursor)
+{
+	return HCDEAppendBytes(output, outputCapacity, cursor, HCDEActorDeltasMagic, sizeof(HCDEActorDeltasMagic))
+		&& HCDEAppendByte(output, outputCapacity, cursor, HCDEActorDeltasProtocolVersion)
+		&& HCDEAppendByte(output, outputCapacity, cursor, HCDEActorDeltasFlagComplete)
+		&& HCDEAppendByte(output, outputCapacity, cursor, 0u)
+		&& HCDEAppendByte(output, outputCapacity, cursor, 0u);
+}
+
 static bool HCDEAppendActorDeltasV2(int clientNum, uint8_t* output, size_t outputCapacity, size_t& cursor)
 {
 	if (!HCDEIsValidLiveClient(clientNum))
@@ -4222,11 +4452,7 @@ static bool HCDEAppendActorDeltasV2(int clientNum, uint8_t* output, size_t outpu
 		// without owning the matching client-side actor lifetime, which makes the
 		// shared actor table churn and bloats every snapshot. Emit a valid empty
 		// block outside invasion until the non-invasion mirror path is complete.
-		return HCDEAppendBytes(output, outputCapacity, cursor, HCDEActorDeltasMagic, sizeof(HCDEActorDeltasMagic))
-			&& HCDEAppendByte(output, outputCapacity, cursor, HCDEActorDeltasProtocolVersion)
-			&& HCDEAppendByte(output, outputCapacity, cursor, HCDEActorDeltasFlagComplete)
-			&& HCDEAppendByte(output, outputCapacity, cursor, 0u)
-			&& HCDEAppendByte(output, outputCapacity, cursor, 0u);
+		return HCDEAppendEmptyActorDeltasV2(output, outputCapacity, cursor);
 	}
 
 	const size_t startCursor = cursor;
@@ -4450,232 +4676,10 @@ static bool HCDEAppendSharedActorDeltasV2(int clientNum, uint8_t* output, size_t
 	if (!I_IsLocalHCDEServiceAuthority())
 		return true;
 
-	HCDELivePeers[clientNum].ProjectilePolicySkipped = 0u;
-	HCDELivePeers[clientNum].ProjectilePolicyKeepAlive = 0u;
-	HCDELivePeers[clientNum].ProjectilePolicyProtected = 0u;
-	for (uint8_t interest = 0u; interest < HINTEREST_COUNT; ++interest)
-		HCDELivePeers[clientNum].ProjectilePolicyTiers[interest] = 0u;
-
-	Net_CompactHCDEReplicatedActors();
-	const size_t registrySize = HCDEReplicatedActors.Size();
-	size_t activeRefs = 0u;
-	for (size_t i = 0u; i < registrySize; ++i)
-	{
-		if (HCDEShouldSendSharedActorDelta(HCDEReplicatedActors[i]))
-			++activeRefs;
-	}
-	if (activeRefs == 0u)
-	{
-		HCDEActorDeltaV2SendCursor[clientNum] = 0u;
-		return true;
-	}
-
-	size_t& sendCursor = HCDEActorDeltaV2SendCursor[clientNum];
-	if (sendCursor >= registrySize)
-		sendCursor %= registrySize;
-
-	const size_t startCursor = cursor;
-	if (cursor > outputCapacity || outputCapacity - cursor < HCDEActorDeltasHeaderSize)
-	{
-		HCDELiveProfile.ActorDeltaV2DeferredBudget += activeRefs;
-		HCDERecordLiveLaneDeferred(HLANE_ACTOR_DELTA, clientNum);
-		return true;
-	}
-
-	const size_t headerCursor = cursor;
-	if (!HCDEAppendBytes(output, outputCapacity, cursor, HCDEActorDeltasMagic, sizeof(HCDEActorDeltasMagic))
-		|| !HCDEAppendByte(output, outputCapacity, cursor, HCDEActorDeltasProtocolVersion)
-		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
-		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u)
-		|| !HCDEAppendByte(output, outputCapacity, cursor, 0u))
-	{
-		return false;
-	}
-
-	uint8_t count = 0u;
-	size_t nextSendCursor = sendCursor;
-	uint64_t fullSent = 0u;
-	uint64_t partialSent = 0u;
-	uint64_t skippedUnchanged = 0u;
-	uint64_t deferredBudget = 0u;
-	const bool baselineRepair = HCDEActorBaselineRepairActive(clientNum);
-	for (size_t scanned = 0u; scanned < registrySize && count < UINT8_MAX; ++scanned)
-	{
-		const size_t actorIndex = (sendCursor + scanned) % registrySize;
-		auto& sharedRef = HCDEReplicatedActors[actorIndex];
-		if (!HCDEShouldSendSharedActorDelta(sharedRef))
-			continue;
-
-		AActor* actor = sharedRef.Actor.Get();
-		if (actor == nullptr)
-			continue;
-
-		auto& sent = sharedRef.ClientState[clientNum];
-		const bool projectileLive = sharedRef.Category == HREP_ACTOR_PROJECTILE
-			&& ((actor->flags & MF_MISSILE) != 0 || Net_IsInvasionReplicatedProjectile(actor));
-		if (projectileLive)
-		{
-			const FHCDEProjectilePolicyResult projectilePolicy = HCDEEvaluateProjectilePolicy(actor,
-				players[clientNum].mo, baselineRepair ? false : sent.BaselineValid, baselineRepair ? 0 : sent.LastSentTic);
-			HCDERecordProjectilePolicyResult(clientNum, projectilePolicy);
-			if (!projectilePolicy.Relevant)
-			{
-				nextSendCursor = (actorIndex + 1u) % registrySize;
-				continue;
-			}
-		}
-		uint8_t actorFlags = 0u;
-		if ((actor->health > 0 || projectileLive) && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
-			actorFlags |= HCDEActorDeltaFlagLive;
-		const uint8_t actionState = HCDEGetSharedActorActionState(actor, sharedRef.Category);
-		const int actorHealth = projectileLive && actor->health <= 0 ? 1 : actor->health;
-		const DVector3 actorPos = actor->Pos();
-		const DVector3 actorVel = actor->Vel;
-		const uint32_t actorYaw = actor->Angles.Yaw.BAMs();
-		const uint32_t actorPitch = actor->Angles.Pitch.BAMs();
-		const bool forceFull = baselineRepair
-			|| !sent.BaselineValid
-			|| sent.ClassId != sharedRef.ClassId
-			|| sent.Category != sharedRef.Category
-			|| gametic - sent.LastBaselineTic >= TICRATE
-			|| (actorFlags & HCDEActorDeltaFlagLive) == 0u;
-
-		uint16_t fieldMask = 0u;
-		if (forceFull || sent.Category != sharedRef.Category)
-			fieldMask |= HCDEActorDeltaFieldCategory;
-		if (forceFull || sent.Flags != actorFlags)
-			fieldMask |= HCDEActorDeltaFieldFlags;
-		if (forceFull || sent.ActionState != actionState)
-			fieldMask |= HCDEActorDeltaFieldAction;
-		if (forceFull || sent.Health != actorHealth)
-			fieldMask |= HCDEActorDeltaFieldHealth;
-		if (forceFull || Net_InvasionDeltaVectorChanged(sent.Pos, actorPos, 1.0 / HCDEActorDeltaPosScale))
-			fieldMask |= HCDEActorDeltaFieldPos;
-		if (forceFull || Net_InvasionDeltaVectorChanged(sent.Vel, actorVel, 1.0 / HCDEActorDeltaVelScale))
-			fieldMask |= HCDEActorDeltaFieldVel;
-		if (forceFull || HCDECompactAngle(sent.Yaw) != HCDECompactAngle(actorYaw) || HCDECompactAngle(sent.Pitch) != HCDECompactAngle(actorPitch))
-			fieldMask |= HCDEActorDeltaFieldAngles;
-		if (fieldMask == 0u)
-		{
-			++skippedUnchanged;
-			nextSendCursor = (actorIndex + 1u) % registrySize;
-			continue;
-		}
-
-		size_t recordBytes = 4u + 2u + 2u;
-		if (fieldMask & HCDEActorDeltaFieldCategory)
-			recordBytes += 1u;
-		if (fieldMask & HCDEActorDeltaFieldFlags)
-			recordBytes += 1u;
-		if (fieldMask & HCDEActorDeltaFieldAction)
-			recordBytes += 1u;
-		if (fieldMask & HCDEActorDeltaFieldHealth)
-			recordBytes += 2u;
-		if (fieldMask & HCDEActorDeltaFieldPos)
-			recordBytes += 3u * 4u;
-		if (fieldMask & HCDEActorDeltaFieldVel)
-			recordBytes += 3u * 2u;
-		if (fieldMask & HCDEActorDeltaFieldAngles)
-			recordBytes += 4u;
-		if (cursor > outputCapacity || outputCapacity - cursor < recordBytes)
-		{
-			++deferredBudget;
-			HCDELivePeers[clientNum].ActorQueueDeferredDepth = uint32_t(activeRefs - min<size_t>(activeRefs, size_t(count)));
-			HCDELiveProfile.ActorQueueDeferredCandidates += activeRefs - min<size_t>(activeRefs, size_t(count));
-			HCDERecordLiveLaneDeferred(HLANE_ACTOR_DELTA, clientNum);
-			nextSendCursor = actorIndex;
-			break;
-		}
-
-		if (!HCDEAppendBE32(output, outputCapacity, cursor, sharedRef.Id)
-			|| !HCDEAppendBE16(output, outputCapacity, cursor, sharedRef.ClassId)
-			|| !HCDEAppendBE16(output, outputCapacity, cursor, fieldMask))
-		{
-			return false;
-		}
-		if ((fieldMask & HCDEActorDeltaFieldCategory)
-			&& !HCDEAppendByte(output, outputCapacity, cursor, sharedRef.Category))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldFlags)
-			&& !HCDEAppendByte(output, outputCapacity, cursor, actorFlags))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldAction)
-			&& !HCDEAppendByte(output, outputCapacity, cursor, actionState))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldHealth)
-			&& !HCDEAppendBE16(output, outputCapacity, cursor, uint16_t(clamp<int>(actorHealth, INT16_MIN, INT16_MAX))))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldPos)
-			&& (!HCDEAppendQuantizedPos(output, outputCapacity, cursor, actorPos.X)
-				|| !HCDEAppendQuantizedPos(output, outputCapacity, cursor, actorPos.Y)
-				|| !HCDEAppendQuantizedPos(output, outputCapacity, cursor, actorPos.Z)))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldVel)
-			&& (!HCDEAppendQuantizedVel(output, outputCapacity, cursor, actorVel.X)
-				|| !HCDEAppendQuantizedVel(output, outputCapacity, cursor, actorVel.Y)
-				|| !HCDEAppendQuantizedVel(output, outputCapacity, cursor, actorVel.Z)))
-			return false;
-		if ((fieldMask & HCDEActorDeltaFieldAngles)
-			&& (!HCDEAppendBE16(output, outputCapacity, cursor, HCDECompactAngle(actorYaw))
-				|| !HCDEAppendBE16(output, outputCapacity, cursor, HCDECompactAngle(actorPitch))))
-			return false;
-
-		sent.BaselineValid = true;
-		sent.LastSentTic = gametic;
-		sent.ClassId = sharedRef.ClassId;
-		sent.Category = sharedRef.Category;
-		sent.Flags = actorFlags;
-		sent.ActionState = actionState;
-		sent.Health = actorHealth;
-		sent.Pos = actorPos;
-		sent.Vel = actorVel;
-		sent.Yaw = actorYaw;
-		sent.Pitch = actorPitch;
-		if (forceFull)
-		{
-			sent.LastBaselineTic = gametic;
-			++fullSent;
-		}
-		else
-		{
-			++partialSent;
-		}
-		++count;
-		nextSendCursor = (actorIndex + 1u) % registrySize;
-	}
-
-	sendCursor = registrySize > 0u ? nextSendCursor : 0u;
-	if (count == 0u)
-	{
-		cursor = startCursor;
-		HCDELiveProfile.ActorDeltaV2SkippedUnchanged += skippedUnchanged;
-		HCDELiveProfile.ActorDeltaV2DeferredBudget += deferredBudget;
-		return true;
-	}
-
-	const uint8_t flags = size_t(count) == activeRefs ? HCDEActorDeltasFlagComplete : 0u;
-	output[headerCursor + HCDEActorDeltasFlagsOffset] = flags;
-	output[headerCursor + HCDEActorDeltasCountOffset] = count;
-	++HCDELiveProfile.ActorDeltaV2PacketsBuilt;
-	HCDELiveProfile.ActorDeltaV2BytesBuilt += cursor - startCursor;
-	HCDELiveProfile.ActorDeltaV2RecordsBuilt += count;
-	HCDELiveProfile.ActorDeltaV2FullRecordsBuilt += fullSent;
-	HCDELiveProfile.ActorDeltaV2PartialRecordsBuilt += partialSent;
-	HCDELiveProfile.ActorDeltaV2SkippedUnchanged += skippedUnchanged;
-	HCDELiveProfile.ActorDeltaV2DeferredBudget += deferredBudget;
-	HCDERecordLiveLaneTx(HLANE_ACTOR_DELTA, clientNum, cursor - startCursor);
-
-	DebugTrace::Markf("net", "HCDE shared actor delta v2 send client=%d count=%u complete=%d active=%zu full=%llu partial=%llu skipped=%llu deferred=%llu cursor=%zu bytes-left=%zu",
-		clientNum, unsigned(count),
-		(flags & HCDEActorDeltasFlagComplete) != 0u ? 1 : 0,
-		activeRefs,
-		static_cast<unsigned long long>(fullSent),
-		static_cast<unsigned long long>(partialSent),
-		static_cast<unsigned long long>(skippedUnchanged),
-		static_cast<unsigned long long>(deferredBudget),
-		sendCursor,
-		cursor <= outputCapacity ? outputCapacity - cursor : 0u);
-	return true;
+	// Shared actor-delta-v2 for co-op/DM is disabled until the non-invasion mirror
+	// path owns client-side actor lifetimes. The client apply lane already rejects
+	// these baselines; sending them only bloats snapshots and wastes bandwidth.
+	return HCDEAppendEmptyActorDeltasV2(output, outputCapacity, cursor);
 }
 
 static bool HCDEApplyActorDeltasV2(int clientNum, const uint8_t* body, size_t bodyBytes, size_t& bodyCursor)

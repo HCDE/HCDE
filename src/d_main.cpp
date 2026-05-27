@@ -57,6 +57,7 @@
 #include "d_event.h"
 #include "d_main.h"
 #include "d_net.h"
+#include "d_net_diagnostics.h"
 #include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "options.h"
@@ -1489,7 +1490,11 @@ void D_ErrorCleanup (const char* reason = nullptr)
 	Net_ClearBuffers ();
 	G_NewInit ();
 	M_ClearMenus ();
-	if (consoleplayer != -1)
+	// Same reasoning as G_DoNewGame and Net_ClearBuffers: on a dedicated
+	// server slot 0 is the reserved authority slot and must never be promoted
+	// to a player here. The fallback PST_LIVE is the single-player / listen
+	// path - dedicated servers have no console pawn to fall back to.
+	if (consoleplayer != -1 && !I_IsServerReservedSlot(0))
 	{
 		playeringame[0] = 1;
 		SET_PLAYER_STATE(&players[0], 0, PST_LIVE, "D_QuitNetGame_fallback");
@@ -4351,6 +4356,7 @@ static int D_DoomMain_Internal (void)
 	std::set_new_handler(NewFailure);
 	const char *batchout = Args->CheckValue(FArg_errorlog);
 	DebugTrace::InitSession();
+	Net_DiagSessionBegin();
 	if (HCDE_ServerMode_IsDedicatedExecutable())
 		DebugTrace::SetProcessTag("hcdeserv");
 	DebugTrace::Mark("startup", "D_DoomMain begin");
@@ -4637,6 +4643,7 @@ int GameMain()
 	// Unless something really bad happened, the game should only exit through this single point in the code.
 	// No more 'exit', please.
 	D_Cleanup();
+	Net_DiagSessionEnd("shutdown");
 	CloseNetwork();
 	GC::FinalGC = true;
 	GC::FullGC();

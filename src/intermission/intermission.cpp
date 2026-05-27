@@ -960,6 +960,12 @@ again:
 			mScreen->SetBackground(bg, fill);	// copy last screen's background before initializing
 			mScreen->Init(action, mFirst);
 			mFirst = false;
+			// Each new page is its own ready/skip cycle. Without re-arming the
+			// countdown here, the second classic intermission page (e.g. "Entering
+			// MAPxx") inherits CutsceneCountdown=0 from Net_AdvanceCutscene and
+			// the auto-advance fallback in Net_CheckCutsceneReady can never fire.
+			if (netgame && !demoplayback)
+				Net_StartCutscene();
 			return true;
 		}
 	}
@@ -1014,6 +1020,8 @@ bool DIntermissionController::Responder (FInputEvent *ev)
 			if (ev->Type == EV_KeyDown)
 			{
 				// In multiplayer, intentional intermission input means ready up, not local-only page advance.
+				if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+					Net_PlayerReadiedUp(consoleplayer);
 				Net_WriteInt8(DEM_READIED);
 				return true;
 			}
