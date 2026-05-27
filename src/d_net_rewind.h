@@ -10,7 +10,8 @@
 // FCompressedBuffer so the format is battle-tested.
 //
 // PHASE 1: capture only.
-//   - Server-side ring buffer, console diagnostics, memory accounting.
+//   - Server-side ring buffer, console diagnostics, memory accounting, and
+//     per-keyframe CRC fingerprints for determinism/state-comparison tooling.
 //
 // PHASE 2: restore primitives.
 //   - HCDERewind_RestoreKeyframe() reloads world state via the same
@@ -44,6 +45,9 @@ struct FHCDERewindKeyframe
 	int Gametic = -1;
 	uint64_t CaptureMS = 0u;
 	uint32_t CaptureCostMS = 0u;	// how long the snapshot took to build
+	uint32_t LevelCRC32 = 0u;
+	uint32_t GlobalsCRC32 = 0u;
+	uint32_t CombinedCRC32 = 0u;	// level + globals fingerprint for determinism diagnostics
 	FileSys::FCompressedBuffer Level = {};
 	FileSys::FCompressedBuffer Globals = {};	// RNG state + globalfreeze etc.
 
@@ -106,6 +110,11 @@ int HCDERewind_GetClientViewTic(int playerNum);
 // keyframe for the client's view tic, then restores the current world again.
 // It does not run weapon logic yet; it proves the bracket is stable.
 bool HCDERewind_TestLagCompBracket(int playerNum, const char* reason);
+
+// Manual restore integrity check. Captures live state, restores one stored
+// keyframe, restores live state, then recaptures and compares CRC fingerprints.
+// index < 0 selects the newest stored keyframe.
+bool HCDERewind_SelfCheck(int index, const char* reason);
 
 // Phase 5 - Server-side lag-compensated hit resolution.
 //

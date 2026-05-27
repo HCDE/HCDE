@@ -883,7 +883,7 @@ static void Net_UpdateInvasionWaveClearProgress()
 	size_t writeIdx = 0;
 	for (size_t i = 0; i < InvasionWaveDirector.ActiveMonsters.Size(); ++i)
 	{
-		AActor* actor = InvasionWaveDirector.ActiveMonsters[i];
+		AActor* actor = InvasionWaveDirector.ActiveMonsters[i].Get();
 		if (actor == nullptr || actor->health <= 0 || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
 		{
 			continue;
@@ -1107,7 +1107,7 @@ static int Net_DestroyTrackedInvasionMonsters(const char* reason)
 	{
 		for (size_t i = 0; i < InvasionWaveDirector.ActiveMonsters.Size(); ++i)
 		{
-			AActor* actor = InvasionWaveDirector.ActiveMonsters[i];
+			AActor* actor = InvasionWaveDirector.ActiveMonsters[i].Get();
 			if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
 				continue;
 
@@ -1490,7 +1490,7 @@ static void Net_PrepareInvasionMirrorFromSnapshot(EInvasionState previousState, 
 		unsigned reconciled = 0u;
 		for (auto& ref : InvasionReplicatedActors)
 		{
-			AActor* actor = ref.Actor;
+			AActor* actor = ref.Actor.Get();
 			if (actor == nullptr
 				|| (actor->ObjectFlags & OF_EuthanizeMe) != 0
 				|| ref.IsProjectile

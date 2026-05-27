@@ -12,6 +12,7 @@
 #include "i_time.h"
 #include "i_system.h"
 #include "i_interface.h"
+#include "m_crc32.h"
 #include "serializer_doom.h"
 #include "m_random.h"
 #include "tarray.h"
@@ -141,6 +142,15 @@ bool BuildKeyframe(FHCDERewindKeyframe& outFrame)
 	outFrame.CaptureCostMS = uint32_t(I_msTime() - startMS);
 	if (!ok)
 		outFrame.Clear();
+	else
+	{
+		outFrame.LevelCRC32 = CalcCRC32(reinterpret_cast<const uint8_t*>(outFrame.Level.mBuffer),
+			unsigned(outFrame.Level.mCompressedSize));
+		outFrame.GlobalsCRC32 = CalcCRC32(reinterpret_cast<const uint8_t*>(outFrame.Globals.mBuffer),
+			unsigned(outFrame.Globals.mCompressedSize));
+		outFrame.CombinedCRC32 = AddCRC32(outFrame.LevelCRC32,
+			reinterpret_cast<const uint8_t*>(&outFrame.GlobalsCRC32), sizeof(outFrame.GlobalsCRC32));
+	}
 	return ok;
 }
 
@@ -342,6 +352,9 @@ void FHCDERewindKeyframe::Clear()
 	Gametic = -1;
 	CaptureMS = 0u;
 	CaptureCostMS = 0u;
+	LevelCRC32 = 0u;
+	GlobalsCRC32 = 0u;
+	CombinedCRC32 = 0u;
 }
 
 // Move ctor: take ownership of `other`'s heap buffers and null the source so
@@ -351,6 +364,9 @@ FHCDERewindKeyframe::FHCDERewindKeyframe(FHCDERewindKeyframe&& other) noexcept
 	: Gametic(other.Gametic)
 	, CaptureMS(other.CaptureMS)
 	, CaptureCostMS(other.CaptureCostMS)
+	, LevelCRC32(other.LevelCRC32)
+	, GlobalsCRC32(other.GlobalsCRC32)
+	, CombinedCRC32(other.CombinedCRC32)
 	, Level(other.Level)
 	, Globals(other.Globals)
 {
@@ -359,6 +375,9 @@ FHCDERewindKeyframe::FHCDERewindKeyframe(FHCDERewindKeyframe&& other) noexcept
 	other.Gametic = -1;
 	other.CaptureMS = 0u;
 	other.CaptureCostMS = 0u;
+	other.LevelCRC32 = 0u;
+	other.GlobalsCRC32 = 0u;
+	other.CombinedCRC32 = 0u;
 }
 
 FHCDERewindKeyframe& FHCDERewindKeyframe::operator=(FHCDERewindKeyframe&& other) noexcept
@@ -369,6 +388,9 @@ FHCDERewindKeyframe& FHCDERewindKeyframe::operator=(FHCDERewindKeyframe&& other)
 		Gametic = other.Gametic;
 		CaptureMS = other.CaptureMS;
 		CaptureCostMS = other.CaptureCostMS;
+		LevelCRC32 = other.LevelCRC32;
+		GlobalsCRC32 = other.GlobalsCRC32;
+		CombinedCRC32 = other.CombinedCRC32;
 		Level = other.Level;
 		Globals = other.Globals;
 		other.Level.mBuffer = nullptr;
@@ -376,6 +398,9 @@ FHCDERewindKeyframe& FHCDERewindKeyframe::operator=(FHCDERewindKeyframe&& other)
 		other.Gametic = -1;
 		other.CaptureMS = 0u;
 		other.CaptureCostMS = 0u;
+		other.LevelCRC32 = 0u;
+		other.GlobalsCRC32 = 0u;
+		other.CombinedCRC32 = 0u;
 	}
 	return *this;
 }
@@ -415,6 +440,9 @@ bool HCDERewind_CaptureNow(const char* reason)
 
 	const size_t newFrameBytes = frame.SizeBytes();
 	const uint32_t newFrameCostMS = frame.CaptureCostMS;
+	const uint32_t newFrameLevelCRC32 = frame.LevelCRC32;
+	const uint32_t newFrameGlobalsCRC32 = frame.GlobalsCRC32;
+	const uint32_t newFrameCombinedCRC32 = frame.CombinedCRC32;
 	gKeyframes.Push(std::move(frame));
 	gLastCaptureGametic = gametic;
 	gLastCaptureMS = I_msTime();
@@ -428,9 +456,12 @@ bool HCDERewind_CaptureNow(const char* reason)
 	EvictOldestForDepth();
 
 	DebugTrace::Markf("net.rewind",
-		"capture reason=%s gametic=%d size=%zu cost=%ums depth=%u total-bytes=%zu",
+		"capture reason=%s gametic=%d size=%zu cost=%ums hash=%08x level=%08x globals=%08x depth=%u total-bytes=%zu",
 		reason != nullptr ? reason : "tick", gametic,
 		newFrameBytes, unsigned(newFrameCostMS),
+		unsigned(newFrameCombinedCRC32),
+		unsigned(newFrameLevelCRC32),
+		unsigned(newFrameGlobalsCRC32),
 		unsigned(gKeyframes.Size()), HCDERewind_TotalBytes());
 	return true;
 }
@@ -675,6 +706,108 @@ bool HCDERewind_TestLagCompBracket(int playerNum, const char* reason)
 	return true;
 }
 
+bool HCDERewind_SelfCheck(int index, const char* reason)
+{
+	if (!I_IsLocalHCDEServiceAuthority() || gamestate != GS_LEVEL || primaryLevel == nullptr)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck rejected reason=%s authority=%d gamestate=%d level=%d",
+			reason != nullptr ? reason : "?",
+			I_IsLocalHCDEServiceAuthority() ? 1 : 0,
+			int(gamestate), primaryLevel != nullptr ? 1 : 0);
+		return false;
+	}
+	if (insave)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck rejected reason=%s already-in-save gametic=%d",
+			reason != nullptr ? reason : "?", gametic);
+		return false;
+	}
+	if (gKeyframes.Size() == 0u)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck rejected reason=%s no-keyframes gametic=%d",
+			reason != nullptr ? reason : "?", gametic);
+		return false;
+	}
+
+	if (index < 0)
+		index = int(gKeyframes.Size()) - 1;
+	const FHCDERewindKeyframe* historical = HCDERewind_FindByIndex(index);
+	if (historical == nullptr || !historical->Valid())
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck rejected reason=%s invalid-index=%d stored=%d gametic=%d",
+			reason != nullptr ? reason : "?", index, int(gKeyframes.Size()), gametic);
+		return false;
+	}
+
+	FHCDERewindKeyframe liveBefore;
+	FHCDERewindKeyframe liveAfter;
+	const uint64_t startMS = I_msTime();
+	const int liveGametic = gametic;
+	const int savedLastCaptureGametic = gLastCaptureGametic;
+	const uint64_t savedLastCaptureMS = gLastCaptureMS;
+	const int historicalGametic = historical->Gametic;
+	const uint32_t historicalCRC = historical->CombinedCRC32;
+
+	const bool capturedLive = LagCompCaptureLiveKeyframe(liveBefore);
+	if (!capturedLive)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck live-capture failed reason=%s gametic=%d",
+			reason != nullptr ? reason : "?", gametic);
+		LagCompRestoreCaptureTimer(savedLastCaptureGametic, savedLastCaptureMS);
+		return false;
+	}
+
+	const uint32_t liveBeforeLevelCRC32 = liveBefore.LevelCRC32;
+	const uint32_t liveBeforeGlobalsCRC32 = liveBefore.GlobalsCRC32;
+	const uint32_t liveBeforeCombinedCRC32 = liveBefore.CombinedCRC32;
+
+	const bool restoredHistorical = HCDERewind_RestoreKeyframe(index, "selfcheck-historical");
+	bool restoredLive = false;
+	bool capturedAfter = false;
+	// Even a failed historical restore can leave partially deserialized state.
+	// Always try to put the live capture back before reporting failure.
+	restoredLive = LagCompRestoreLiveKeyframe(liveBefore, liveGametic);
+	if (restoredLive)
+		capturedAfter = LagCompCaptureLiveKeyframe(liveAfter);
+
+	LagCompRestoreCaptureTimer(savedLastCaptureGametic, savedLastCaptureMS);
+
+	if (!restoredHistorical || !restoredLive || !capturedAfter)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck failed reason=%s index=%d hist-tic=%d live-tic=%d restored-hist=%d restored-live=%d captured-after=%d",
+			reason != nullptr ? reason : "?", index, historicalGametic, liveGametic,
+			restoredHistorical ? 1 : 0, restoredLive ? 1 : 0, capturedAfter ? 1 : 0);
+		return false;
+	}
+
+	const bool levelMatch = liveBeforeLevelCRC32 == liveAfter.LevelCRC32;
+	const bool globalsMatch = liveBeforeGlobalsCRC32 == liveAfter.GlobalsCRC32;
+	const bool combinedMatch = liveBeforeCombinedCRC32 == liveAfter.CombinedCRC32;
+	if (!levelMatch || !globalsMatch || !combinedMatch)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"selfcheck CRC mismatch reason=%s index=%d hist-tic=%d live-tic=%d hist-hash=%08x before=%08x/%08x/%08x after=%08x/%08x/%08x",
+			reason != nullptr ? reason : "?", index, historicalGametic, liveGametic,
+			unsigned(historicalCRC),
+			unsigned(liveBeforeCombinedCRC32), unsigned(liveBeforeLevelCRC32), unsigned(liveBeforeGlobalsCRC32),
+			unsigned(liveAfter.CombinedCRC32), unsigned(liveAfter.LevelCRC32), unsigned(liveAfter.GlobalsCRC32));
+		return false;
+	}
+
+	DebugTrace::Markf("net.rewind",
+		"selfcheck ok reason=%s index=%d hist-tic=%d live-tic=%d hist-hash=%08x live-hash=%08x cost=%llums",
+		reason != nullptr ? reason : "?", index, historicalGametic, liveGametic,
+		unsigned(historicalCRC), unsigned(liveBeforeCombinedCRC32),
+		static_cast<unsigned long long>(I_msTime() - startMS));
+	return true;
+}
+
 void HCDERewind_PrintSummary()
 {
 	Printf(PRINT_HIGH, "\n=== HCDE rewind keyframes ===\n");
@@ -713,10 +846,11 @@ void HCDERewind_PrintSummary()
 		const auto& frame = gKeyframes[i];
 		const int ageTics = gametic - frame.Gametic;
 		Printf(PRINT_HIGH,
-			"  [%u] gametic=%d age=%d tics (%.2fs) size=%zu (%.1f KB) cost=%ums\n",
+			"  [%u] gametic=%d age=%d tics (%.2fs) size=%zu (%.1f KB) cost=%ums hash=%08x level=%08x globals=%08x\n",
 			i, frame.Gametic, ageTics, double(ageTics) / double(TICRATE),
 			frame.SizeBytes(), double(frame.SizeBytes()) / 1024.0,
-			unsigned(frame.CaptureCostMS));
+			unsigned(frame.CaptureCostMS),
+			unsigned(frame.CombinedCRC32), unsigned(frame.LevelCRC32), unsigned(frame.GlobalsCRC32));
 	}
 	Printf(PRINT_HIGH, "==============================\n");
 }
@@ -801,6 +935,39 @@ CCMD(net_rewind_lagcomp_probe)
 		Printf(PRINT_HIGH, "net_rewind_lagcomp_probe: bracket restore succeeded; live world restored to gametic=%d.\n", gametic);
 	else
 		Printf(PRINT_HIGH, "net_rewind_lagcomp_probe: bracket failed (see net.rewind trace).\n");
+}
+
+CCMD(net_rewind_selfcheck)
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck: requires authority slot.\n");
+		return;
+	}
+	int index = -1;
+	if (argv.argc() > 1)
+		index = atoi(argv[1]);
+	const int resolvedIndex = index < 0 ? HCDERewind_StoredCount() - 1 : index;
+	const FHCDERewindKeyframe* frame = HCDERewind_FindByIndex(resolvedIndex);
+	if (frame == nullptr || !frame->Valid())
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck: no valid keyframe at index %d.\n", resolvedIndex);
+		HCDERewind_PrintSummary();
+		return;
+	}
+	Printf(PRINT_HIGH,
+		"net_rewind_selfcheck: probing index=%d gametic=%d hash=%08x, then restoring live gametic=%d.\n",
+		resolvedIndex, frame->Gametic, unsigned(frame->CombinedCRC32), gametic);
+	if (HCDERewind_SelfCheck(resolvedIndex, "manual-selfcheck"))
+	{
+		Printf(PRINT_HIGH,
+			"net_rewind_selfcheck: passed; live world restored to gametic=%d with matching CRC fingerprints.\n",
+			gametic);
+	}
+	else
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck: failed (see net.rewind trace).\n");
+	}
 }
 
 // =====================================================================

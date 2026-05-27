@@ -146,7 +146,7 @@ static void Net_DebugDumpMonstersAroundLocalPlayer(int newHealth, int previousHe
 	// we fall through to the playsim-actor walk below.
 	for (auto& ref : InvasionReplicatedActors)
 	{
-		AActor* actor = ref.Actor;
+		AActor* actor = ref.Actor.Get();
 		if (actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0)
 			continue;
 
@@ -1397,7 +1397,7 @@ static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skip
 
 	for (auto& ref : InvasionReplicatedActors)
 	{
-		AActor* actor = ref.Actor;
+		AActor* actor = ref.Actor.Get();
 		if (actor == nullptr
 			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0
 			|| Net_IsInvasionActorCorpseLike(actor))
@@ -1939,7 +1939,7 @@ static void Net_LogInvasionMirrorVisualDiagnostic()
 
 	for (auto& ref : InvasionReplicatedActors)
 	{
-		AActor* actor = ref.Actor;
+		AActor* actor = ref.Actor.Get();
 		if (actor == nullptr)
 			continue;
 
@@ -2378,9 +2378,10 @@ static void HCDERecordProjectilePolicyResult(int clientNum, const FHCDEProjectil
 
 static bool HCDEShouldSendSharedActorDelta(const FHCDEReplicatedActorRef& ref)
 {
-	if (!ref.Active || ref.Retired || ref.Actor == nullptr)
+	const AActor* actor = ref.Actor.Get();
+	if (!ref.Active || ref.Retired || actor == nullptr)
 		return false;
-	if ((ref.Actor->ObjectFlags & OF_EuthanizeMe) != 0)
+	if ((actor->ObjectFlags & OF_EuthanizeMe) != 0)
 		return false;
 	if (ref.Category == HREP_ACTOR_PLAYER)
 	{
@@ -2408,7 +2409,7 @@ static FHCDEActorInterestResult HCDEComputeInvasionActorInterest(int clientNum, 
 	if (clientNum < 0 || clientNum >= MAXPLAYERS || actorIndex >= InvasionReplicatedActors.Size())
 		return interest;
 
-	AActor* actor = InvasionReplicatedActors[actorIndex].Actor;
+	AActor* actor = InvasionReplicatedActors[actorIndex].Actor.Get();
 	if (actor == nullptr)
 		return interest;
 
@@ -2670,7 +2671,7 @@ static void Net_ApplyInvasionMirrorActionState(FInvasionReplicatedActorRef& ref,
 
 static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref)
 {
-	AActor* actor = ref.Actor;
+	AActor* actor = ref.Actor.Get();
 	if (actor != nullptr && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
 	{
 		// A retired mirror corpse is no longer server-driven, so stop any last
@@ -2690,7 +2691,7 @@ static void Net_DetachInvasionMirrorCorpse(FInvasionReplicatedActorRef& ref)
 
 static void Net_RetireInvasionMirrorProjectile(FInvasionReplicatedActorRef& ref)
 {
-	AActor* actor = ref.Actor;
+	AActor* actor = ref.Actor.Get();
 	if (actor != nullptr && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
 	{
 		if (actor->GetStatNum() < STAT_FIRST_THINKING)
@@ -2732,7 +2733,7 @@ static void Net_PurgeStaleInvasionMirrorActorsOnClient()
 	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
 	{
 		auto& ref = InvasionReplicatedActors[i];
-		AActor* actor = ref.Actor;
+		AActor* actor = ref.Actor.Get();
 		if (ref.Id == 0u
 			|| actor == nullptr
 			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
@@ -2788,7 +2789,7 @@ static void Net_PurgeStaleInvasionMirrorActorsOnClient()
 
 static void Net_RetireInvasionMirrorActor(FInvasionReplicatedActorRef& ref, int serverHealth)
 {
-	AActor* actor = ref.Actor;
+	AActor* actor = ref.Actor.Get();
 	if (actor == nullptr)
 	{
 		ref.DeathDeltaSent = true;
@@ -2895,63 +2896,65 @@ static int Net_CompactInvasionReplicatedActors()
 	size_t writeIdx = 0u;
 	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
 	{
-		AActor* actor = InvasionReplicatedActors[i].Actor;
-		if (InvasionReplicatedActors[i].Id == 0u
+		auto& ref = InvasionReplicatedActors[i];
+		AActor* actor = ref.Actor.Get();
+		if (ref.Id == 0u
 			|| actor == nullptr
 			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
 		{
-			if (actor != nullptr && !InvasionReplicatedActors[i].DeathDeltaSent)
-				Net_RecordInvasionDespawnEvent(InvasionReplicatedActors[i], actor, actor->health);
+			if (actor != nullptr && !ref.DeathDeltaSent)
+				Net_RecordInvasionDespawnEvent(ref, actor, actor->health);
+			Net_SetInvasionReplicatedActorPtr(ref, nullptr);
 			continue;
 		}
 
-		if (!InvasionReplicatedActors[i].IsProjectile)
+		if (!ref.IsProjectile)
 		{
-			const int previousHealth = InvasionReplicatedActors[i].LastAuthorityHealth;
+			const int previousHealth = ref.LastAuthorityHealth;
 			const int currentHealth = actor->health;
 			if (currentHealth != previousHealth)
-				Net_RecordInvasionDamageEvent(InvasionReplicatedActors[i], actor, previousHealth, currentHealth);
-			InvasionReplicatedActors[i].LastAuthorityHealth = currentHealth;
+				Net_RecordInvasionDamageEvent(ref, actor, previousHealth, currentHealth);
+			ref.LastAuthorityHealth = currentHealth;
 		}
 
-		if (InvasionReplicatedActors[i].IsProjectile)
+		if (ref.IsProjectile)
 		{
-			const bool projectileExpired = InvasionReplicatedActors[i].SpawnTic > 0
-				&& gametic - InvasionReplicatedActors[i].SpawnTic > HCDEInvasionProjectileMirrorMaxAgeTics;
-			if (!Net_IsInvasionReplicatedProjectile(actor) || projectileExpired || InvasionReplicatedActors[i].ForceDeathDelta)
+			const bool projectileExpired = ref.SpawnTic > 0
+				&& gametic - ref.SpawnTic > HCDEInvasionProjectileMirrorMaxAgeTics;
+			if (!Net_IsInvasionReplicatedProjectile(actor) || projectileExpired || ref.ForceDeathDelta)
 			{
-				if (InvasionReplicatedActors[i].DeathDeltaSent)
+				if (ref.DeathDeltaSent)
 					continue;
 
 				// Send one final non-live packet so clients can play a local
 				// projectile impact instead of leaving a stale missile sprite.
-				Net_RecordInvasionDespawnEvent(InvasionReplicatedActors[i], actor, actor->health);
-				InvasionReplicatedActors[i].DeathDeltaSent = true;
+				Net_RecordInvasionDespawnEvent(ref, actor, actor->health);
+				ref.DeathDeltaSent = true;
 				if (projectileExpired)
-					InvasionReplicatedActors[i].ForceDeathDelta = true;
+					ref.ForceDeathDelta = true;
 			}
 			else
 			{
-				InvasionReplicatedActors[i].DeathDeltaSent = false;
+				ref.DeathDeltaSent = false;
 			}
 		}
 		else if (Net_IsInvasionActorCorpseLike(actor))
 		{
-			if (InvasionReplicatedActors[i].DeathDeltaSent)
+			if (ref.DeathDeltaSent)
 				continue;
 
 			// Keep a newly dead monster for one more packet so clients can
 			// retire the mirror actor into a local corpse instead of deleting it.
-			Net_RecordInvasionDespawnEvent(InvasionReplicatedActors[i], actor, actor->health);
-			InvasionReplicatedActors[i].DeathDeltaSent = true;
+			Net_RecordInvasionDespawnEvent(ref, actor, actor->health);
+			ref.DeathDeltaSent = true;
 		}
 		else
 		{
-			InvasionReplicatedActors[i].DeathDeltaSent = false;
+			ref.DeathDeltaSent = false;
 		}
 
 		if (writeIdx != i)
-			InvasionReplicatedActors[writeIdx] = InvasionReplicatedActors[i];
+			InvasionReplicatedActors[writeIdx] = ref;
 		++writeIdx;
 	}
 
@@ -3324,7 +3327,7 @@ static bool Net_GetHCDEReplicatedActorIndexByActor(const AActor* actor, size_t& 
 		return false;
 
 	const size_t candidate = size_t(*stored);
-	if (candidate >= HCDEReplicatedActors.Size() || HCDEReplicatedActors[candidate].Actor != actor)
+	if (candidate >= HCDEReplicatedActors.Size() || HCDEReplicatedActors[candidate].Actor.Get() != actor)
 	{
 		HCDEReplicatedActorPtrIndex.Remove(actor);
 		return false;
@@ -3560,7 +3563,7 @@ static int Net_CompactHCDEReplicatedActors()
 	int removed = 0;
 	for (size_t i = 0u; i < HCDEReplicatedActors.Size(); ++i)
 	{
-		AActor* actor = HCDEReplicatedActors[i].Actor;
+		AActor* actor = HCDEReplicatedActors[i].Actor.Get();
 		const bool staleActor = actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0;
 		if (staleActor && Net_ShouldRecordHCDEPickupRetireEvent(HCDEReplicatedActors[i], actor))
 		{
@@ -4340,7 +4343,7 @@ static bool Net_GetInvasionReplicatedActorIndexByActor(const AActor* actor, size
 		return false;
 
 	const size_t candidate = size_t(*stored);
-	if (candidate >= InvasionReplicatedActors.Size() || InvasionReplicatedActors[candidate].Actor != actor)
+	if (candidate >= InvasionReplicatedActors.Size() || InvasionReplicatedActors[candidate].Actor.Get() != actor)
 	{
 		InvasionReplicatedActorPtrIndex.Remove(actor);
 		return false;
@@ -4496,7 +4499,7 @@ static bool HCDEAppendActorDeltasV2(int clientNum, uint8_t* output, size_t outpu
 		}
 
 		auto& invasionRef = InvasionReplicatedActors[candidate.ActorIndex];
-		AActor* actor = invasionRef.Actor;
+		AActor* actor = invasionRef.Actor.Get();
 		if (actor == nullptr)
 		{
 			++deferredBudget;

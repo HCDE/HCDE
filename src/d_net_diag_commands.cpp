@@ -1382,6 +1382,51 @@ CCMD(net_stressreport)
 	HCDEPrintLiveStressReport();
 }
 
+static unsigned HCDEPrintActorSurfaceStatus(const char* title, const char* const* classNames, unsigned count)
+{
+	unsigned missing = 0u;
+	Printf(PRINT_HIGH, "%s\n", title);
+	for (unsigned i = 0u; i < count; ++i)
+	{
+		const PClassActor* actorClass = PClass::FindActor(classNames[i]);
+		if (actorClass == nullptr)
+			++missing;
+		Printf(PRINT_HIGH, "  [%s] %s\n", actorClass != nullptr ? "ok" : "missing", classNames[i]);
+	}
+	return missing;
+}
+
+// Compatibility-roadmap smoke check. This intentionally validates that imported
+// surfaces resolve into HCDE's canonical actor/runtime registry; it does not
+// introduce a parallel compatibility runtime.
+CCMD(hcde_compat_surfaces)
+{
+	static const char* const id24CoreActors[] =
+	{
+		"ID24Incinerator",
+		"ID24CalamityBlade",
+		"ID24Fuel",
+		"ID24FuelTank",
+		"ID24Vassago",
+		"ID24Tyrant",
+		"ID24PlasmaGuy",
+		"ID24Ghoul",
+		"ID24Banshee",
+		"ID24Mindweaver",
+	};
+
+	Printf(PRINT_HIGH, "\n=== HCDE compatibility surfaces ===\n");
+	unsigned missing = 0u;
+	missing += HCDEPrintActorSurfaceStatus("ID24 actor surface:", id24CoreActors, countof(id24CoreActors));
+	Printf(PRINT_HIGH,
+		"MBF21: ZScript action surface is built into actors/mbf21.zs and exercised by ID24 weapons/monsters.\n");
+	Printf(PRINT_HIGH,
+		"Eternity/EDGE: XLAT compatibility surfaces are data-driven (static/xlat/eternity.txt and EDGE linetypes in static/xlat/base.txt).\n");
+	Printf(PRINT_HIGH, "summary: missing=%u checked=%u\n",
+		missing, unsigned(countof(id24CoreActors)));
+	Printf(PRINT_HIGH, "===================================\n");
+}
+
 // `net_invasion_missing_classes` - report the table of authoritative actor
 // classes the local client has been asked to mirror but does not have loaded
 // (most often: the dedicated server has a Doom 2 remake / monster pack the
@@ -1518,6 +1563,151 @@ ADD_STAT(network)
 // less smooth as the measured time used for interpolation will vary.
 
 CVAR(Bool, r_ticstability, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+EXTERN_CVAR(Bool, r_dynlights)
+EXTERN_CVAR(Bool, gl_lights)
+EXTERN_CVAR(Bool, gl_light_shadowmap)
+EXTERN_CVAR(Bool, gl_shadowmap_prioritize)
+EXTERN_CVAR(Bool, hcde_shadow_autofallback)
+EXTERN_CVAR(Bool, hcde_shadow_autobudget)
+EXTERN_CVAR(Int, gl_shadowmap_quality)
+EXTERN_CVAR(Int, gl_shadowmap_filter)
+EXTERN_CVAR(Int, gl_shadowmap_maxlights)
+EXTERN_CVAR(Int, r_actorspriteshadow)
+EXTERN_CVAR(Float, r_actorspriteshadowdist)
+EXTERN_CVAR(Float, r_actorspriteshadowalpha)
+EXTERN_CVAR(Int, r_actorspriteshadowstyle)
+EXTERN_CVAR(Bool, use_joystick)
+EXTERN_CVAR(Bool, cl_run)
+EXTERN_CVAR(Bool, freelook)
+EXTERN_CVAR(Bool, lookstrafe)
+EXTERN_CVAR(Float, m_forward)
+EXTERN_CVAR(Float, m_side)
+EXTERN_CVAR(Float, cl_analog_sensitivity_yaw)
+EXTERN_CVAR(Float, cl_analog_sensitivity_pitch)
+EXTERN_CVAR(Bool, cl_analog_run)
+EXTERN_CVAR(Bool, cl_analog_straferun)
+EXTERN_CVAR(Bool, cl_noprediction)
+EXTERN_CVAR(Bool, cl_hcde_predict_dedicated)
+EXTERN_CVAR(Int, cl_predict_max)
+EXTERN_CVAR(Float, sv_aircontrol)
+
+// Presentation-roadmap smoke check. This reports renderer/timing knobs that
+// should remain presentation-facing while fixed-tic gameplay stays authoritative.
+CCMD(hcde_presentation_surfaces)
+{
+	Printf(PRINT_HIGH, "\n=== HCDE presentation surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"timing: cl_capfps=%d vid_vsync=%d vid_maxfps=%d r_ticstability=%d ticrate=%d\n",
+		cl_capfps ? 1 : 0, vid_vsync ? 1 : 0, int(vid_maxfps), r_ticstability ? 1 : 0, TICRATE);
+	Printf(PRINT_HIGH,
+		"lighting: r_dynlights=%d gl_lights=%d shadowmap=%d quality=%d filter=%d maxlights=%d prioritize=%d\n",
+		r_dynlights ? 1 : 0, gl_lights ? 1 : 0, gl_light_shadowmap ? 1 : 0,
+		int(gl_shadowmap_quality), int(gl_shadowmap_filter), int(gl_shadowmap_maxlights),
+		gl_shadowmap_prioritize ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"hcde-shadow-budget: autofallback=%d autobudget=%d\n",
+		hcde_shadow_autofallback ? 1 : 0, hcde_shadow_autobudget ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"sprite-shadows: mode=%d style=%d dist=%.1f alpha=%.2f\n",
+		int(r_actorspriteshadow), int(r_actorspriteshadowstyle),
+		double(r_actorspriteshadowdist), double(r_actorspriteshadowalpha));
+	Printf(PRINT_HIGH,
+		"boundary: these are render/presentation controls only; fixed-tic playsim remains %d Hz.\n",
+		TICRATE);
+	Printf(PRINT_HIGH, "==================================\n");
+}
+
+// Step 5 smoke check: input-feel imports should terminate in the normal ticcmd
+// pipeline; gameplay physics changes must stay canonical/server-authoritative.
+CCMD(hcde_input_feel_surfaces)
+{
+	Printf(PRINT_HIGH, "\n=== HCDE input/feel surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"command pipeline: I_StartTic -> D_ProcessEvents -> G_BuildTiccmd -> LocalCmds (clienttic=%d ticdup=%d)\n",
+		ClientTic, TicDup);
+	Printf(PRINT_HIGH,
+		"input: joystick=%d cl_run=%d freelook=%d lookstrafe=%d mouse=(forward %.2f side %.2f)\n",
+		use_joystick ? 1 : 0, cl_run ? 1 : 0, freelook ? 1 : 0, lookstrafe ? 1 : 0,
+		double(m_forward), double(m_side));
+	Printf(PRINT_HIGH,
+		"analog: run=%d straferun=%d sens=(yaw %.2f pitch %.2f)\n",
+		cl_analog_run ? 1 : 0, cl_analog_straferun ? 1 : 0,
+		double(cl_analog_sensitivity_yaw), double(cl_analog_sensitivity_pitch));
+	Printf(PRINT_HIGH,
+		"prediction: netgame=%d multiplayer=%d cl_noprediction=%d dedicated-predict=%d max=%d\n",
+		netgame ? 1 : 0, multiplayer ? 1 : 0, cl_noprediction ? 1 : 0,
+		cl_hcde_predict_dedicated ? 1 : 0, int(cl_predict_max));
+	Printf(PRINT_HIGH,
+		"physics boundary: sv_aircontrol=%.6f; Doom Retro-style physics must be server-authoritative/gated in netgames.\n",
+		double(sv_aircontrol));
+	Printf(PRINT_HIGH, "=================================\n");
+}
+
+// Step 6 smoke check: gameplay systems should use canonical mode state,
+// authority events, and cosmetic-only event boundaries where appropriate.
+CCMD(hcde_gameplay_surfaces)
+{
+	const char* modeName = Net_IsInvasionModeEnabled() ? "invasion" : (deathmatch ? "deathmatch" : "coop");
+	Printf(PRINT_HIGH, "\n=== HCDE gameplay surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"mode: %s sv_gametype=%d netgame=%d multiplayer=%d authority=%d\n",
+		modeName, int(sv_gametype), netgame ? 1 : 0, multiplayer ? 1 : 0,
+		I_IsLocalHCDEServiceAuthority() ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"invasion/ai: state=%s wave=%d/%d active=%d tracked=%u simlod=%d lod=(%u/%u/%u/%u)\n",
+		Net_InvasionStateName(InvasionState), InvasionWaveDirector.Wave,
+		InvasionWaveDirector.MaxWaves, Net_GetInvasionActiveMonsterCount(),
+		unsigned(InvasionReplicatedActors.Size()), sv_invasionsimlod ? 1 : 0,
+		InvasionSimulationLODCurrent[HSIMLOD_FULL],
+		InvasionSimulationLODCurrent[HSIMLOD_REDUCED],
+		InvasionSimulationLODCurrent[HSIMLOD_DORMANT],
+		InvasionSimulationLODSuspendedCurrent);
+	Printf(PRINT_HIGH,
+		"authority-events: tx=%llu deferred=%llu catchup=%llu rx=%llu applied=%llu missing=%llu recent=%u\n",
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventRecordsBuilt),
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventRecordsDeferred),
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventCatchupRecordsBuilt),
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventRecordsReceived),
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventRecordsApplied),
+		static_cast<unsigned long long>(HCDELiveProfile.AuthorityEventRecordsMissing),
+		unsigned(HCDERecentAuthorityEvents.Size()));
+	Printf(PRINT_HIGH,
+		"mode-state: migrations=%llu registered=%llu shared-actors=%u replicated-classes=%u\n",
+		static_cast<unsigned long long>(HCDELiveProfile.ModeMigrationScans),
+		static_cast<unsigned long long>(HCDELiveProfile.ModeMigrationActorsRegistered),
+		unsigned(HCDEReplicatedActors.Size()), unsigned(HCDEReplicatedActorClasses.Size()));
+	Printf(PRINT_HIGH,
+		"boundary: economy/AI must be authority-owned; skin taunts should be cosmetic events, not gameplay state.\n");
+	Printf(PRINT_HIGH, "===============================\n");
+}
+
+// Step 7 smoke check: maintenance/tooling work should remain outside gameplay
+// packet lanes and preserve the dedicated-server/client UI boundary.
+CCMD(hcde_maintenance_surfaces)
+{
+	Printf(PRINT_HIGH, "\n=== HCDE maintenance/tooling surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"server-ui: dedicated=%d dedicated-exe=%d room-ui-suppressed=%d startup-ui-suppressed=%d\n",
+		HCDE_ServerMode_IsDedicatedServer() ? 1 : 0,
+		HCDE_ServerMode_IsDedicatedExecutable() ? 1 : 0,
+		HCDE_ServerMode_ShouldSuppressRoomUI() ? 1 : 0,
+		HCDE_ServerMode_ShouldSuppressStartupUI() ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"authority-ui: known=%d slot=%d settings-controller=%d waiting=%d name=%s\n",
+		HCDE_ServerMode_HasAuthorityState() ? 1 : 0,
+		HCDE_ServerMode_GetAuthoritySlot(),
+		HCDE_ServerMode_AuthorityCanControlSettings() ? 1 : 0,
+		HCDE_ServerMode_IsAuthorityWaiting() ? 1 : 0,
+		HCDE_ServerMode_GetAuthorityName());
+	Printf(PRINT_HIGH,
+		"diagnostics: console-command=hcde_maintenance_surfaces server-runtime=HCDE_ServerMode_PrintDiagnostics updater=tools/verify-hcde-updater.ps1\n");
+	Printf(PRINT_HIGH,
+		"rcon: not implemented in this checkpoint; future RCON must use a narrow authenticated admin channel.\n");
+	Printf(PRINT_HIGH,
+		"boundary: updater/UI/RCON tooling must not mutate gameplay state through client-only or gameplay packet lanes.\n");
+	Printf(PRINT_HIGH, "========================================\n");
+}
 
 static uint64_t stabilityticduration = 0;
 static uint64_t stabilitystarttime = 0;
