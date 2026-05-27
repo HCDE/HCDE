@@ -1,13 +1,22 @@
 # Legacy Netcode Remainder Audit
 
 This note tracks the remaining GZDoom/UZDoom-shaped networking seams after the
-HCDE native gameplay overhaul. The goal is not to delete every old name: some
-structures are still shared with demos, setup handshakes, console commands, and
-single-player input flow. Treat this as the map for future DSDA-Doom/Odamex-style
-replacement work.
+HCDE native gameplay overhaul. HCDE keeps the UzDoom-derived engine as the
+middle compatibility/simulation core, then layers Odamex-style server authority
+and HCDE-specific replication around it. DSDA-Doom is a reference for narrow
+rewind, determinism, and state-comparison work, not the primary networking
+model. The goal is not to delete every old name: some structures are still
+shared with demos, setup handshakes, console commands, and single-player input
+flow.
 
 ## Current architecture boundary
 
+- The UzDoom-derived core owns rendering, scripting compatibility, playsim
+  execution, and broad mod-facing behavior.
+- The networking layer reaches into that core through narrow command,
+  authority-event, snapshot, prediction, and repair seams.
+- Odamex is the closest model for server-authoritative multiplayer policy.
+- DSDA-Doom is mainly useful for rewind/state-hash/determinism techniques.
 - Live gameplay traffic is expected to use HCDE native `HCIN`/`HCSN` payloads.
 - Classic `NCMD_*` traffic still exists for setup, latency, level-ready, and
   control messages in `src/common/engine/i_net.h` / `i_net.cpp`.
@@ -79,7 +88,8 @@ stub-and-log signal for finding ghost dependencies during local host/join runs.
    not include the full net core.
 3. **Protect the command/event bridge.** Keep `DEM_*` and `usercmd_t` until a
    replacement side-effect bus exists. DSDA-Doom code is most useful here for
-   demo/input determinism comparisons, not direct deletion.
+   rewind, demo/input determinism, and state-comparison ideas, not direct
+   multiplayer replacement.
 4. **Compare authority behavior against Odamex.** Actor spawn, damage, pickup,
    and projectile handling should be reviewed against Odamex-style server
    authority before any `multiplayer` gameplay branches are simplified.
