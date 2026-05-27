@@ -315,7 +315,9 @@ static bool Net_InvasionDebugEnabled(int level = 1)
 // gametic is the tic about to (or currently being) run.
 // ClientTic is the tick the client is currently on and building a command for.
 //
-// A world tick cannot be ran until CurrentSequence >= gametic for all clients.
+// HCDE authority owns the simulation clock; it no longer waits for every peer's
+// CurrentSequence to reach gametic. Non-authority clients still gate local world
+// ticks on the authoritative snapshot/command window below.
 
 int 				ClientTic = 0;
 usercmd_t			LocalCmds[LOCALCMDTICS] = {};
@@ -1540,7 +1542,7 @@ static void HCDERejectLegacyGameplayPeer(int client, const char* direction, cons
 	++peer.UnsupportedReceived;
 	++HCDELiveProfile.LiveLegacyGameplayRejected;
 	DebugTrace::Warningf("net",
-		"rejected legacy gameplay %s client=%d reason=%s hcde=%d negotiated=0x%llx required=0x%llx seq=%d ack=%d room=%u native-only",
+		"legacy network path hit: rejected legacy gameplay %s client=%d reason=%s hcde=%d negotiated=0x%llx required=0x%llx seq=%d ack=%d room=%u native-only",
 		direction != nullptr ? direction : "gameplay",
 		client,
 		reason != nullptr ? reason : "unknown",
