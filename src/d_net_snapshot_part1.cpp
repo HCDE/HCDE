@@ -3281,8 +3281,33 @@ static void Net_IndexHCDEReplicatedActor(size_t index)
 	if (ref.Id != 0u)
 		HCDEReplicatedActorIdIndex.Insert(ref.Id, unsigned(index));
 	const AActor* actor = ref.Actor.Get();
-	if (actor != nullptr)
+	if (actor != nullptr && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
 		HCDEReplicatedActorPtrIndex.Insert(actor, unsigned(index));
+}
+
+static bool Net_IsValidHCDEReplicatedActorCategory(uint8_t category)
+{
+	return category > HREP_ACTOR_UNKNOWN && category <= HREP_ACTOR_VISUAL;
+}
+
+static bool Net_IsValidHCDEReplicatedActorSource(uint8_t source)
+{
+	return source <= HREP_SOURCE_DM;
+}
+
+static bool Net_IsRecentHCDEReplicatedActorTouch(int tic, int maxAgeTics)
+{
+	return tic > 0 && gametic >= tic && gametic - tic <= maxAgeTics;
+}
+
+static void Net_ClampHCDEActorDeltaSendCursors()
+{
+	const size_t actorCount = HCDEReplicatedActors.Size();
+	for (int client = 0; client < MAXPLAYERS; ++client)
+	{
+		if (actorCount == 0u || HCDEActorDeltaV2SendCursor[client] >= actorCount)
+			HCDEActorDeltaV2SendCursor[client] = 0u;
+	}
 }
 
 static void Net_RebuildHCDEReplicatedActorIndexes()
@@ -3560,45 +3585,65 @@ static int Net_CompactHCDEReplicatedActors()
 	int removed = 0;
 	for (size_t i = 0u; i < HCDEReplicatedActors.Size(); ++i)
 	{
-		AActor* actor = HCDEReplicatedActors[i].Actor;
+		auto& ref = HCDEReplicatedActors[i];
+		AActor* actor = ref.Actor;
 		const bool staleActor = actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0;
-		if (staleActor && Net_ShouldRecordHCDEPickupRetireEvent(HCDEReplicatedActors[i], actor))
+		if (!staleActor)
 		{
-			Net_RecordHCDEPickupRetireEvent(HCDEReplicatedActors[i], actor);
-			Net_SetHCDEReplicatedActorPtr(HCDEReplicatedActors[i], nullptr);
-			HCDEReplicatedActors[i].Active = false;
-			HCDEReplicatedActors[i].Retired = true;
-			HCDEReplicatedActors[i].RetireTic = gametic;
-			HCDEReplicatedActors[i].LastTouchedTic = gametic;
+			if (ref.ClassId == 0u)
+				ref.ClassId = Net_GetHCDEReplicatedActorClassId(actor->GetClass());
+			if (!Net_IsValidHCDEReplicatedActorCategory(ref.Category))
+				ref.Category = Net_ClassifyHCDEReplicatedActor(actor, Net_ClassDefaultsSuggestProjectile(actor->GetClass()));
+		}
+
+		const bool validCategory = Net_IsValidHCDEReplicatedActorCategory(ref.Category);
+		const bool validSource = Net_IsValidHCDEReplicatedActorSource(ref.Source);
+		const bool hasClassIdentity = ref.ClassId != 0u || actor != nullptr;
+		const bool malformedRef = ref.Id == 0u || !validCategory || !validSource || !hasClassIdentity;
+		if (malformedRef)
+		{
+			++removed;
+			continue;
+		}
+
+		if (staleActor && Net_ShouldRecordHCDEPickupRetireEvent(ref, actor))
+		{
+			Net_RecordHCDEPickupRetireEvent(ref, actor);
+			Net_SetHCDEReplicatedActorPtr(ref, nullptr);
+			ref.Active = false;
+			ref.Retired = true;
+			ref.RetireTic = gametic;
+			ref.LastTouchedTic = gametic;
 			++HCDELiveProfile.SharedActorRetired;
 		}
 		const bool liveRemoteBaseline = actor == nullptr
-			&& HCDEReplicatedActors[i].Active
-			&& !HCDEReplicatedActors[i].Retired
-			&& (HCDEReplicatedActors[i].Source == HREP_SOURCE_SHARED
-				|| HCDEReplicatedActors[i].Source == HREP_SOURCE_COOP
-				|| HCDEReplicatedActors[i].Source == HREP_SOURCE_DM)
-			&& HCDEReplicatedActors[i].LastTouchedTic > 0
-			&& gametic - HCDEReplicatedActors[i].LastTouchedTic <= TICRATE * 10;
-		const bool retireExpired = HCDEReplicatedActors[i].Retired
-			&& HCDEReplicatedActors[i].RetireTic > 0
-			&& gametic - HCDEReplicatedActors[i].RetireTic > TICRATE * 2;
-		if (HCDEReplicatedActors[i].Id == 0u || retireExpired || (staleActor && !HCDEReplicatedActors[i].Retired && !liveRemoteBaseline))
+			&& ref.Active
+			&& !ref.Retired
+			&& (ref.Source == HREP_SOURCE_SHARED
+				|| ref.Source == HREP_SOURCE_COOP
+				|| ref.Source == HREP_SOURCE_DM)
+			&& Net_IsRecentHCDEReplicatedActorTouch(ref.LastTouchedTic, TICRATE * 10);
+		const bool retireExpired = ref.Retired
+			&& ref.RetireTic > 0
+			&& gametic >= ref.RetireTic
+			&& gametic - ref.RetireTic > TICRATE * 2;
+		if (retireExpired || (staleActor && !ref.Retired && !liveRemoteBaseline))
 		{
 			++removed;
 			continue;
 		}
 
 		if (staleActor && !liveRemoteBaseline)
-			Net_SetHCDEReplicatedActorPtr(HCDEReplicatedActors[i], nullptr);
+			Net_SetHCDEReplicatedActorPtr(ref, nullptr);
 		if (writeIdx != i)
-			HCDEReplicatedActors[writeIdx] = HCDEReplicatedActors[i];
+			HCDEReplicatedActors[writeIdx] = ref;
 		++writeIdx;
 	}
 
 	if (writeIdx < HCDEReplicatedActors.Size())
 		HCDEReplicatedActors.Resize(unsigned(writeIdx));
 	Net_RebuildHCDEReplicatedActorIndexes();
+	Net_ClampHCDEActorDeltaSendCursors();
 	HCDELiveProfile.SharedActorCompacted += uint64_t(max<int>(removed, 0));
 	return removed;
 }
