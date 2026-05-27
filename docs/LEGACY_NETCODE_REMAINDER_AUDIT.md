@@ -11,6 +11,9 @@ active EDGE Classic-style DDF, Lua, and COAL support. The goal is not to delete
 every old name: some structures are still shared with demos, setup handshakes,
 console commands, compatibility importers, and single-player input flow.
 
+For the full Kanban-driven feature and maintenance plan, see
+`docs/HCDE_ROADMAP_INTEGRATION_PLAN.md`.
+
 ## Current architecture boundary
 
 - The UzDoom-derived core owns rendering, scripting compatibility, playsim
