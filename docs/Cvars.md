@@ -1,13 +1,13 @@
 # HCDE CVAR Reference
 
-Generated: 2026-05-25 18:14:36 UTC
+Generated: 2026-05-27 02:04:19 UTC
 
 This reference combines source-defined CVAR inventory with the imported runtime audit snapshot.
 
 ## Coverage
 
-- Source CVAR definitions discovered: **1003** unique / **1010** total macro definitions
-- Source-defined CVARs absent from imported runtime snapshot: **979**
+- Source CVAR definitions discovered: **1029** unique / **1036** total macro definitions
+- Source-defined CVARs absent from imported runtime snapshot: **1005**
 - Runtime-only CVARs from imported snapshot: **425**
 - Total runtime CVARs in imported snapshot: **449**
 - Set/get tested runtime CVARs: **176**
@@ -36,7 +36,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Legacy Skulltag compatibility value for duel limit metadata.
 - Source default: `0`
 - Valid range/shape: `0..255`
-- Source: `src/d_net.cpp:9580`
+- Source: `src/d_net_invasion.cpp:113`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -45,16 +45,16 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Requires HCDE-native networking/capability paths for multiplayer sessions.
 - Source default: `true`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:230`
+- Source: `src/d_net.cpp:306`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `net_predict_debug`
 
 - Description: Controls HCDE prediction diagnostics: off, CSV sampling, and/or on-screen/debug trace output depending on level.
-- Source default: `2`
+- Source default: `3`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:189`
+- Source: `src/d_net.cpp:207`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -63,7 +63,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Tic interval used by prediction CSV/debug sampling.
 - Source default: `15`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:197`
+- Source: `src/d_net.cpp:215`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -72,7 +72,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Soft warning threshold for client ack lag during prediction diagnostics.
 - Source default: `3`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:205`
+- Source: `src/d_net.cpp:262`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -81,7 +81,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Soft warning threshold for invasion mirror drift during prediction diagnostics.
 - Source default: `2`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:213`
+- Source: `src/d_net.cpp:289`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -90,7 +90,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Soft warning threshold for passive update storms during prediction diagnostics.
 - Source default: `5`
 - Valid range/shape: `n/a`
-- Source: `src/d_net.cpp:221`
+- Source: `src/d_net.cpp:297`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -117,7 +117,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Base monster budget each wave starts with.
 - Source default: `24`
 - Valid range/shape: `>= 1`
-- Source: `src/d_net.cpp:9590`
+- Source: `src/d_net_invasion.cpp:123`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -126,7 +126,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Extra budget added during boss waves.
 - Source default: `20`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9625`
+- Source: `src/d_net_invasion.cpp:158`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -135,7 +135,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Boss wave cadence (e.g. 5 = every 5th wave, 0 = never).
 - Source default: `5`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9620`
+- Source: `src/d_net_invasion.cpp:153`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -144,7 +144,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Budget increase applied per wave number.
 - Source default: `8`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9595`
+- Source: `src/d_net_invasion.cpp:128`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -153,25 +153,34 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Seconds allowed for cleanup phase after spawning ends.
 - Source default: `4.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9551`
+- Source: `src/d_net_invasion.cpp:81`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `sv_invasioncountdowntime`
 
-- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown). Positive values below 10 seconds are raised to a stable 10-second effective floor during invasion.
+- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown).
 - Source default: `30.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9538`
+- Source: `src/d_net_invasion.cpp:68`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `sv_invasiondebug`
 
-- Description: Invasion-specific debugger level. 0 is off, 1 prints important state/spawn/result events, 2 adds timing safety warnings, 3 is reserved for noisy phase tracing.
+- Description: Server setting: Invasion Debug
 - Source default: `0`
-- Valid range/shape: `0..3`
-- Source: `src/d_net.cpp`
+- Valid range/shape: `n/a`
+- Source: `src/d_net.cpp:188`
+- Present in runtime snapshot: No (not in this runtime snapshot)
+- Runtime snapshot value: `n/a`
+
+### `sv_invasionexitonvictory`
+
+- Description: Server setting: Invasion Exit Victory
+- Source default: `true`
+- Valid range/shape: `n/a`
+- Source: `src/d_net_invasion.cpp:96`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -180,7 +189,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Seconds between completed waves before the next wave starts.
 - Source default: `6.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9556`
+- Source: `src/d_net_invasion.cpp:86`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -189,7 +198,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Optional cap for active invasion monsters. 0 disables the cap; positive values are clamped by the engine.
 - Source default: `0`
 - Valid range/shape: `0 or 1..1024`
-- Source: `src/d_net.cpp:9615`
+- Source: `src/d_net_invasion.cpp:148`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -198,7 +207,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Additional budget per extra active player.
 - Source default: `6`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9600`
+- Source: `src/d_net_invasion.cpp:133`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -207,16 +216,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Seconds to keep the final victory/failure state visible.
 - Source default: `8.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9561`
-- Present in runtime snapshot: No (not in this runtime snapshot)
-- Runtime snapshot value: `n/a`
-
-### `sv_invasionexitonvictory`
-
-- Description: If enabled, final invasion victory exits the current map after `sv_invasionresulttime`.
-- Source default: `true`
-- Valid range/shape: `bool`
-- Source: `src/d_net.cpp`
+- Source: `src/d_net_invasion.cpp:91`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -225,7 +225,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Enables server-side simulation LOD for invasion monsters so distant actors think less often under heavy load.
 - Source default: `true`
 - Valid range/shape: `bool`
-- Source: `src/d_net.cpp:9636`
+- Source: `src/d_net_invasion.cpp:169`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -234,7 +234,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Think interval in tics for dormant distant invasion simulation.
 - Source default: `TICRATE * 3`
 - Valid range/shape: `>= 1 tic`
-- Source: `src/d_net.cpp:9657`
+- Source: `src/d_net_invasion.cpp:190`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -243,7 +243,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Distance within which invasion monsters keep full-rate simulation.
 - Source default: `2048.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9639`
+- Source: `src/d_net_invasion.cpp:172`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -252,7 +252,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Think interval in tics for reduced-rate invasion simulation.
 - Source default: `5`
 - Valid range/shape: `>= 1 tic`
-- Source: `src/d_net.cpp:9651`
+- Source: `src/d_net_invasion.cpp:184`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -261,7 +261,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Distance within which invasion monsters use reduced-rate simulation before becoming dormant.
 - Source default: `4096.0f`
 - Valid range/shape: `>= sv_invasionsimlodfullrange`
-- Source: `src/d_net.cpp:9645`
+- Source: `src/d_net_invasion.cpp:178`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -270,7 +270,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Maximum monsters spawned per spawn tick burst.
 - Source default: `3`
 - Valid range/shape: `>= 1`
-- Source: `src/d_net.cpp:9610`
+- Source: `src/d_net_invasion.cpp:143`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -279,7 +279,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Seconds between spawn ticks while wave spawning is active.
 - Source default: `0.35f`
 - Valid range/shape: `>= 0.05`
-- Source: `src/d_net.cpp:9605`
+- Source: `src/d_net_invasion.cpp:138`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -288,7 +288,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Wave spawn window length in seconds before cleanup phase.
 - Source default: `8.0f`
 - Valid range/shape: `>= 0`
-- Source: `src/d_net.cpp:9546`
+- Source: `src/d_net_invasion.cpp:76`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -297,7 +297,7 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Fallback to generic spawning when tagged invasion spots cannot be used.
 - Source default: `true`
 - Valid range/shape: `bool`
-- Source: `src/d_net.cpp:9633`
+- Source: `src/d_net_invasion.cpp:166`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -306,34 +306,34 @@ These are the high-value controls for invasion, net diagnostics, compatibility, 
 - Description: Restrict native invasion spots by map thing TID/tag. Keep disabled for Skulltag/Zandronum map compatibility; the spot arguments already control wave timing.
 - Source default: `false`
 - Valid range/shape: `bool`
-- Source: `src/d_net.cpp:9630`
+- Source: `src/d_net_invasion.cpp:163`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `sv_invasionwaves`
 
-- Description: Maximum number of invasion waves in a run. Valid range is 1..3000.
+- Description: Maximum number of invasion waves in a run.
 - Source default: `8`
-- Valid range/shape: `1..3000`
-- Source: `src/d_net.cpp:9566`
+- Valid range/shape: `1..255`
+- Source: `src/d_net_invasion.cpp:99`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `sv_usemapsettingswavelimit`
 
-- Description: If enabled, map-defined invasion wavelimit metadata overrides `sv_invasionwaves` when present. An explicit multiplayer `wavelimit` value still wins over map metadata.
+- Description: If enabled, map-defined invasion wavelimit metadata overrides sv_invasionwaves when present.
 - Source default: `true`
 - Valid range/shape: `bool`
-- Source: `src/d_net.cpp:9587`
+- Source: `src/d_net_invasion.cpp:120`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
 ### `wavelimit`
 
-- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..3000 forces that wave count and overrides map metadata in multiplayer.
+- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..255 forces that wave count.
 - Source default: `0`
-- Valid range/shape: `0..3000`
-- Source: `src/d_net.cpp:9573`
+- Valid range/shape: `0..255`
+- Source: `src/d_net_invasion.cpp:106`
 - Present in runtime snapshot: No (not in this runtime snapshot)
 - Runtime snapshot value: `n/a`
 
@@ -349,7 +349,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:134`
+- Source: `src/playsim/p_mobj.cpp:135`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -505,7 +505,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:3849`
+- Source: `src/playsim/p_map.cpp:3882`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1597,7 +1597,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:504`
+- Source: `src/d_main.cpp:506`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1609,7 +1609,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:505`
+- Source: `src/d_main.cpp:507`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1621,7 +1621,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:506`
+- Source: `src/d_main.cpp:508`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1633,7 +1633,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:332`
+- Source: `src/g_game.cpp:414`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1645,7 +1645,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOSET|CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:328`
+- Source: `src/g_game.cpp:410`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1669,7 +1669,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:326`
+- Source: `src/g_game.cpp:408`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1705,7 +1705,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:5633`
+- Source: `src/playsim/p_map.cpp:5666`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `90`
 
@@ -1717,7 +1717,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:5632`
+- Source: `src/playsim/p_map.cpp:5665`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `-8`
 
@@ -1729,7 +1729,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:206`
+- Source: `src/g_game.cpp:288`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1873,7 +1873,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:248`
+- Source: `src/g_game.cpp:330`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1885,7 +1885,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:247`
+- Source: `src/g_game.cpp:329`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1897,7 +1897,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:246`
+- Source: `src/g_game.cpp:328`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1909,7 +1909,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:249`
+- Source: `src/g_game.cpp:331`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1945,7 +1945,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:66`
+- Source: `src/playsim/p_map.cpp:67`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -1957,7 +1957,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:136`
+- Source: `src/playsim/p_mobj.cpp:137`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2009,6 +2009,18 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
+### `cl_debug_monster_proximity`
+
+- Description: Likely controls debug monster proximity behavior for client.
+- Type: `Int`
+- Source default: `768`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp:281`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
 ### `cl_debugprediction`
 
 - Description: Likely controls debugprediction behavior for client.
@@ -2017,7 +2029,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_CHEAT`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9674`
+- Source: `src/d_net_invasion.cpp:207`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2041,7 +2053,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:68`
+- Source: `src/playsim/p_map.cpp:69`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2077,7 +2089,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:80`
+- Source: `src/playsim/p_user.cpp:83`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2101,7 +2113,19 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:133`
+- Source: `src/playsim/p_mobj.cpp:134`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `cl_net_prediction_lead`
+
+- Description: Likely controls net prediction lead behavior for client.
+- Type: `Int`
+- Source default: `2`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp:254`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2113,7 +2137,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9664`
+- Source: `src/d_net_invasion.cpp:197`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2125,7 +2149,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9665`
+- Source: `src/d_net_invasion.cpp:198`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2137,7 +2161,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:521`
+- Source: `src/d_main.cpp:523`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2149,7 +2173,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:77`
+- Source: `src/playsim/p_user.cpp:80`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2173,7 +2197,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:81`
+- Source: `src/playsim/p_user.cpp:84`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2185,7 +2209,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:82`
+- Source: `src/playsim/p_user.cpp:85`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2197,7 +2221,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:116`
+- Source: `src/playsim/p_user.cpp:119`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2209,7 +2233,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:75`
+- Source: `src/playsim/p_user.cpp:78`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2221,7 +2245,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:135`
+- Source: `src/playsim/p_mobj.cpp:136`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2233,7 +2257,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:211`
+- Source: `src/g_game.cpp:293`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2257,7 +2281,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:105`
+- Source: `src/playsim/p_user.cpp:108`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2269,7 +2293,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:100`
+- Source: `src/playsim/p_user.cpp:103`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2281,7 +2305,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:84`
+- Source: `src/playsim/p_user.cpp:87`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2293,7 +2317,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:95`
+- Source: `src/playsim/p_user.cpp:98`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2305,7 +2329,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:238`
+- Source: `src/g_game.cpp:320`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2329,7 +2353,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9666`
+- Source: `src/d_net_invasion.cpp:199`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2341,7 +2365,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:64`
+- Source: `src/playsim/p_interaction.cpp:65`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2353,7 +2377,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_spec.cpp:588`
+- Source: `src/playsim/p_spec.cpp:594`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2365,7 +2389,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:63`
+- Source: `src/playsim/p_interaction.cpp:64`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2401,7 +2425,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:209`
+- Source: `src/g_game.cpp:291`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2473,7 +2497,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_ANYBOSSDEATH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:917`
+- Source: `src/d_main.cpp:919`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2485,7 +2509,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_AVOID_HAZARDS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:939`
+- Source: `src/d_main.cpp:941`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2497,7 +2521,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_BADANGLES`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:928`
+- Source: `src/d_main.cpp:930`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2509,7 +2533,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_BOOMSCROLL`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:911`
+- Source: `src/d_main.cpp:913`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2521,7 +2545,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_CHECKSWITCHRANGE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:935`
+- Source: `src/d_main.cpp:937`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2533,7 +2557,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_CROSSDROPOFF`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:916`
+- Source: `src/d_main.cpp:918`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2545,7 +2569,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_DEHHEALTH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:908`
+- Source: `src/d_main.cpp:910`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2557,7 +2581,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_DROPOFF`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:910`
+- Source: `src/d_main.cpp:912`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2569,7 +2593,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_EMULATEMIKOPORTALS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:945`
+- Source: `src/d_main.cpp:947`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2581,7 +2605,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_EXPLODE1`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:936`
+- Source: `src/d_main.cpp:938`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2593,7 +2617,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_EXPLODE2`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:937`
+- Source: `src/d_main.cpp:939`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2605,7 +2629,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_FDTELEPORT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:943`
+- Source: `src/d_main.cpp:945`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2617,7 +2641,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_FLOORMOVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:929`
+- Source: `src/d_main.cpp:931`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2629,7 +2653,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_HITSCAN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:924`
+- Source: `src/d_main.cpp:926`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2641,7 +2665,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_INVISIBILITY`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:912`
+- Source: `src/d_main.cpp:914`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2653,7 +2677,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_LIGHT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:925`
+- Source: `src/d_main.cpp:927`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2665,7 +2689,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_LIMITPAIN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:898`
+- Source: `src/d_main.cpp:900`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2677,7 +2701,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MASKEDMIDTEX`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:927`
+- Source: `src/d_main.cpp:929`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2689,7 +2713,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MBFMONSTERMOVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:920`
+- Source: `src/d_main.cpp:922`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2701,7 +2725,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MINOTAUR`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:918`
+- Source: `src/d_main.cpp:920`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2713,7 +2737,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MISSILECLIP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:915`
+- Source: `src/d_main.cpp:917`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2725,7 +2749,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_MULTIEXIT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:932`
+- Source: `src/d_main.cpp:934`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2737,7 +2761,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MUSHROOM`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:919`
+- Source: `src/d_main.cpp:921`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2749,7 +2773,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_NOBLOCKFRIENDS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:922`
+- Source: `src/d_main.cpp:924`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2761,7 +2785,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_NODOORLIGHT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:905`
+- Source: `src/d_main.cpp:907`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2773,7 +2797,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_NOFRIENDLYSPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:947`
+- Source: `src/d_main.cpp:949`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2785,7 +2809,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_NOMBF21`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:941`
+- Source: `src/d_main.cpp:943`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2797,7 +2821,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_NO_PASSMOBJ`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:900`
+- Source: `src/d_main.cpp:902`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2809,7 +2833,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_NOTOSSDROPS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:903`
+- Source: `src/d_main.cpp:905`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2821,7 +2845,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_NOVDOLLLOCKMSG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:944`
+- Source: `src/d_main.cpp:946`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2833,7 +2857,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_POINTONLINE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:931`
+- Source: `src/d_main.cpp:933`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2845,7 +2869,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_POLYOBJ`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:926`
+- Source: `src/d_main.cpp:928`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2857,7 +2881,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_PUSHWINDOW`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:934`
+- Source: `src/d_main.cpp:936`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2869,7 +2893,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_RAILING`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:938`
+- Source: `src/d_main.cpp:940`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2881,7 +2905,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_RAVENSCROLL`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:906`
+- Source: `src/d_main.cpp:908`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2893,7 +2917,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_RESERVEDLINEFLAG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:946`
+- Source: `src/d_main.cpp:948`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2905,7 +2929,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SECTORSOUNDS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:914`
+- Source: `src/d_main.cpp:916`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2917,7 +2941,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SHORTTEX`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:896`
+- Source: `src/d_main.cpp:898`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2929,7 +2953,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SILENT_INSTANT_FLOORS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:913`
+- Source: `src/d_main.cpp:915`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2941,7 +2965,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SILENTPICKUP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:899`
+- Source: `src/d_main.cpp:901`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2953,7 +2977,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_SOUNDCUTOFF`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:930`
+- Source: `src/d_main.cpp:932`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2965,7 +2989,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_MAGICSILENCE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:901`
+- Source: `src/d_main.cpp:903`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2977,7 +3001,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SOUNDTARGET`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:907`
+- Source: `src/d_main.cpp:909`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -2989,7 +3013,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_SPRITESORT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:923`
+- Source: `src/d_main.cpp:925`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3001,7 +3025,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_STAIRINDEX`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:897`
+- Source: `src/d_main.cpp:899`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3013,7 +3037,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_STAYONLIFT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:940`
+- Source: `src/d_main.cpp:942`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3025,7 +3049,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_TELEPORT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:933`
+- Source: `src/d_main.cpp:935`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3037,7 +3061,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_TRACE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:909`
+- Source: `src/d_main.cpp:911`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3049,7 +3073,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_USEBLOCKING`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:904`
+- Source: `src/d_main.cpp:906`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3061,7 +3085,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_VILEGHOSTS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:921`
+- Source: `src/d_main.cpp:923`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3073,7 +3097,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF2_VOODOO_ZOMBIES`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:942`
+- Source: `src/d_main.cpp:944`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3085,7 +3109,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `COMPATF_WALLRUN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:902`
+- Source: `src/d_main.cpp:904`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3097,7 +3121,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_SERVERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:806`
+- Source: `src/d_main.cpp:808`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3109,7 +3133,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_SERVERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:814`
+- Source: `src/d_main.cpp:816`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3121,7 +3145,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:823`
+- Source: `src/d_main.cpp:825`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3145,7 +3169,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:132`
+- Source: `src/common/console/c_console.cpp:133`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3157,7 +3181,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:75`
+- Source: `src/common/console/c_console.cpp:76`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3181,7 +3205,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:149`
+- Source: `src/common/console/c_console.cpp:150`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3277,7 +3301,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVARD`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:138`
+- Source: `src/common/console/c_console.cpp:139`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3289,7 +3313,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:127`
+- Source: `src/common/console/c_console.cpp:128`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3493,7 +3517,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_LATCH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:205`
+- Source: `src/g_game.cpp:287`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3521,6 +3545,18 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
+### `debugtrace_capacity`
+
+- Description: Likely controls debugtrace capacity.
+- Type: `Int`
+- Source default: `16384`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/common/engine/debugtrace.cpp:47`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
 ### `debugtrace_enable`
 
 - Description: Likely controls debugtrace enable.
@@ -3529,7 +3565,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/debugtrace.cpp:36`
+- Source: `src/common/engine/debugtrace.cpp:43`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3541,7 +3577,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/debugtrace.cpp:37`
+- Source: `src/common/engine/debugtrace.cpp:44`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3553,7 +3589,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/debugtrace.cpp:38`
+- Source: `src/common/engine/debugtrace.cpp:45`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3561,11 +3597,47 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 - Description: Likely controls debugtrace stats.
 - Type: `Bool`
-- Source default: `false`
+- Source default: `true`
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/debugtrace.cpp:39`
+- Source: `src/common/engine/debugtrace.cpp:46`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `debugtrace_stream`
+
+- Description: Likely controls debugtrace stream.
+- Type: `Bool`
+- Source default: `true`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/common/engine/debugtrace.cpp:48`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `debugtrace_stream_rotate_count`
+
+- Description: Likely controls debugtrace stream rotate count.
+- Type: `Int`
+- Source default: `4`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/common/engine/debugtrace.cpp:50`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `debugtrace_stream_rotate_mb`
+
+- Description: Likely controls debugtrace stream rotate mb.
+- Type: `Int`
+- Source default: `10`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/common/engine/debugtrace.cpp:49`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3793,7 +3865,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:236`
+- Source: `src/g_game.cpp:318`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3805,7 +3877,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:142`
+- Source: `src/common/console/c_console.cpp:143`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -3841,7 +3913,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:503`
+- Source: `src/d_main.cpp:505`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3853,7 +3925,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:329`
+- Source: `src/g_game.cpp:411`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3877,7 +3949,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:227`
+- Source: `src/g_game.cpp:309`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3913,7 +3985,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:639`
+- Source: `src/d_main.cpp:641`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3925,7 +3997,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:715`
+- Source: `src/d_main.cpp:717`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3937,7 +4009,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:785`
+- Source: `src/d_main.cpp:787`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3949,7 +4021,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR_NAMED`
 - Ref symbol: `duellimit_compat`
-- Source: `src/d_net.cpp:9580`
+- Source: `src/d_net_invasion.cpp:113`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3961,7 +4033,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:7040`
+- Source: `src/playsim/p_mobj.cpp:7039`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -3985,7 +4057,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:210`
+- Source: `src/g_game.cpp:292`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4213,7 +4285,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/p_setup.cpp:749`
+- Source: `src/p_setup.cpp:754`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4225,7 +4297,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_USERINFO | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:130`
+- Source: `src/playsim/p_user.cpp:133`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4237,7 +4309,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:459`
+- Source: `src/d_main.cpp:461`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4249,7 +4321,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:239`
+- Source: `src/g_game.cpp:321`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4417,7 +4489,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:119`
+- Source: `src/g_level.cpp:124`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4801,7 +4873,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:127`
+- Source: `src/g_level.cpp:132`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4813,7 +4885,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVARD`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:148`
+- Source: `src/g_level.cpp:153`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4837,7 +4909,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOINITCALL | CVAR_CHEAT`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:143`
+- Source: `src/g_level.cpp:148`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -4957,7 +5029,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:135`
+- Source: `src/g_level.cpp:140`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -5757,11 +5829,11 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 - Description: Likely controls hcde hud debug.
 - Type: `Bool`
-- Source default: `false`
+- Source default: `true`
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:176`
+- Source: `src/d_net.cpp:184`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -5773,7 +5845,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:178`
+- Source: `src/d_net.cpp:196`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6241,7 +6313,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:574`
+- Source: `src/d_main.cpp:576`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6373,7 +6445,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:511`
+- Source: `src/d_main.cpp:513`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6409,7 +6481,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE|CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:517`
+- Source: `src/d_main.cpp:519`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6481,7 +6553,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOINITCALL | CVAR_VIRTUAL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:415`
+- Source: `src/d_main.cpp:417`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6697,7 +6769,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:208`
+- Source: `src/g_game.cpp:290`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6709,7 +6781,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:3112`
+- Source: `src/d_main.cpp:3136`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `1`
 
@@ -6721,7 +6793,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:240`
+- Source: `src/g_game.cpp:322`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6757,7 +6829,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:241`
+- Source: `src/g_game.cpp:323`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6781,7 +6853,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG | CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:601`
+- Source: `src/d_main.cpp:603`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6853,7 +6925,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG|CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:242`
+- Source: `src/g_game.cpp:324`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -6985,7 +7057,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG | CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:602`
+- Source: `src/d_main.cpp:604`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7213,7 +7285,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_GLOBALCONFIG | CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:3115`
+- Source: `src/d_main.cpp:3139`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7237,7 +7309,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVARD_NAMED`
 - Ref symbol: `msglevel`
-- Source: `src/common/console/c_console.cpp:181`
+- Source: `src/common/console/c_console.cpp:182`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7249,7 +7321,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:183`
+- Source: `src/common/console/c_console.cpp:184`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7261,7 +7333,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:188`
+- Source: `src/common/console/c_console.cpp:189`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7273,7 +7345,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:193`
+- Source: `src/common/console/c_console.cpp:194`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7285,7 +7357,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:198`
+- Source: `src/common/console/c_console.cpp:199`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7297,7 +7369,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:203`
+- Source: `src/common/console/c_console.cpp:204`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7309,7 +7381,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:208`
+- Source: `src/common/console/c_console.cpp:209`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7321,7 +7393,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/console/c_console.cpp:213`
+- Source: `src/common/console/c_console.cpp:214`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7381,7 +7453,79 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:235`
+- Source: `src/g_game.cpp:317`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_adaptive_lead`
+
+- Description: Likely controls adaptive lead behavior for network.
+- Type: `Bool`
+- Source default: `true`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_movement_diag.cpp:34`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_adaptive_lead_guard`
+
+- Description: Likely controls adaptive lead guard behavior for network.
+- Type: `Int`
+- Source default: `3`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_movement_diag.cpp:54`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_adaptive_lead_max`
+
+- Description: Likely controls adaptive lead max behavior for network.
+- Type: `Int`
+- Source default: `6`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_movement_diag.cpp:46`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_adaptive_lead_min`
+
+- Description: Likely controls adaptive lead min behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_movement_diag.cpp:38`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_blackbox_record`
+
+- Description: Likely controls blackbox record behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_blackbox.cpp:35`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_blackbox_size_mb`
+
+- Description: Likely controls blackbox size mb behavior for network.
+- Type: `Int`
+- Source default: `32`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_blackbox.cpp:45`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7397,6 +7541,42 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
+### `net_checksum`
+
+- Description: Likely controls checksum behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_checksum.cpp:34`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_checksum_categories`
+
+- Description: Likely controls checksum categories behavior for network.
+- Type: `Int`
+- Source default: `0x3F`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_checksum.cpp:53`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_checksum_interval`
+
+- Description: Likely controls checksum interval behavior for network.
+- Type: `Int`
+- Source default: `4`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_checksum.cpp:45`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
 ### `net_cutscenecountdown`
 
 - Description: Server setting: Ready Time
@@ -7405,7 +7585,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9537`
+- Source: `src/d_net_invasion.cpp:67`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7417,7 +7597,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9530`
+- Source: `src/d_net_invasion.cpp:60`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7429,7 +7609,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9523`
+- Source: `src/d_net_invasion.cpp:53`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7441,7 +7621,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9681`
+- Source: `src/d_net_invasion.cpp:214`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7453,7 +7633,31 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9516`
+- Source: `src/d_net_invasion.cpp:46`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_echo_debug`
+
+- Description: Likely controls echo debug behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp:222`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_event_debug`
+
+- Description: Likely controls event debug behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_diagnostics.cpp:51`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7465,7 +7669,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9512`
+- Source: `src/d_net_invasion.cpp:42`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7477,7 +7681,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:230`
+- Source: `src/d_net.cpp:306`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7489,7 +7693,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9515`
+- Source: `src/d_net_invasion.cpp:45`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7501,7 +7705,19 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9513`
+- Source: `src/d_net_invasion.cpp:43`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_movement_debug`
+
+- Description: Likely controls movement debug behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_movement_diag.cpp:23`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7513,7 +7729,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_IGNORE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/i_net.cpp:997`
+- Source: `src/common/engine/i_net.cpp:998`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7521,11 +7737,11 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 - Description: Controls HCDE prediction diagnostics: off, CSV sampling, and/or on-screen/debug trace output depending on level.
 - Type: `Int`
-- Source default: `2`
+- Source default: `3`
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:189`
+- Source: `src/d_net.cpp:207`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7537,7 +7753,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:197`
+- Source: `src/d_net.cpp:215`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7549,7 +7765,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:205`
+- Source: `src/d_net.cpp:262`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7561,7 +7777,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:213`
+- Source: `src/d_net.cpp:289`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7573,7 +7789,19 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:221`
+- Source: `src/d_net.cpp:297`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_reconcile_debug`
+
+- Description: Likely controls reconcile debug behavior for network.
+- Type: `Int`
+- Source default: `1`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp:231`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7585,7 +7813,67 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9514`
+- Source: `src/d_net_invasion.cpp:44`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_rewind_depth`
+
+- Description: Likely controls rewind depth behavior for network.
+- Type: `Int`
+- Source default: `10`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_SERVERINFO`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_rewind.cpp:44`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_rewind_enable`
+
+- Description: Likely controls rewind enable behavior for network.
+- Type: `Bool`
+- Source default: `true`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_SERVERINFO`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_rewind.cpp:51`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_rewind_interval`
+
+- Description: Likely controls rewind interval behavior for network.
+- Type: `Float`
+- Source default: `1.0f`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_SERVERINFO`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_rewind.cpp:36`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_rewind_max_mb`
+
+- Description: Likely controls rewind max mb behavior for network.
+- Type: `Int`
+- Source default: `32`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_SERVERINFO`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_rewind.cpp:59`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `net_self_test_run_client`
+
+- Description: Likely controls self test run client behavior for network.
+- Type: `Int`
+- Source default: `0`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net.cpp:238`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7597,7 +7885,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9511`
+- Source: `src/d_net_invasion.cpp:41`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7981,7 +8269,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOSET|CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:338`
+- Source: `src/g_game.cpp:420`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -7993,7 +8281,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:339`
+- Source: `src/g_game.cpp:421`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8005,7 +8293,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:341`
+- Source: `src/g_game.cpp:423`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8125,7 +8413,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:507`
+- Source: `src/d_main.cpp:509`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8257,7 +8545,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_sectors.cpp:52`
+- Source: `src/playsim/p_sectors.cpp:53`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8617,7 +8905,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:15777`
+- Source: `src/d_net_diag_commands.cpp:1520`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8725,7 +9013,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:204`
+- Source: `src/g_game.cpp:286`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8761,7 +9049,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:572`
+- Source: `src/d_main.cpp:574`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8773,7 +9061,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:571`
+- Source: `src/d_main.cpp:573`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8785,7 +9073,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:573`
+- Source: `src/d_main.cpp:575`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -8797,7 +9085,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:330`
+- Source: `src/g_game.cpp:412`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9085,7 +9373,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_spec.cpp:587`
+- Source: `src/playsim/p_spec.cpp:593`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9121,7 +9409,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_LATCH`
 - Macro: `CVARD_NAMED`
 - Ref symbol: `gameskill`
-- Source: `src/g_game.cpp:203`
+- Source: `src/g_game.cpp:285`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9229,7 +9517,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:482`
+- Source: `src/d_main.cpp:484`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9277,7 +9565,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:72`
+- Source: `src/playsim/p_user.cpp:75`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9445,7 +9733,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:6044`
+- Source: `src/playsim/p_map.cpp:6078`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9505,7 +9793,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:207`
+- Source: `src/g_game.cpp:289`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9529,7 +9817,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_NOSAVE|CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:1401`
+- Source: `src/playsim/p_user.cpp:1404`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0.00390625`
 
@@ -9553,7 +9841,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_YES_CROUCH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:690`
+- Source: `src/d_main.cpp:692`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9565,7 +9853,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_YES_FREELOOK`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:686`
+- Source: `src/d_main.cpp:688`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9577,7 +9865,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_YES_JUMP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:684`
+- Source: `src/d_main.cpp:686`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -9589,7 +9877,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_ALWAYS_SPAWN_MULTI`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:775`
+- Source: `src/d_main.cpp:777`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9601,7 +9889,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_level.cpp:168`
+- Source: `src/g_level.cpp:173`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9613,7 +9901,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_CHEAT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:70`
+- Source: `src/playsim/p_interaction.cpp:71`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9625,7 +9913,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:69`
+- Source: `src/playsim/p_map.cpp:70`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9637,7 +9925,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_BARRELS_RESPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:756`
+- Source: `src/d_main.cpp:758`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9649,7 +9937,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_CHASECAM`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:767`
+- Source: `src/d_main.cpp:769`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9673,7 +9961,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_HALVE_AMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:697`
+- Source: `src/d_main.cpp:699`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9685,7 +9973,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_AMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:696`
+- Source: `src/d_main.cpp:698`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9697,7 +9985,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_ARMOR`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:694`
+- Source: `src/d_main.cpp:696`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9709,7 +9997,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_INVENTORY`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:691`
+- Source: `src/d_main.cpp:693`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9721,7 +10009,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_KEYS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:692`
+- Source: `src/d_main.cpp:694`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9733,7 +10021,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_POWERUPS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:695`
+- Source: `src/d_main.cpp:697`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9745,7 +10033,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_COOP_LOSE_WEAPONS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:693`
+- Source: `src/d_main.cpp:695`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9757,7 +10045,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_COOP_SHARE_KEYS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:790`
+- Source: `src/d_main.cpp:792`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9793,7 +10081,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_CROUCH|DF_YES_CROUCH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:701`
+- Source: `src/d_main.cpp:703`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9805,7 +10093,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_CHEAT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:68`
+- Source: `src/playsim/p_interaction.cpp:69`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9817,7 +10105,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_CHEAT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:67`
+- Source: `src/playsim/p_interaction.cpp:68`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9829,7 +10117,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_CHEAT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:69`
+- Source: `src/playsim/p_interaction.cpp:70`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9841,7 +10129,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/i_net.cpp:87`
+- Source: `src/common/engine/i_net.cpp:88`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9853,7 +10141,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_DEGENERATION`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:754`
+- Source: `src/d_main.cpp:756`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9865,7 +10153,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_interaction.cpp:824`
+- Source: `src/playsim/p_interaction.cpp:825`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9877,7 +10165,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_DISALLOW_SPYING`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:766`
+- Source: `src/d_main.cpp:768`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9889,7 +10177,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NOSUICIDE`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:768`
+- Source: `src/d_main.cpp:770`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9901,7 +10189,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_DONTCHECKAMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:770`
+- Source: `src/d_main.cpp:772`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9913,7 +10201,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_DOUBLEAMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:753`
+- Source: `src/d_main.cpp:755`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -9937,7 +10225,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_FORCE_FALLINGHX`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:671`
+- Source: `src/d_main.cpp:673`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9949,7 +10237,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_FORCE_FALLINGHX|DF_FORCE_FALLINGZD`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:703`
+- Source: `src/d_main.cpp:705`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9961,7 +10249,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_FAST_MONSTERS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:682`
+- Source: `src/d_main.cpp:684`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -9973,7 +10261,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_pspr.cpp:89`
+- Source: `src/playsim/p_pspr.cpp:90`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -9985,7 +10273,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_FORCE_RESPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:675`
+- Source: `src/d_main.cpp:677`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -9997,7 +10285,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_FREELOOK|DF_YES_FREELOOK`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:704`
+- Source: `src/d_main.cpp:706`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10009,7 +10297,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:252`
+- Source: `src/g_game.cpp:334`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10021,7 +10309,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO|CVAR_NOSAVE|CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_mobj.cpp:121`
+- Source: `src/playsim/p_mobj.cpp:122`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `800`
 
@@ -10033,7 +10321,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/i_net.cpp:83`
+- Source: `src/common/engine/i_net.cpp:84`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `Untitled Odamex Server`
 
@@ -10045,7 +10333,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_INFINITE_AMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:678`
+- Source: `src/d_main.cpp:680`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10057,7 +10345,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_INFINITE_INVENTORY`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:762`
+- Source: `src/d_main.cpp:764`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10069,7 +10357,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_INSTANT_REACTION`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:698`
+- Source: `src/d_main.cpp:700`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10081,7 +10369,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9590`
+- Source: `src/d_net_invasion.cpp:123`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10093,7 +10381,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9625`
+- Source: `src/d_net_invasion.cpp:158`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10105,7 +10393,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9620`
+- Source: `src/d_net_invasion.cpp:153`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10117,7 +10405,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9595`
+- Source: `src/d_net_invasion.cpp:128`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10129,31 +10417,43 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9551`
+- Source: `src/d_net_invasion.cpp:81`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
 ### `sv_invasioncountdowntime`
 
-- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown). Positive values below 10 seconds are raised to a stable 10-second effective floor during invasion.
+- Description: Seconds before wave 1 starts ("Prepare for invasion" countdown).
 - Type: `Float`
 - Source default: `30.0f`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9538`
+- Source: `src/d_net_invasion.cpp:68`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
 ### `sv_invasiondebug`
 
-- Description: Invasion-specific debugger level. 0 is off, 1 prints important state/spawn/result events, 2 adds timing safety warnings, 3 is reserved for noisy phase tracing.
+- Description: Server setting: Invasion Debug
 - Type: `Int`
 - Source default: `0`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp`
+- Source: `src/d_net.cpp:188`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
+### `sv_invasionexitonvictory`
+
+- Description: Server setting: Invasion Exit Victory
+- Type: `Bool`
+- Source default: `true`
+- Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_net_invasion.cpp:96`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10165,7 +10465,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9556`
+- Source: `src/d_net_invasion.cpp:86`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10177,7 +10477,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9615`
+- Source: `src/d_net_invasion.cpp:148`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10189,7 +10489,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9600`
+- Source: `src/d_net_invasion.cpp:133`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10201,19 +10501,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9561`
-- Present in runtime snapshot: No
-- Runtime snapshot value: `n/a`
-
-### `sv_invasionexitonvictory`
-
-- Description: If enabled, final invasion victory exits the current map after `sv_invasionresulttime`.
-- Type: `Bool`
-- Source default: `true`
-- Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
-- Macro: `CUSTOM_CVAR`
-- Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp`
+- Source: `src/d_net_invasion.cpp:91`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10225,7 +10513,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9636`
+- Source: `src/d_net_invasion.cpp:169`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10237,7 +10525,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9657`
+- Source: `src/d_net_invasion.cpp:190`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10249,7 +10537,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9639`
+- Source: `src/d_net_invasion.cpp:172`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10261,7 +10549,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9651`
+- Source: `src/d_net_invasion.cpp:184`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10273,7 +10561,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9645`
+- Source: `src/d_net_invasion.cpp:178`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10285,7 +10573,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9610`
+- Source: `src/d_net_invasion.cpp:143`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10297,7 +10585,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9605`
+- Source: `src/d_net_invasion.cpp:138`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10309,7 +10597,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9546`
+- Source: `src/d_net_invasion.cpp:76`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10321,7 +10609,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9633`
+- Source: `src/d_net_invasion.cpp:166`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10333,7 +10621,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9630`
+- Source: `src/d_net_invasion.cpp:163`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10345,7 +10633,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9566`
+- Source: `src/d_net_invasion.cpp:99`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10357,7 +10645,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_ITEMS_RESPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:681`
+- Source: `src/d_main.cpp:683`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10369,7 +10657,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_JUMP|DF_YES_JUMP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:702`
+- Source: `src/d_main.cpp:704`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10381,7 +10669,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_KEEPFRAGS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:757`
+- Source: `src/d_main.cpp:759`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10393,7 +10681,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_KILL_MONSTERS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:763`
+- Source: `src/d_main.cpp:765`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10405,7 +10693,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_KILLBOSSMONST`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:771`
+- Source: `src/d_main.cpp:773`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10417,7 +10705,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_LOCAL_ITEMS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:791`
+- Source: `src/d_main.cpp:793`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10429,7 +10717,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_LOSEFRAG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:759`
+- Source: `src/d_main.cpp:761`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10441,7 +10729,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/i_net.cpp:88`
+- Source: `src/common/engine/i_net.cpp:89`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `4`
 
@@ -10453,7 +10741,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_MONSTERS_RESPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:680`
+- Source: `src/d_main.cpp:682`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10465,7 +10753,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/common/engine/i_net.cpp:84`
+- Source: `src/common/engine/i_net.cpp:85`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `Welcome to Odamex`
 
@@ -10489,7 +10777,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_ARMOR`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:676`
+- Source: `src/d_main.cpp:678`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10501,7 +10789,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NOAUTOAIM`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:769`
+- Source: `src/d_main.cpp:771`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10513,7 +10801,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_AUTOMAP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:764`
+- Source: `src/d_main.cpp:766`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10525,7 +10813,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_AUTOMAP_ALLIES`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:765`
+- Source: `src/d_main.cpp:767`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10537,7 +10825,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_FREEAIMBFG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:755`
+- Source: `src/d_main.cpp:757`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10549,7 +10837,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_NO_COOP_ONLY_ITEMS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:793`
+- Source: `src/d_main.cpp:795`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10561,7 +10849,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_NO_COOP_ONLY_THINGS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:794`
+- Source: `src/d_main.cpp:796`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10573,7 +10861,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NOCOUNTENDMONST`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:772`
+- Source: `src/d_main.cpp:774`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10585,7 +10873,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_CROUCH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:689`
+- Source: `src/d_main.cpp:691`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10597,7 +10885,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_EXIT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:677`
+- Source: `src/d_main.cpp:679`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10609,7 +10897,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_EXTRA_AMMO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:777`
+- Source: `src/d_main.cpp:779`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10621,7 +10909,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_FOV`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:687`
+- Source: `src/d_main.cpp:689`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10633,7 +10921,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_FREELOOK`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:685`
+- Source: `src/d_main.cpp:687`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10645,7 +10933,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_HEALTH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:668`
+- Source: `src/d_main.cpp:670`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10657,7 +10945,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_ITEMS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:669`
+- Source: `src/d_main.cpp:671`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10669,7 +10957,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_JUMP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:683`
+- Source: `src/d_main.cpp:685`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10681,7 +10969,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_NO_LOCAL_DROPS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:792`
+- Source: `src/d_main.cpp:794`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10693,7 +10981,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_MONSTERS`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:679`
+- Source: `src/d_main.cpp:681`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10705,7 +10993,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_NO_PLAYER_CLIP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:789`
+- Source: `src/d_main.cpp:791`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10717,7 +11005,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_RESPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:758`
+- Source: `src/d_main.cpp:760`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10729,7 +11017,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_TEAM_SWITCH`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:752`
+- Source: `src/d_main.cpp:754`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10741,7 +11029,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NO_COOP_THING_SPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:774`
+- Source: `src/d_main.cpp:776`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10753,7 +11041,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_NOVERTSPREAD`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:776`
+- Source: `src/d_main.cpp:778`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10765,7 +11053,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_NO_COOP_WEAPON_SPAWN`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:688`
+- Source: `src/d_main.cpp:690`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10777,7 +11065,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_FORCE_FALLINGZD`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:672`
+- Source: `src/d_main.cpp:674`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10789,7 +11077,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_PISTOL_START`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:796`
+- Source: `src/d_main.cpp:798`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10801,7 +11089,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF3_REMEMBER_LAST_WEAP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:795`
+- Source: `src/d_main.cpp:797`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10813,7 +11101,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_RESPAWN_INVUL`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:760`
+- Source: `src/d_main.cpp:762`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10825,7 +11113,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_RESPAWN_SUPER`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:773`
+- Source: `src/d_main.cpp:775`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10837,7 +11125,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_SAME_LEVEL`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:673`
+- Source: `src/d_main.cpp:675`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10849,7 +11137,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_SAME_SPAWN_SPOT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:761`
+- Source: `src/d_main.cpp:763`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10861,7 +11149,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO | CVAR_CHEAT`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_user.cpp:71`
+- Source: `src/playsim/p_user.cpp:74`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10873,7 +11161,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/playsim/p_map.cpp:67`
+- Source: `src/playsim/p_map.cpp:68`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10885,7 +11173,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_SPAWN_FARTHEST`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:674`
+- Source: `src/d_main.cpp:676`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10915,13 +11203,13 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 ### `sv_usemapsettingswavelimit`
 
-- Description: If enabled, map-defined invasion wavelimit metadata overrides `sv_invasionwaves` when present. An explicit multiplayer `wavelimit` value still wins over map metadata.
+- Description: If enabled, map-defined invasion wavelimit metadata overrides sv_invasionwaves when present.
 - Type: `Bool`
 - Source default: `true`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9587`
+- Source: `src/d_net_invasion.cpp:120`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -10945,7 +11233,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF2_YES_WEAPONDROP`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:751`
+- Source: `src/d_main.cpp:753`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `0`
 
@@ -10957,7 +11245,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `DF_WEAPONS_STAY`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:670`
+- Source: `src/d_main.cpp:672`
 - Present in runtime snapshot: Yes
 - Runtime snapshot value: `1`
 
@@ -10993,7 +11281,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:251`
+- Source: `src/g_game.cpp:333`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11053,7 +11341,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_SERVERINFO`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:477`
+- Source: `src/d_main.cpp:479`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11305,7 +11593,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_NOINITCALL | CVAR_CHEAT`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/g_game.cpp:301`
+- Source: `src/g_game.cpp:383`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11509,7 +11797,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:949`
+- Source: `src/d_main.cpp:951`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11593,7 +11881,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:483`
+- Source: `src/d_main.cpp:485`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11629,7 +11917,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9508`
+- Source: `src/d_net_invasion.cpp:38`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11749,7 +12037,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE|CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_net.cpp:9509`
+- Source: `src/d_net_invasion.cpp:39`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11797,7 +12085,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:143`
+- Source: `src/d_main.cpp:145`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11809,7 +12097,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:437`
+- Source: `src/d_main.cpp:439`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -11929,7 +12217,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `0`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:508`
+- Source: `src/d_main.cpp:510`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -12049,7 +12337,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:3127`
+- Source: `src/d_main.cpp:3151`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -12061,7 +12349,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
 - Macro: `CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:3143`
+- Source: `src/d_main.cpp:3167`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -12187,13 +12475,13 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 
 ### `wavelimit`
 
-- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..3000 forces that wave count and overrides map metadata in multiplayer.
+- Description: Legacy Skulltag compatibility override for invasion waves. 0 disables the override; 1..255 forces that wave count.
 - Type: `Int`
 - Source default: `0`
 - Source flags: `CVAR_SERVERINFO | CVAR_NOSAVE`
 - Macro: `CUSTOM_CVAR_NAMED`
 - Ref symbol: `wavelimit_compat`
-- Source: `src/d_net.cpp:9573`
+- Source: `src/d_net_invasion.cpp:106`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
@@ -12385,7 +12673,7 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Source flags: `CVAR_ARCHIVE`
 - Macro: `CUSTOM_CVAR`
 - Ref symbol: `same as cvar name`
-- Source: `src/d_main.cpp:478`
+- Source: `src/d_main.cpp:480`
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
