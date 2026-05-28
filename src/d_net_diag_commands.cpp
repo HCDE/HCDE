@@ -1382,18 +1382,131 @@ CCMD(net_stressreport)
 	HCDEPrintLiveStressReport();
 }
 
-static unsigned HCDEPrintActorSurfaceStatus(const char* title, const char* const* classNames, unsigned count)
+struct FHCDEActorSurfaceEntry
+{
+	const char* ClassName;
+	const char* Category;
+	const char* ExpectedBase;
+};
+
+static unsigned HCDEPrintActorSurfaceStatus(const char* title, const FHCDEActorSurfaceEntry* entries, unsigned count)
 {
 	unsigned missing = 0u;
+	unsigned wrongBase = 0u;
 	Printf(PRINT_HIGH, "%s\n", title);
 	for (unsigned i = 0u; i < count; ++i)
 	{
-		const PClassActor* actorClass = PClass::FindActor(classNames[i]);
+		const PClassActor* actorClass = PClass::FindActor(entries[i].ClassName);
 		if (actorClass == nullptr)
+		{
 			++missing;
-		Printf(PRINT_HIGH, "  [%s] %s\n", actorClass != nullptr ? "ok" : "missing", classNames[i]);
+			Printf(PRINT_HIGH, "  [missing] %-12s %s\n", entries[i].Category, entries[i].ClassName);
+			continue;
+		}
+		const bool baseOk = entries[i].ExpectedBase == nullptr || actorClass->IsDescendantOf(entries[i].ExpectedBase);
+		if (!baseOk)
+			++wrongBase;
+		Printf(PRINT_HIGH, "  [%s] %-12s %s%s%s\n",
+			baseOk ? "ok" : "wrong-base",
+			entries[i].Category,
+			entries[i].ClassName,
+			entries[i].ExpectedBase != nullptr ? " base=" : "",
+			entries[i].ExpectedBase != nullptr ? entries[i].ExpectedBase : "");
 	}
-	return missing;
+	if (missing != 0u || wrongBase != 0u)
+		Printf(PRINT_HIGH, "  surface issues: missing=%u wrong-base=%u\n", missing, wrongBase);
+	return missing + wrongBase;
+}
+
+struct FHCDEDehackedActionEntry
+{
+	const char* DehackedName;
+	const char* RuntimeAction;
+	const char* OwnerClass;
+};
+
+static unsigned HCDEPrintDehackedActionSurfaceStatus(const char* title, const FHCDEDehackedActionEntry* entries, unsigned count)
+{
+	unsigned missingOwner = 0u;
+	unsigned missingAction = 0u;
+	Printf(PRINT_HIGH, "%s\n", title);
+	for (unsigned i = 0u; i < count; ++i)
+	{
+		PClassActor* ownerClass = PClass::FindActor(entries[i].OwnerClass);
+		if (ownerClass == nullptr)
+		{
+			++missingOwner;
+			Printf(PRINT_HIGH, "  [missing-owner] %-22s -> %-24s owner=%s\n",
+				entries[i].DehackedName, entries[i].RuntimeAction, entries[i].OwnerClass);
+			continue;
+		}
+		const bool foundAction = ownerClass->FindSymbol(entries[i].RuntimeAction, true) != nullptr;
+		if (!foundAction)
+			++missingAction;
+		Printf(PRINT_HIGH, "  [%s] %-22s -> %-24s owner=%s\n",
+			foundAction ? "ok" : "missing-action",
+			entries[i].DehackedName, entries[i].RuntimeAction, entries[i].OwnerClass);
+	}
+	if (missingOwner != 0u || missingAction != 0u)
+		Printf(PRINT_HIGH, "  surface issues: missing-owner=%u missing-action=%u\n", missingOwner, missingAction);
+	return missingOwner + missingAction;
+}
+
+struct FHCDETextSurfaceToken
+{
+	const char* LumpName;
+	const char* Label;
+	const char* Token;
+};
+
+// Length-aware byte scan. memmem is not portable on Windows, and lump contents
+// may legitimately contain embedded NUL bytes (XLAT lumps shipped by a future
+// PWAD could). Search the full lump by size, not by C-string termination.
+static bool HCDEFindBytes(const uint8_t* haystack, size_t haystackLen, const char* needle)
+{
+	if (haystack == nullptr || needle == nullptr)
+		return false;
+	const size_t needleLen = strlen(needle);
+	if (needleLen == 0u)
+		return true;
+	if (haystackLen < needleLen)
+		return false;
+	const uint8_t first = uint8_t(needle[0]);
+	const size_t lastStart = haystackLen - needleLen;
+	for (size_t i = 0u; i <= lastStart; ++i)
+	{
+		if (haystack[i] != first)
+			continue;
+		if (memcmp(haystack + i, needle, needleLen) == 0)
+			return true;
+	}
+	return false;
+}
+
+static unsigned HCDEPrintTextSurfaceTokenStatus(const char* title, const FHCDETextSurfaceToken* entries, unsigned count)
+{
+	unsigned missingLumps = 0u;
+	unsigned missingTokens = 0u;
+	Printf(PRINT_HIGH, "%s\n", title);
+	for (unsigned i = 0u; i < count; ++i)
+	{
+		const int lumpnum = fileSystem.CheckNumForFullName(entries[i].LumpName, true);
+		if (lumpnum < 0)
+		{
+			++missingLumps;
+			Printf(PRINT_HIGH, "  [missing-lump] %-20s %s\n", entries[i].Label, entries[i].LumpName);
+			continue;
+		}
+		auto data = fileSystem.ReadFile(lumpnum);
+		const bool found = HCDEFindBytes(data.bytes(), data.size(), entries[i].Token);
+		if (!found)
+			++missingTokens;
+		Printf(PRINT_HIGH, "  [%s] %-20s %s\n",
+			found ? "ok" : "missing-token", entries[i].Label, entries[i].LumpName);
+	}
+	if (missingLumps != 0u || missingTokens != 0u)
+		Printf(PRINT_HIGH, "  surface issues: missing-lumps=%u missing-tokens=%u\n", missingLumps, missingTokens);
+	return missingLumps + missingTokens;
 }
 
 // Compatibility-roadmap smoke check. This intentionally validates that imported
@@ -1401,29 +1514,124 @@ static unsigned HCDEPrintActorSurfaceStatus(const char* title, const char* const
 // introduce a parallel compatibility runtime.
 CCMD(hcde_compat_surfaces)
 {
-	static const char* const id24CoreActors[] =
+	static const FHCDEActorSurfaceEntry id24Actors[] =
 	{
-		"ID24Incinerator",
-		"ID24CalamityBlade",
-		"ID24Fuel",
-		"ID24FuelTank",
-		"ID24Vassago",
-		"ID24Tyrant",
-		"ID24PlasmaGuy",
-		"ID24Ghoul",
-		"ID24Banshee",
-		"ID24Mindweaver",
+		{ "ID24Incinerator", "weapon", "Weapon" },
+		{ "ID24CalamityBlade", "weapon", "Weapon" },
+		{ "ID24Fuel", "ammo", "Ammo" },
+		{ "ID24FuelTank", "ammo", "Ammo" },
+		{ "ID24IncineratorFlame", "projectile", "Actor" },
+		{ "ID24IncineratorProjectile", "projectile", "Actor" },
+		{ "ID24Vassago", "monster", "Actor" },
+		{ "ID24VassagoFlame", "projectile", "Actor" },
+		{ "ID24Tyrant", "monster", "Actor" },
+		{ "ID24TyrantBoss1", "monster", "Actor" },
+		{ "ID24TyrantBoss2", "monster", "Actor" },
+		{ "ID24PlasmaGuy", "monster", "Actor" },
+		{ "ID24PlasmaGuyHead", "gore", "Actor" },
+		{ "ID24PlasmaGuyTorso", "gore", "Actor" },
+		{ "ID24Ghoul", "monster", "Actor" },
+		{ "ID24GhoulBall", "projectile", "Actor" },
+		{ "ID24Banshee", "monster", "Actor" },
+		{ "ID24Mindweaver", "monster", "Actor" },
+		{ "ID24OfficeChair", "decoration", "Actor" },
+		{ "ID24OfficeLamp", "decoration", "Actor" },
+		{ "ID24CeilingLamp", "decoration", "Actor" },
+		{ "ID24CandelabraShort", "decoration", "Actor" },
+		{ "ID24GrayStalagmite", "decoration", "Actor" },
+		{ "ID24BushShort", "decoration", "Actor" },
+		{ "ID24BushShortBurned1", "decoration", "Actor" },
+		{ "ID24BushShortBurned2", "decoration", "Actor" },
+		{ "ID24BushTall", "decoration", "Actor" },
+		{ "ID24BushTallBurned1", "decoration", "Actor" },
+		{ "ID24BushTallBurned2", "decoration", "Actor" },
+		{ "ID24CaveRockColumn", "decoration", "Actor" },
+		{ "ID24CaveStalagmiteLarge", "decoration", "Actor" },
+		{ "ID24CaveStalagmiteMedium", "decoration", "Actor" },
+		{ "ID24CaveStalagmiteSmall", "decoration", "Actor" },
+		{ "ID24CaveStalactiteLarge", "decoration", "Actor" },
+		{ "ID24CaveStalactiteLargeSolid", "decoration", "Actor" },
+		{ "ID24CaveStalactiteMedium", "decoration", "Actor" },
+		{ "ID24CaveStalactiteMediumSolid", "decoration", "Actor" },
+		{ "ID24CaveStalactiteSmall", "decoration", "Actor" },
+		{ "ID24CaveStalactiteSmallSolid", "decoration", "Actor" },
+		{ "ID24LargeCorpsePile", "gore", "Actor" },
+		{ "ID24HumanBBQ1", "gore", "Actor" },
+		{ "ID24HumanBBQ2", "gore", "Actor" },
+		{ "ID24HangingBodyBothLegs", "gore", "Actor" },
+		{ "ID24HangingBodyBothLegsSolid", "gore", "Actor" },
+		{ "ID24HangingBodyCrucified", "gore", "Actor" },
+		{ "ID24HangingBodyCrucifiedSolid", "gore", "Actor" },
+		{ "ID24HangingBodyArmsBound", "gore", "Actor" },
+		{ "ID24HangingBodyArmsBoundSolid", "gore", "Actor" },
+		{ "ID24HangingBaronOfHell", "gore", "Actor" },
+		{ "ID24HangingBaronOfHellSolid", "gore", "Actor" },
+		{ "ID24HangingChainedBody", "gore", "Actor" },
+		{ "ID24HangingChainedBodySolid", "gore", "Actor" },
+		{ "ID24HangingChainedTorso", "gore", "Actor" },
+		{ "ID24HangingChainedTorsoSolid", "gore", "Actor" },
+		{ "ID24SkullPoleTrio", "gore", "Actor" },
+		{ "ID24SkullGibs", "gore", "Actor" },
+		{ "ID24AmbientKlaxon", "ambient", "Actor" },
+		{ "ID24AmbientPortalOpen", "ambient", "Actor" },
+		{ "ID24AmbientPortalLoop", "ambient", "Actor" },
+		{ "ID24AmbientPortalClose", "ambient", "Actor" },
+	};
+	static const FHCDEDehackedActionEntry mbf21Actions[] =
+	{
+		{ "A_Spawn", "HCDE_MBFSpawnItem", "Actor" },
+		{ "A_SpawnObject", "MBF21_SpawnObject", "Actor" },
+		{ "A_MonsterProjectile", "MBF21_MonsterProjectile", "Actor" },
+		{ "A_MonsterBulletAttack", "MBF21_MonsterBulletAttack", "Actor" },
+		{ "A_MonsterMeleeAttack", "MBF21_MonsterMeleeAttack", "Actor" },
+		{ "A_HealChase", "MBF21_HealChase", "Actor" },
+		{ "A_SeekTracer", "MBF21_SeekTracer", "Weapon" },
+		{ "A_JumpIfHealthBelow", "MBF21_JumpIfHealthBelow", "Actor" },
+		{ "A_JumpIfTargetInSight", "MBF21_JumpIfTargetInSight", "Actor" },
+		{ "A_JumpIfTargetCloser", "MBF21_JumpIfTargetCloser", "Actor" },
+		{ "A_JumpIfTracerInSight", "MBF21_JumpIfTracerInSight", "Actor" },
+		{ "A_JumpIfTracerCloser", "MBF21_JumpIfTracerCloser", "Actor" },
+		{ "A_WeaponProjectile", "MBF21_WeaponProjectile", "Weapon" },
+		{ "A_WeaponBulletAttack", "MBF21_WeaponBulletAttack", "Weapon" },
+		{ "A_WeaponMeleeAttack", "MBF21_WeaponMeleeAttack", "Weapon" },
+		{ "A_WeaponJump", "MBF21_WeaponJump", "Weapon" },
+		{ "A_ConsumeAmmo", "MBF21_ConsumeAmmo", "Weapon" },
+		{ "A_CheckAmmo", "MBF21_CheckAmmo", "Weapon" },
+		{ "A_RefireTo", "MBF21_RefireTo", "Weapon" },
+		{ "A_GunFlashTo", "MBF21_GunFlashTo", "Weapon" },
+		{ "A_JumpIfFlagsSet", "MBF21_JumpIfFlagsSet", "Actor" },
+		{ "A_AddFlags", "MBF21_AddFlags", "Actor" },
+		{ "A_RemoveFlags", "MBF21_RemoveFlags", "Actor" },
+	};
+	static const FHCDETextSurfaceToken xlatTokens[] =
+	{
+		{ "xlat/eternity.txt", "eternity-extradata", "270 = 0,\tStatic_Init(tag, Init_EDLine)" },
+		{ "xlat/eternity.txt", "eternity-3dmidtex", "Sector_Attach3DMidtex" },
+		{ "xlat/eternity.txt", "eternity-sector-portal", "Sector_SetPortal" },
+		{ "xlat/eternity.txt", "eternity-line-portal", "Line_SetPortal" },
+		{ "xlat/eternity.txt", "eternity-slopes", "Plane_Align" },
+		{ "xlat/eternity.txt", "eternity-sector-init", "Static_Init(tag, Init_EDSector)" },
+		{ "xlat/base.txt", "edge-3dfloor", "Sector_Set3DFloor" },
+		{ "xlat/base.txt", "edge-translucent", "TranslucentLine" },
+		{ "xlat/base.txt", "edge-scroll", "Scroll_Texture_Right" },
+		{ "xlat/base.txt", "edge-mbf21-scroll", "Scroll_Texture_Offsets" },
+		{ "zscript/mapdata.zs", "edge-thinfloor-flag", "FF_THINFLOOR" },
+		{ "zscript/mapdata.zs", "eternity-portal-type", "PORTT_LINKEDEE" },
 	};
 
 	Printf(PRINT_HIGH, "\n=== HCDE compatibility surfaces ===\n");
 	unsigned missing = 0u;
-	missing += HCDEPrintActorSurfaceStatus("ID24 actor surface:", id24CoreActors, countof(id24CoreActors));
+	missing += HCDEPrintActorSurfaceStatus("ID24 actor/weapon surface:", id24Actors, countof(id24Actors));
+	missing += HCDEPrintDehackedActionSurfaceStatus("MBF21/Dehacked action surface:", mbf21Actions, countof(mbf21Actions));
+	missing += HCDEPrintTextSurfaceTokenStatus("Eternity/EDGE XLAT surface:", xlatTokens, countof(xlatTokens));
 	Printf(PRINT_HIGH,
-		"MBF21: ZScript action surface is built into actors/mbf21.zs and exercised by ID24 weapons/monsters.\n");
+		"MBF21: dehsupp.txt maps standard Dehacked action names onto these canonical Actor/Weapon actions.\n");
 	Printf(PRINT_HIGH,
 		"Eternity/EDGE: XLAT compatibility surfaces are data-driven (static/xlat/eternity.txt and EDGE linetypes in static/xlat/base.txt).\n");
-	Printf(PRINT_HIGH, "summary: missing=%u checked=%u\n",
-		missing, unsigned(countof(id24CoreActors)));
+	Printf(PRINT_HIGH, "summary: missing=%u id24-checked=%u mbf21-actions=%u xlat-tokens=%u total-checked=%u\n",
+		missing, unsigned(countof(id24Actors)), unsigned(countof(mbf21Actions)),
+		unsigned(countof(xlatTokens)),
+		unsigned(countof(id24Actors) + countof(mbf21Actions) + countof(xlatTokens)));
 	Printf(PRINT_HIGH, "===================================\n");
 }
 
@@ -1587,10 +1795,26 @@ EXTERN_CVAR(Float, cl_analog_sensitivity_yaw)
 EXTERN_CVAR(Float, cl_analog_sensitivity_pitch)
 EXTERN_CVAR(Bool, cl_analog_run)
 EXTERN_CVAR(Bool, cl_analog_straferun)
+EXTERN_CVAR(Bool, cl_gyro_enable)
+EXTERN_CVAR(Bool, cl_gyro_invert_yaw)
+EXTERN_CVAR(Bool, cl_gyro_invert_pitch)
+EXTERN_CVAR(Float, cl_gyro_sensitivity_yaw)
+EXTERN_CVAR(Float, cl_gyro_sensitivity_pitch)
+EXTERN_CVAR(Bool, sv_hcde_nightvision_allowed)
+EXTERN_CVAR(Bool, cl_hcde_nightvision)
+EXTERN_CVAR(Int, cl_hcde_nightvision_lowlight)
+EXTERN_CVAR(Float, cl_hcde_nightvision_alpha)
+EXTERN_CVAR(Bool, cl_hcde_idle_breathing)
+EXTERN_CVAR(Float, cl_hcde_idle_breathing_amount)
+EXTERN_CVAR(Float, cl_hcde_idle_breathing_speed)
 EXTERN_CVAR(Bool, cl_noprediction)
 EXTERN_CVAR(Bool, cl_hcde_predict_dedicated)
 EXTERN_CVAR(Int, cl_predict_max)
 EXTERN_CVAR(Float, sv_aircontrol)
+
+void G_GetHCDEGyroInputStatus(bool& enabled, double& queuedYaw, double& queuedPitch,
+	uint64_t& samplesQueued, uint64_t& samplesApplied);
+uint64_t G_GetHCDEGyroSamplesDropped();
 
 // Presentation-roadmap smoke check. This reports renderer/timing knobs that
 // should remain presentation-facing while fixed-tic gameplay stays authoritative.
@@ -1634,6 +1858,25 @@ CCMD(hcde_input_feel_surfaces)
 		"analog: run=%d straferun=%d sens=(yaw %.2f pitch %.2f)\n",
 		cl_analog_run ? 1 : 0, cl_analog_straferun ? 1 : 0,
 		double(cl_analog_sensitivity_yaw), double(cl_analog_sensitivity_pitch));
+	bool gyroEnabled = false;
+	double gyroQueuedYaw = 0.;
+	double gyroQueuedPitch = 0.;
+	uint64_t gyroSamplesQueued = 0u;
+	uint64_t gyroSamplesApplied = 0u;
+	G_GetHCDEGyroInputStatus(gyroEnabled, gyroQueuedYaw, gyroQueuedPitch, gyroSamplesQueued, gyroSamplesApplied);
+	const uint64_t gyroSamplesDropped = G_GetHCDEGyroSamplesDropped();
+	Printf(PRINT_HIGH,
+		"gyro: enabled=%d invert=(yaw %d pitch %d) sens=(yaw %.2f pitch %.2f) queued=(%.4f %.4f) samples=%llu/%llu dropped=%llu\n",
+		gyroEnabled ? 1 : 0,
+		cl_gyro_invert_yaw ? 1 : 0,
+		cl_gyro_invert_pitch ? 1 : 0,
+		double(cl_gyro_sensitivity_yaw),
+		double(cl_gyro_sensitivity_pitch),
+		gyroQueuedYaw,
+		gyroQueuedPitch,
+		static_cast<unsigned long long>(gyroSamplesQueued),
+		static_cast<unsigned long long>(gyroSamplesApplied),
+		static_cast<unsigned long long>(gyroSamplesDropped));
 	Printf(PRINT_HIGH,
 		"prediction: netgame=%d multiplayer=%d cl_noprediction=%d dedicated-predict=%d max=%d\n",
 		netgame ? 1 : 0, multiplayer ? 1 : 0, cl_noprediction ? 1 : 0,
@@ -1644,11 +1887,578 @@ CCMD(hcde_input_feel_surfaces)
 	Printf(PRINT_HIGH, "=================================\n");
 }
 
+// Step 11 smoke check: International Doom imports are split by authority.
+// Night vision is a presentation effect gated by serverinfo; idle breathing is
+// local cosmetic weapon bob only.
+CCMD(hcde_international_surfaces)
+{
+	const player_t* player = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? &players[consoleplayer] : nullptr;
+	const AActor* mo = player != nullptr ? player->mo : nullptr;
+	const sector_t* sector = mo != nullptr ? mo->Sector : nullptr;
+	const int lightLevel = sector != nullptr ? sector->GetLightLevel() : -1;
+	const bool nightVisionActive = sv_hcde_nightvision_allowed && cl_hcde_nightvision
+		&& (lightLevel >= 0)
+		&& (int(cl_hcde_nightvision_lowlight) < 0 || lightLevel <= int(cl_hcde_nightvision_lowlight));
+	const bool idleBreathingCandidate = cl_hcde_idle_breathing
+		&& player != nullptr && mo != nullptr
+		&& player->cmd.forwardmove == 0 && player->cmd.sidemove == 0 && player->cmd.upmove == 0
+		&& mo->Vel.X > -0.01 && mo->Vel.X < 0.01
+		&& mo->Vel.Y > -0.01 && mo->Vel.Y < 0.01
+		&& mo->Vel.Z > -0.01 && mo->Vel.Z < 0.01;
+
+	Printf(PRINT_HIGH, "\n=== HCDE International Doom surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"classification: night-vision=server-gated presentation idle-breathing=local cosmetic presentation\n");
+	Printf(PRINT_HIGH,
+		"night-vision: allowed=%d client=%d lowlight=%d alpha=%.2f sector-light=%d active=%d\n",
+		sv_hcde_nightvision_allowed ? 1 : 0,
+		cl_hcde_nightvision ? 1 : 0,
+		int(cl_hcde_nightvision_lowlight),
+		double(cl_hcde_nightvision_alpha),
+		lightLevel,
+		nightVisionActive ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"idle-breathing: enabled=%d amount=%.2f speed=%.2f candidate=%d cmd=(%d,%d,%d) vel=(%.3f,%.3f,%.3f)\n",
+		cl_hcde_idle_breathing ? 1 : 0,
+		double(cl_hcde_idle_breathing_amount),
+		double(cl_hcde_idle_breathing_speed),
+		idleBreathingCandidate ? 1 : 0,
+		player != nullptr ? int(player->cmd.forwardmove) : 0,
+		player != nullptr ? int(player->cmd.sidemove) : 0,
+		player != nullptr ? int(player->cmd.upmove) : 0,
+		mo != nullptr ? mo->Vel.X : 0.0,
+		mo != nullptr ? mo->Vel.Y : 0.0,
+		mo != nullptr ? mo->Vel.Z : 0.0);
+	Printf(PRINT_HIGH, "=========================================\n");
+}
+
+CVAR(Bool, sv_predator_economy_autostart, true, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CUSTOM_CVAR(Int, sv_predator_economy_session_seconds, 900, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 60) self = 60;
+	if (self > 3600) self = 3600;
+}
+CUSTOM_CVAR(Int, sv_predator_economy_debt_seconds, 45, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 5) self = 5;
+	if (self > 300) self = 300;
+}
+CUSTOM_CVAR(Int, sv_predator_economy_debt_points_per_second, 5, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 0) self = 0;
+	if (self > 1000) self = 1000;
+}
+
+struct FHCDEPredatorEconomyState
+{
+	bool Active = false;
+	int StartedGametic = 0;
+	int LastEventGametic = 0;
+	uint64_t FactRevision = 0u;
+	int HunterScore = 0;
+	int CorruptorScore = 0;
+	int EssenceOnFloor = 0;
+	int EssenceBanked = 0;
+	int EssenceSpent = 0;
+	int MarkedMonsters = 0;
+	int EvolutionNodes = 0;
+	int SealedPortals = 0;
+	int CrisisTier = 0;
+	int DebtPlayers = 0;
+	int TierMonsters[4] = {};
+};
+
+static FHCDEPredatorEconomyState HCDEPredatorEconomy;
+
+static bool HCDEPredatorEconomyModeEnabled()
+{
+	return int(sv_gametype) == 5;
+}
+
+static int HCDEPredatorEconomySessionRemaining()
+{
+	if (!HCDEPredatorEconomy.Active || HCDEPredatorEconomy.StartedGametic <= 0)
+		return int(sv_predator_economy_session_seconds);
+	const int elapsed = max<int>(gametic - HCDEPredatorEconomy.StartedGametic, 0) / TICRATE;
+	return max<int>(int(sv_predator_economy_session_seconds) - elapsed, 0);
+}
+
+static void HCDEPredatorEconomyTouch()
+{
+	HCDEPredatorEconomy.LastEventGametic = gametic;
+	++HCDEPredatorEconomy.FactRevision;
+}
+
+static void HCDEPredatorEconomyReset(bool active)
+{
+	HCDEPredatorEconomy = {};
+	HCDEPredatorEconomy.Active = active;
+	HCDEPredatorEconomy.StartedGametic = active ? gametic : 0;
+	HCDEPredatorEconomy.EvolutionNodes = active ? 4 : 0;
+	HCDEPredatorEconomy.TierMonsters[0] = active ? Net_GetInvasionActiveMonsterCount() : 0;
+	HCDEPredatorEconomyTouch();
+}
+
+static bool HCDEPredatorEconomyRequireAuthority(const char* command)
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+	{
+		Printf(PRINT_HIGH, "%s: requires authority slot.\n", command);
+		return false;
+	}
+	if (!HCDEPredatorEconomyModeEnabled())
+	{
+		Printf(PRINT_HIGH, "%s: requires sv_gametype 5 (Predator Economy).\n", command);
+		return false;
+	}
+	return true;
+}
+
+static void HCDEPredatorEconomyPrint()
+{
+	Printf(PRINT_HIGH,
+		"predator-economy: enabled=%d active=%d autostart=%d rev=%llu remaining=%ds debt=(after %ds, %d/s)\n",
+		HCDEPredatorEconomyModeEnabled() ? 1 : 0,
+		HCDEPredatorEconomy.Active ? 1 : 0,
+		sv_predator_economy_autostart ? 1 : 0,
+		static_cast<unsigned long long>(HCDEPredatorEconomy.FactRevision),
+		HCDEPredatorEconomySessionRemaining(),
+		int(sv_predator_economy_debt_seconds),
+		int(sv_predator_economy_debt_points_per_second));
+	Printf(PRINT_HIGH,
+		"  score hunters=%d corruptors=%d essence=floor:%d banked:%d spent:%d marks=%d nodes=%d sealed=%d crisis-tier=%d debt-players=%d\n",
+		HCDEPredatorEconomy.HunterScore,
+		HCDEPredatorEconomy.CorruptorScore,
+		HCDEPredatorEconomy.EssenceOnFloor,
+		HCDEPredatorEconomy.EssenceBanked,
+		HCDEPredatorEconomy.EssenceSpent,
+		HCDEPredatorEconomy.MarkedMonsters,
+		HCDEPredatorEconomy.EvolutionNodes,
+		HCDEPredatorEconomy.SealedPortals,
+		HCDEPredatorEconomy.CrisisTier,
+		HCDEPredatorEconomy.DebtPlayers);
+	Printf(PRINT_HIGH,
+		"  monsters tier1=%d tier2=%d tier3=%d tier4=%d last-event-tic=%d\n",
+		HCDEPredatorEconomy.TierMonsters[0],
+		HCDEPredatorEconomy.TierMonsters[1],
+		HCDEPredatorEconomy.TierMonsters[2],
+		HCDEPredatorEconomy.TierMonsters[3],
+		HCDEPredatorEconomy.LastEventGametic);
+}
+
+CCMD(hcde_predator_economy_reset)
+{
+	if (!HCDEPredatorEconomyRequireAuthority("hcde_predator_economy_reset"))
+		return;
+	const bool active = argv.argc() <= 1 || atoi(argv[1]) != 0;
+	HCDEPredatorEconomyReset(active);
+	HCDEPredatorEconomyPrint();
+}
+
+CCMD(hcde_predator_economy_fact)
+{
+	if (!HCDEPredatorEconomyRequireAuthority("hcde_predator_economy_fact"))
+		return;
+	if (!HCDEPredatorEconomy.Active)
+		HCDEPredatorEconomyReset(true);
+	if (argv.argc() < 2)
+	{
+		Printf(PRINT_HIGH,
+			"usage: hcde_predator_economy_fact <essence_drop|hunter_bank|hunter_score|corruptor_score|corruptor_spend|mark|node|seal|crisis|debt|tier> [amount] [tier]\n");
+		return;
+	}
+
+	const char* fact = argv[1];
+	const int amount = argv.argc() > 2 ? atoi(argv[2]) : 1;
+	const int tier = clamp<int>(argv.argc() > 3 ? atoi(argv[3]) : amount, 1, 4);
+	if (!stricmp(fact, "essence_drop"))
+	{
+		HCDEPredatorEconomy.EssenceOnFloor = max<int>(0, HCDEPredatorEconomy.EssenceOnFloor + amount);
+	}
+	else if (!stricmp(fact, "hunter_bank"))
+	{
+		const int banked = max<int>(amount, 0);
+		HCDEPredatorEconomy.EssenceOnFloor = max<int>(0, HCDEPredatorEconomy.EssenceOnFloor - banked);
+		HCDEPredatorEconomy.EssenceBanked += banked;
+		HCDEPredatorEconomy.HunterScore += banked;
+	}
+	else if (!stricmp(fact, "hunter_score"))
+	{
+		HCDEPredatorEconomy.HunterScore = max<int>(0, HCDEPredatorEconomy.HunterScore + amount);
+	}
+	else if (!stricmp(fact, "corruptor_score"))
+	{
+		HCDEPredatorEconomy.CorruptorScore = max<int>(0, HCDEPredatorEconomy.CorruptorScore + amount);
+	}
+	else if (!stricmp(fact, "corruptor_spend"))
+	{
+		const int spent = max<int>(amount, 0);
+		HCDEPredatorEconomy.EssenceSpent += spent;
+		HCDEPredatorEconomy.CorruptorScore = max<int>(0, HCDEPredatorEconomy.CorruptorScore - spent);
+	}
+	else if (!stricmp(fact, "mark"))
+	{
+		HCDEPredatorEconomy.MarkedMonsters = max<int>(0, HCDEPredatorEconomy.MarkedMonsters + amount);
+	}
+	else if (!stricmp(fact, "node"))
+	{
+		HCDEPredatorEconomy.EvolutionNodes = max<int>(0, HCDEPredatorEconomy.EvolutionNodes + amount);
+	}
+	else if (!stricmp(fact, "seal"))
+	{
+		HCDEPredatorEconomy.SealedPortals = max<int>(0, HCDEPredatorEconomy.SealedPortals + amount);
+	}
+	else if (!stricmp(fact, "crisis"))
+	{
+		HCDEPredatorEconomy.CrisisTier = tier;
+	}
+	else if (!stricmp(fact, "debt"))
+	{
+		HCDEPredatorEconomy.DebtPlayers = max<int>(0, HCDEPredatorEconomy.DebtPlayers + amount);
+	}
+	else if (!stricmp(fact, "tier"))
+	{
+		HCDEPredatorEconomy.TierMonsters[tier - 1] = max<int>(0, HCDEPredatorEconomy.TierMonsters[tier - 1] + amount);
+	}
+	else
+	{
+		Printf(PRINT_HIGH, "hcde_predator_economy_fact: unknown fact '%s'.\n", fact);
+		return;
+	}
+	HCDEPredatorEconomyTouch();
+	HCDEPredatorEconomyPrint();
+}
+
+CCMD(hcde_predator_economy_surfaces)
+{
+	if (HCDEPredatorEconomyModeEnabled() && sv_predator_economy_autostart && !HCDEPredatorEconomy.Active)
+		HCDEPredatorEconomyReset(true);
+
+	Printf(PRINT_HIGH, "\n=== HCDE Predator Economy surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"classification: native gameplay mode; faction/economy facts are authority-owned and should replicate as mode state/events.\n");
+	HCDEPredatorEconomyPrint();
+	Printf(PRINT_HIGH,
+		"boundary: no client-local scoring; Essence, crisis, debt, node, and portal facts must originate on authority.\n");
+	Printf(PRINT_HIGH, "======================================\n");
+}
+
+CVAR(Bool, sv_hcde_tactical_ai, false, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CUSTOM_CVAR(Int, sv_hcde_tactical_ai_max_tier, 2, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 1) self = 1;
+	if (self > 4) self = 4;
+}
+CUSTOM_CVAR(Int, sv_hcde_tactical_ai_probe_limit, 64, CVAR_ARCHIVE | CVAR_SERVERINFO)
+{
+	if (self < 1) self = 1;
+	if (self > 1024) self = 1024;
+}
+
+struct FHCDETacticalAIProfile
+{
+	int Aggression = 50;
+	int Cover = 0;
+	int Flank = 0;
+	int Suppress = 0;
+	int Retreat = 0;
+	int PortalRetreat = 0;
+};
+
+struct FHCDETacticalAIProbe
+{
+	int Scanned = 0;
+	int AliveMonsters = 0;
+	int Targeted = 0;
+	int PlayerTargeted = 0;
+	int Heard = 0;
+	int Boss = 0;
+	int Dormant = 0;
+	int CanSeeTarget = 0;
+	int TierSuggested[4] = {};
+};
+
+static FHCDETacticalAIProfile HCDETacticalAIProfiles[4] =
+{
+	{ 35, 0, 0, 0, 0, 0 },
+	{ 55, 10, 10, 0, 5, 0 },
+	{ 70, 35, 35, 25, 20, 15 },
+	{ 90, 55, 45, 45, 35, 25 },
+};
+static uint64_t HCDETacticalAIProfileRevision = 0u;
+static int HCDETacticalAILastProbeGametic = 0;
+static FHCDETacticalAIProbe HCDETacticalAILastProbe;
+
+static int HCDETacticalAIClampPercent(int value)
+{
+	return clamp<int>(value, 0, 100);
+}
+
+static int HCDETacticalAISuggestTier(const AActor* actor)
+{
+	if (actor == nullptr)
+		return 1;
+	int tier = 1;
+	if ((actor->flags2 & MF2_BOSS) != 0)
+		tier = 4;
+	else if (actor->SpawnHealth() >= 700)
+		tier = 3;
+	else if (actor->SpawnHealth() >= 250)
+		tier = 2;
+	return clamp<int>(tier, 1, int(sv_hcde_tactical_ai_max_tier));
+}
+
+static FHCDETacticalAIProbe HCDETacticalAIProbeMonsters(int limit)
+{
+	FHCDETacticalAIProbe probe;
+	if (primaryLevel == nullptr)
+		return probe;
+	auto iterator = primaryLevel->GetThinkerIterator<AActor>();
+	AActor* actor = nullptr;
+	while ((actor = iterator.Next()) != nullptr && probe.Scanned < limit)
+	{
+		if ((actor->flags3 & MF3_ISMONSTER) == 0)
+			continue;
+		++probe.Scanned;
+		if (actor->health <= 0 || (actor->flags & MF_CORPSE) != 0)
+			continue;
+		++probe.AliveMonsters;
+		if ((actor->flags2 & MF2_DORMANT) != 0)
+			++probe.Dormant;
+		if ((actor->flags2 & MF2_BOSS) != 0)
+			++probe.Boss;
+		if (actor->target != nullptr)
+		{
+			++probe.Targeted;
+			if (actor->target->player != nullptr)
+				++probe.PlayerTargeted;
+			if (P_CheckSight(actor, actor->target, SF_IGNOREVISIBILITY | SF_IGNOREWATERBOUNDARY))
+				++probe.CanSeeTarget;
+		}
+		if (actor->LastHeard != nullptr)
+			++probe.Heard;
+		const int tier = HCDETacticalAISuggestTier(actor);
+		++probe.TierSuggested[tier - 1];
+	}
+	return probe;
+}
+
+static bool HCDETacticalAIRequireAuthority(const char* command)
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+	{
+		Printf(PRINT_HIGH, "%s: requires authority slot.\n", command);
+		return false;
+	}
+	return true;
+}
+
+static void HCDETacticalAIPrintProfiles()
+{
+	Printf(PRINT_HIGH,
+		"tactical-ai: enabled=%d max-tier=%d profile-rev=%llu probe-limit=%d last-probe-tic=%d\n",
+		sv_hcde_tactical_ai ? 1 : 0,
+		int(sv_hcde_tactical_ai_max_tier),
+		static_cast<unsigned long long>(HCDETacticalAIProfileRevision),
+		int(sv_hcde_tactical_ai_probe_limit),
+		HCDETacticalAILastProbeGametic);
+	for (int i = 0; i < 4; ++i)
+	{
+		const FHCDETacticalAIProfile& p = HCDETacticalAIProfiles[i];
+		Printf(PRINT_HIGH,
+			"  tier%d profile: aggression=%d cover=%d flank=%d suppress=%d retreat=%d portal-retreat=%d\n",
+			i + 1, p.Aggression, p.Cover, p.Flank, p.Suppress, p.Retreat, p.PortalRetreat);
+	}
+}
+
+static void HCDETacticalAIPrintProbe(const FHCDETacticalAIProbe& probe)
+{
+	Printf(PRINT_HIGH,
+		"  probe: scanned=%d alive=%d targeted=%d player-targeted=%d heard=%d boss=%d dormant=%d los=%d suggested-tiers=%d/%d/%d/%d\n",
+		probe.Scanned, probe.AliveMonsters, probe.Targeted, probe.PlayerTargeted,
+		probe.Heard, probe.Boss, probe.Dormant, probe.CanSeeTarget,
+		probe.TierSuggested[0], probe.TierSuggested[1], probe.TierSuggested[2], probe.TierSuggested[3]);
+}
+
+CCMD(hcde_ai_profile)
+{
+	if (!HCDETacticalAIRequireAuthority("hcde_ai_profile"))
+		return;
+	if (argv.argc() < 7)
+	{
+		Printf(PRINT_HIGH,
+			"usage: hcde_ai_profile <tier 1-4> <aggression> <cover> <flank> <suppress> <retreat> [portal-retreat]\n");
+		HCDETacticalAIPrintProfiles();
+		return;
+	}
+	const int tier = clamp<int>(atoi(argv[1]), 1, 4);
+	FHCDETacticalAIProfile& profile = HCDETacticalAIProfiles[tier - 1];
+	profile.Aggression = HCDETacticalAIClampPercent(atoi(argv[2]));
+	profile.Cover = HCDETacticalAIClampPercent(atoi(argv[3]));
+	profile.Flank = HCDETacticalAIClampPercent(atoi(argv[4]));
+	profile.Suppress = HCDETacticalAIClampPercent(atoi(argv[5]));
+	profile.Retreat = HCDETacticalAIClampPercent(atoi(argv[6]));
+	profile.PortalRetreat = HCDETacticalAIClampPercent(argv.argc() > 7 ? atoi(argv[7]) : profile.PortalRetreat);
+	++HCDETacticalAIProfileRevision;
+	HCDETacticalAIPrintProfiles();
+}
+
+CCMD(hcde_ai_probe)
+{
+	const int limit = argv.argc() > 1 ? clamp<int>(atoi(argv[1]), 1, 1024) : int(sv_hcde_tactical_ai_probe_limit);
+	HCDETacticalAILastProbe = HCDETacticalAIProbeMonsters(limit);
+	HCDETacticalAILastProbeGametic = gametic;
+	Printf(PRINT_HIGH, "\n=== HCDE tactical AI probe ===\n");
+	HCDETacticalAIPrintProbe(HCDETacticalAILastProbe);
+	Printf(PRINT_HIGH, "================================\n");
+}
+
+CCMD(hcde_ai_surfaces)
+{
+	Printf(PRINT_HIGH, "\n=== HCDE tactical AI surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"classification: server-authoritative AI director; C++ exposes deterministic probes/profiles, ZScript/playsim consumes later.\n");
+	HCDETacticalAIPrintProfiles();
+	HCDETacticalAILastProbe = HCDETacticalAIProbeMonsters(int(sv_hcde_tactical_ai_probe_limit));
+	HCDETacticalAILastProbeGametic = gametic;
+	HCDETacticalAIPrintProbe(HCDETacticalAILastProbe);
+	Printf(PRINT_HIGH,
+		"boundary: tactical decisions must run on authority and replicate as actor/mode facts; clients may only visualize.\n");
+	Printf(PRINT_HIGH, "=================================\n");
+}
+
+CVAR(Bool, sv_hcde_taunts_allowed, true, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CUSTOM_CVAR(Int, cl_hcde_taunt_cooldown_tics, TICRATE * 3, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < TICRATE / 2) self = TICRATE / 2;
+	if (self > TICRATE * 30) self = TICRATE * 30;
+}
+CUSTOM_CVAR(Float, cl_hcde_taunt_volume, 1.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.f) self = 0.f;
+	if (self > 1.f) self = 1.f;
+}
+
+// Sentinel value meaning "this player has never taunted". -1 is safe because
+// gametic is always >= 0 once a level is loaded, and the cooldown check below
+// treats the sentinel as "no prior taunt" rather than "0 tics ago", which
+// closes the gametic==0 first-taunt edge case.
+static constexpr int HCDETauntNeverTic = -1;
+static int HCDETauntLastTic[MAXPLAYERS] = {};
+static bool HCDETauntLastTicInitialized = false;
+
+static void HCDETauntEnsureInitialized()
+{
+	if (HCDETauntLastTicInitialized)
+		return;
+	for (size_t i = 0; i < MAXPLAYERS; ++i)
+		HCDETauntLastTic[i] = HCDETauntNeverTic;
+	HCDETauntLastTicInitialized = true;
+}
+static uint64_t HCDETauntRequests = 0u;
+static uint64_t HCDETauntsPlayed = 0u;
+static uint64_t HCDETauntsBlocked = 0u;
+static uint64_t HCDETauntsMissingSound = 0u;
+
+static FSoundID HCDEFindTauntSound(AActor* actor, const char* variant)
+{
+	FSoundID sound = S_FindSkinnedSoundEx(actor, "*taunt", variant != nullptr && variant[0] != 0 ? variant : "default");
+	if (!sound.isvalid())
+		sound = S_FindSkinnedSound(actor, S_FindSound("*taunt"));
+	return sound;
+}
+
+static bool HCDEPlayTauntForPlayer(int playernum, const char* variant, bool printResult)
+{
+	HCDETauntEnsureInitialized();
+	++HCDETauntRequests;
+	if (!sv_hcde_taunts_allowed)
+	{
+		++HCDETauntsBlocked;
+		if (printResult)
+			Printf(PRINT_HIGH, "hcde_taunt: taunts are disabled by server policy.\n");
+		return false;
+	}
+	if (playernum < 0 || playernum >= MAXPLAYERS || !playeringame[playernum] || players[playernum].mo == nullptr)
+	{
+		++HCDETauntsBlocked;
+		if (printResult)
+			Printf(PRINT_HIGH, "hcde_taunt: player %d is not available.\n", playernum);
+		return false;
+	}
+	if (HCDETauntLastTic[playernum] != HCDETauntNeverTic)
+	{
+		const int elapsed = gametic - HCDETauntLastTic[playernum];
+		if (elapsed >= 0 && elapsed < int(cl_hcde_taunt_cooldown_tics))
+		{
+			++HCDETauntsBlocked;
+			if (printResult)
+				Printf(PRINT_HIGH, "hcde_taunt: cooldown %d/%d tics.\n", elapsed, int(cl_hcde_taunt_cooldown_tics));
+			return false;
+		}
+	}
+
+	AActor* actor = players[playernum].mo;
+	const FSoundID sound = HCDEFindTauntSound(actor, variant);
+	if (!sound.isvalid())
+	{
+		++HCDETauntsMissingSound;
+		if (printResult)
+			Printf(PRINT_HIGH, "hcde_taunt: no *taunt player sound is defined for this skin/class.\n");
+		return false;
+	}
+
+	S_Sound(actor, CHAN_VOICE, CHANF_NORUMBLE, sound, float(cl_hcde_taunt_volume), ATTN_NORM);
+	HCDETauntLastTic[playernum] = gametic;
+	++HCDETauntsPlayed;
+	if (printResult)
+	{
+		Printf(PRINT_HIGH, "hcde_taunt: player=%d skin=%s variant=%s\n",
+			playernum,
+			S_GetSoundClass(actor),
+			variant != nullptr && variant[0] != 0 ? variant : "default");
+	}
+	return true;
+}
+
+CCMD(hcde_taunt)
+{
+	const char* variant = argv.argc() > 1 ? argv[1] : "default";
+	HCDEPlayTauntForPlayer(consoleplayer, variant, true);
+}
+
+CCMD(hcde_taunt_surfaces)
+{
+	const AActor* actor = (consoleplayer >= 0 && consoleplayer < MAXPLAYERS) ? players[consoleplayer].mo : nullptr;
+	const char* soundClass = actor != nullptr ? S_GetSoundClass(const_cast<AActor*>(actor)) : "<none>";
+	const FSoundID defaultTaunt = actor != nullptr ? HCDEFindTauntSound(const_cast<AActor*>(actor), "default") : FSoundID();
+	Printf(PRINT_HIGH, "\n=== HCDE skin taunt surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"classification: cosmetic player-sound event; no damage, targeting, economy, inventory, or movement effects.\n");
+	Printf(PRINT_HIGH,
+		"taunts: allowed=%d cooldown=%d volume=%.2f consoleplayer=%d soundclass=%s default-sound=%d\n",
+		sv_hcde_taunts_allowed ? 1 : 0,
+		int(cl_hcde_taunt_cooldown_tics),
+		double(cl_hcde_taunt_volume),
+		consoleplayer,
+		soundClass,
+		defaultTaunt.isvalid() ? 1 : 0);
+	Printf(PRINT_HIGH,
+		"counters: requests=%llu played=%llu blocked=%llu missing-sound=%llu\n",
+		static_cast<unsigned long long>(HCDETauntRequests),
+		static_cast<unsigned long long>(HCDETauntsPlayed),
+		static_cast<unsigned long long>(HCDETauntsBlocked),
+		static_cast<unsigned long long>(HCDETauntsMissingSound));
+	Printf(PRINT_HIGH,
+		"skin hook: define $playersound <class-or-skin> <gender> *taunt <lump> or *taunt-<variant> for variants.\n");
+	Printf(PRINT_HIGH, "================================\n");
+}
+
 // Step 6 smoke check: gameplay systems should use canonical mode state,
 // authority events, and cosmetic-only event boundaries where appropriate.
 CCMD(hcde_gameplay_surfaces)
 {
-	const char* modeName = Net_IsInvasionModeEnabled() ? "invasion" : (deathmatch ? "deathmatch" : "coop");
+	const char* modeName = HCDEPredatorEconomyModeEnabled() ? "predator-economy" : (Net_IsInvasionModeEnabled() ? "invasion" : (deathmatch ? "deathmatch" : "coop"));
 	Printf(PRINT_HIGH, "\n=== HCDE gameplay surfaces ===\n");
 	Printf(PRINT_HIGH,
 		"mode: %s sv_gametype=%d netgame=%d multiplayer=%d authority=%d\n",
@@ -1677,6 +2487,15 @@ CCMD(hcde_gameplay_surfaces)
 		static_cast<unsigned long long>(HCDELiveProfile.ModeMigrationScans),
 		static_cast<unsigned long long>(HCDELiveProfile.ModeMigrationActorsRegistered),
 		unsigned(HCDEReplicatedActors.Size()), unsigned(HCDEReplicatedActorClasses.Size()));
+	HCDEPredatorEconomyPrint();
+	HCDETacticalAIPrintProfiles();
+	Printf(PRINT_HIGH,
+		"taunts: allowed=%d requests=%llu played=%llu blocked=%llu missing-sound=%llu\n",
+		sv_hcde_taunts_allowed ? 1 : 0,
+		static_cast<unsigned long long>(HCDETauntRequests),
+		static_cast<unsigned long long>(HCDETauntsPlayed),
+		static_cast<unsigned long long>(HCDETauntsBlocked),
+		static_cast<unsigned long long>(HCDETauntsMissingSound));
 	Printf(PRINT_HIGH,
 		"boundary: economy/AI must be authority-owned; skin taunts should be cosmetic events, not gameplay state.\n");
 	Printf(PRINT_HIGH, "===============================\n");
@@ -1702,8 +2521,21 @@ CCMD(hcde_maintenance_surfaces)
 		HCDE_ServerMode_GetAuthorityName());
 	Printf(PRINT_HIGH,
 		"diagnostics: console-command=hcde_maintenance_surfaces server-runtime=HCDE_ServerMode_PrintDiagnostics updater=tools/verify-hcde-updater.ps1\n");
+	uint64_t rconPackets = 0u;
+	uint64_t rconQueued = 0u;
+	uint64_t rconRejected = 0u;
+	uint64_t rconAuthFailed = 0u;
+	I_GetHCDERconStats(rconPackets, rconQueued, rconRejected, rconAuthFailed);
+	const uint64_t rconReplayed = I_GetHCDERconReplayedCount();
 	Printf(PRINT_HIGH,
-		"rcon: not implemented in this checkpoint; future RCON must use a narrow authenticated admin channel.\n");
+		"rcon: enabled=%d remote=%d packets=%llu queued=%llu rejected=%llu auth-failed=%llu replayed=%llu utility=hcdercon allowlist=sv_rcon_allowlist\n",
+		I_HCDERconEnabled() ? 1 : 0,
+		I_HCDERconRemoteAllowed() ? 1 : 0,
+		static_cast<unsigned long long>(rconPackets),
+		static_cast<unsigned long long>(rconQueued),
+		static_cast<unsigned long long>(rconRejected),
+		static_cast<unsigned long long>(rconAuthFailed),
+		static_cast<unsigned long long>(rconReplayed));
 	Printf(PRINT_HIGH,
 		"boundary: updater/UI/RCON tooling must not mutate gameplay state through client-only or gameplay packet lanes.\n");
 	Printf(PRINT_HIGH, "========================================\n");

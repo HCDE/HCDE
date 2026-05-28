@@ -1,10 +1,12 @@
 param(
     [string]$Repo = "bokoxthexchocobo/HCDE",
-    [int]$StaleLockMinutes = 120
+    [int]$StaleLockMinutes = 120,
+    [switch]$SkipLatestRelease
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Assert-True {
     param(
@@ -45,6 +47,13 @@ function Select-HcdeReleaseAsset {
         Select-Object -First 1
 }
 
+function Select-HcdeChecksumAsset {
+    param([object[]]$Assets)
+
+    return @($Assets | Where-Object { [string]$_.name -eq "SHA256SUMS.txt" }) |
+        Select-Object -First 1
+}
+
 function Validate-HcdeUrl {
     param([string]$Url)
 
@@ -70,6 +79,68 @@ function Get-PayloadRoot {
         $payloadRoot = $children[0].FullName
     }
     return $payloadRoot
+}
+
+function Assert-SafeZipEntries {
+    param([string]$ZipPath)
+
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        Assert-True ($archive.Entries.Count -gt 0) "archive has no entries: $ZipPath"
+        foreach ($entry in $archive.Entries) {
+            $name = [string]$entry.FullName
+            Assert-True (-not [string]::IsNullOrWhiteSpace($name)) "archive contains an empty entry name"
+            Assert-True (-not $name.StartsWith("/", [System.StringComparison]::Ordinal)) "archive contains an absolute path: $name"
+            Assert-True (-not $name.StartsWith("\", [System.StringComparison]::Ordinal)) "archive contains an absolute path: $name"
+            Assert-True (-not ($name -match '^[A-Za-z]:')) "archive contains a drive-qualified path: $name"
+            Assert-True (-not ($name -match '(^|[\\/])\.\.([\\/]|$)')) "archive contains a parent traversal path: $name"
+            Assert-True (-not ($name -match '(^|[\\/])\.([\\/]|$)')) "archive contains a current-directory path segment: $name"
+            Assert-True (-not ($name -match ':')) "archive contains a colon in an entry name: $name"
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function Expand-HcdeArchive {
+    param(
+        [string]$ZipPath,
+        [string]$DestinationPath
+    )
+
+    Assert-SafeZipEntries -ZipPath $ZipPath
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestinationPath -Force
+}
+
+function Assert-HcdeRuntimePayload {
+    param([string]$PayloadRoot)
+
+    foreach ($required in @("hcde.exe", "hcdeserv.exe")) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $PayloadRoot $required)) "runtime payload missing required file: $required"
+    }
+}
+
+function Assert-ReleaseChecksum {
+    param(
+        [string]$ChecksumPath,
+        [string]$AssetPath,
+        [string]$AssetName
+    )
+
+    $expected = $null
+    foreach ($line in Get-Content -LiteralPath $ChecksumPath) {
+        if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+            if ([string]$Matches[2] -eq $AssetName) {
+                $expected = [string]$Matches[1]
+                break
+            }
+        }
+    }
+    Assert-True (-not [string]::IsNullOrWhiteSpace($expected)) "SHA256SUMS.txt does not contain selected asset: $AssetName"
+
+    $actual = (Get-FileHash -LiteralPath $AssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Assert-True ($actual -eq $expected.ToLowerInvariant()) "selected asset checksum mismatch"
 }
 
 function Wait-ForFileUnlock {
@@ -184,12 +255,9 @@ function Invoke-HcdeUpdaterSimulation {
             "No backup archive was created because the install directory had no content to archive." | Out-File -LiteralPath $updateLog -Encoding utf8
         }
 
-        Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractPath -Force
+        Expand-HcdeArchive -ZipPath $ZipPath -DestinationPath $extractPath
         $payloadRoot = Get-PayloadRoot -ExtractPath $extractPath
-        $coreExe = Join-Path $payloadRoot "hcde.exe"
-        if (-not (Test-Path -LiteralPath $coreExe)) {
-            throw "Update archive did not contain hcde.exe at payload root: $payloadRoot"
-        }
+        Assert-HcdeRuntimePayload -PayloadRoot $payloadRoot
 
         Copy-TreeWithRetries -SourcePattern (Join-Path $payloadRoot "*") -Destination $resolvedInstallDir -Phase "Payload copy"
         "Payload copied from: $payloadRoot" | Add-Content -LiteralPath $updateLog -Encoding utf8
@@ -204,7 +272,7 @@ function Invoke-HcdeUpdaterSimulation {
             try {
                 $rollbackExtractPath = Join-Path $workRoot "rollback"
                 New-Item -ItemType Directory -Force -Path $rollbackExtractPath | Out-Null
-                Expand-Archive -LiteralPath $backupZip -DestinationPath $rollbackExtractPath -Force
+                Expand-HcdeArchive -ZipPath $backupZip -DestinationPath $rollbackExtractPath
                 $rollbackItems = @(Get-ChildItem -LiteralPath $rollbackExtractPath -Force)
                 if ($rollbackItems.Count -gt 0) {
                     Copy-TreeWithRetries -SourcePattern (Join-Path $rollbackExtractPath "*") -Destination $resolvedInstallDir -Phase "Rollback copy"
@@ -261,6 +329,7 @@ function New-PackageZip {
 
     if ($IncludeExe) {
         "hcde placeholder" | Set-Content -LiteralPath (Join-Path $payload "hcde.exe") -Encoding ASCII
+        "hcdeserv placeholder" | Set-Content -LiteralPath (Join-Path $payload "hcdeserv.exe") -Encoding ASCII
         "new marker" | Set-Content -LiteralPath (Join-Path $payload "new-marker.txt") -Encoding ASCII
     } else {
         "missing executable marker" | Set-Content -LiteralPath (Join-Path $payload "readme.txt") -Encoding ASCII
@@ -274,30 +343,71 @@ function New-PackageZip {
     return $zipPath
 }
 
+function New-UnsafePackageZip {
+    param([string]$Root)
+
+    $zipPath = Join-Path $Root "HCDE-verify-unsafe-windows-x64.zip"
+    if (Test-Path -LiteralPath $zipPath) {
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+
+    $archive = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $entry = $archive.CreateEntry("../evil.txt")
+        $writer = [System.IO.StreamWriter]::new($entry.Open())
+        try {
+            $writer.Write("unsafe")
+        }
+        finally {
+            $writer.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+    return $zipPath
+}
+
 Write-Host "== HCDE Updater Validation (Stage 3) ==" -ForegroundColor Cyan
 Write-Host "Repo: $Repo"
 
-$headers = @{ "User-Agent" = "HCDE-Updater-Verify" }
-$releaseApi = "https://api.github.com/repos/$Repo/releases/latest"
-$release = Invoke-RestMethod -Uri $releaseApi -Headers $headers
-Assert-True (-not [string]::IsNullOrWhiteSpace([string]$release.tag_name)) "latest release tag is empty"
+$asset = $null
+$checksumAsset = $null
+if ($SkipLatestRelease) {
+    Write-Host "Latest release download/checksum check: SKIPPED" -ForegroundColor Yellow
+} else {
+    $headers = @{ "User-Agent" = "HCDE-Updater-Verify" }
+    $releaseApi = "https://api.github.com/repos/$Repo/releases/latest"
+    $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$release.tag_name)) "latest release tag is empty"
 
-$asset = Select-HcdeReleaseAsset -Assets @($release.assets)
-Assert-True ($null -ne $asset) "no suitable zip asset found on latest release"
-Validate-HcdeUrl -Url ([string]$asset.browser_download_url)
-Write-Host ("Latest: {0} | Selected asset: {1}" -f $release.tag_name, $asset.name) -ForegroundColor Green
+    $asset = Select-HcdeReleaseAsset -Assets @($release.assets)
+    Assert-True ($null -ne $asset) "no suitable zip asset found on latest release"
+    Validate-HcdeUrl -Url ([string]$asset.browser_download_url)
+    $checksumAsset = Select-HcdeChecksumAsset -Assets @($release.assets)
+    Assert-True ($null -ne $checksumAsset) "latest release is missing SHA256SUMS.txt"
+    Validate-HcdeUrl -Url ([string]$checksumAsset.browser_download_url)
+    Write-Host ("Latest: {0} | Selected asset: {1}" -f $release.tag_name, $asset.name) -ForegroundColor Green
+}
 
 $scratchRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hcde-updater-verify-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $scratchRoot | Out-Null
 
 try {
-    $downloadZip = Join-Path $scratchRoot "downloaded-latest.zip"
-    Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -OutFile $downloadZip -UseBasicParsing
-    $latestExtract = Join-Path $scratchRoot "latest-extract"
-    Expand-Archive -LiteralPath $downloadZip -DestinationPath $latestExtract -Force
-    $latestPayload = Get-PayloadRoot -ExtractPath $latestExtract
-    Assert-True (Test-Path -LiteralPath (Join-Path $latestPayload "hcde.exe")) "downloaded latest asset missing hcde.exe at payload root"
-    Write-Host "Latest package structure check: PASS" -ForegroundColor Green
+    if (-not $SkipLatestRelease) {
+        $downloadZip = Join-Path $scratchRoot "downloaded-latest.zip"
+        $downloadChecksums = Join-Path $scratchRoot "SHA256SUMS.txt"
+        Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -OutFile $downloadZip -UseBasicParsing
+        Invoke-WebRequest -Uri ([string]$checksumAsset.browser_download_url) -OutFile $downloadChecksums -UseBasicParsing
+        Assert-ReleaseChecksum -ChecksumPath $downloadChecksums -AssetPath $downloadZip -AssetName ([string]$asset.name)
+        Write-Host "Latest package checksum check: PASS" -ForegroundColor Green
+
+        $latestExtract = Join-Path $scratchRoot "latest-extract"
+        Expand-HcdeArchive -ZipPath $downloadZip -DestinationPath $latestExtract
+        $latestPayload = Get-PayloadRoot -ExtractPath $latestExtract
+        Assert-HcdeRuntimePayload -PayloadRoot $latestPayload
+        Write-Host "Latest package structure check: PASS" -ForegroundColor Green
+    }
 
     $install = Join-Path $scratchRoot "install"
     New-Item -ItemType Directory -Force -Path $install | Out-Null
@@ -349,6 +459,17 @@ try {
     Assert-True ($resultStaleLock.Status -eq "success") "stale lock simulation did not recover"
     Assert-True (-not (Test-Path -LiteralPath $lockFile)) "stale lock file was not cleaned up"
     Write-Host "Stale lock cleanup path: PASS" -ForegroundColor Green
+
+    $unsafeZip = New-UnsafePackageZip -Root $scratchRoot
+    $unsafeRejected = $false
+    try {
+        Assert-SafeZipEntries -ZipPath $unsafeZip
+    }
+    catch {
+        $unsafeRejected = $true
+    }
+    Assert-True $unsafeRejected "archive path traversal fixture was not rejected"
+    Write-Host "Archive path traversal rejection: PASS" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "All Stage 3 updater checks passed." -ForegroundColor Cyan

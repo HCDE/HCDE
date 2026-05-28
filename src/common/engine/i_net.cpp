@@ -52,6 +52,7 @@
 #endif
 
 #include "c_cvars.h"
+#include "c_dispatch.h"
 #include "doomstat.h"
 #include "cmdlib.h"
 #include "engineerrors.h"
@@ -72,6 +73,7 @@
 #include "g_levellocals.h"
 #include "playsim/d_player.h"
 #include "filesystem.h"
+#include "hcde_rcon_protocol.h"
 
 #if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
 extern void I_PumpDedicatedServerConsoleWindow();
@@ -107,6 +109,20 @@ CUSTOM_CVAR(Int, sv_maxplayers, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 // Dedicated servers (-server) always allow late-join admission regardless of
 // this CVar; this knob only controls the listen-server (-host) path.
 CVAR(Bool, sv_lateJoin, true, CVAR_ARCHIVE | CVAR_SERVERINFO)
+
+CUSTOM_CVAR(String, sv_rcon_password, "", CVAR_ARCHIVE)
+{
+	if (strlen(self) > 128u)
+	{
+		self = "";
+		Printf(TEXTCOLOR_RED "RCON password cannot be greater than 128 characters\n");
+	}
+}
+
+CVAR(Bool, sv_rcon_allow_remote, false, CVAR_ARCHIVE)
+CVAR(String, sv_rcon_allowlist,
+	"say,changemap,kick,ban,sv_hostname,sv_motd,skill,sv_gametype,fraglimit,timelimit,dmflags,dmflags2,dmflags3,compatflags,compatflags2,net_profile,net_stressreport,hcde_maintenance_surfaces,hcde_gameplay_surfaces,hcde_replication_guard_surfaces",
+	CVAR_ARCHIVE)
 
 /* [Petteri] Get more portable: */
 #ifndef _WIN32
@@ -386,6 +402,27 @@ static uint8_t		TransmitBuffer[MaxTransmitSize] = {};
 static TArray<sockaddr_in> BannedConnections = {};
 static bool bGameStarted = false;
 static FHCDEPregameServiceProfile HCDEPregameServiceProfile = {};
+static uint64_t HCDERconPackets = 0u;
+static uint64_t HCDERconQueued = 0u;
+static uint64_t HCDERconRejected = 0u;
+static uint64_t HCDERconAuthFailed = 0u;
+static uint64_t HCDERconReplayed = 0u;
+
+// Small ring of recently-accepted (sender,nonce) pairs so a captured packet
+// cannot be replayed. Fixed-size FIFO; the ring is intentionally small because
+// RCON is a single-admin lane and packets are rare. The pair is keyed on
+// (sin_addr, sin_port, nonce) to allow distinct senders to choose overlapping
+// nonces without interfering.
+struct FHCDERconReplayEntry
+{
+	uint32_t Address = 0u;
+	uint16_t Port = 0u;
+	uint32_t Nonce = 0u;
+};
+static constexpr size_t HCDERconReplayRingSize = 64u;
+static FHCDERconReplayEntry HCDERconReplayRing[HCDERconReplayRingSize] = {};
+static size_t HCDERconReplayRingHead = 0u;
+static size_t HCDERconReplayRingCount = 0u;
 
 namespace
 {
@@ -1009,6 +1046,202 @@ static bool TryHandleServerQuery(const sockaddr_in& from, const uint8_t* request
 	}
 
 	return false;
+}
+
+static bool IsLoopbackAddress(const sockaddr_in& from)
+{
+	const uint32_t hostAddress = ntohl(from.sin_addr.s_addr);
+	return (hostAddress >> 24) == 127u;
+}
+
+static bool HCDERconNonceWasSeen(const sockaddr_in& from, uint32_t nonce)
+{
+	const uint32_t addr = from.sin_addr.s_addr;
+	const uint16_t port = from.sin_port;
+	for (size_t i = 0u; i < HCDERconReplayRingCount; ++i)
+	{
+		const FHCDERconReplayEntry& entry = HCDERconReplayRing[i];
+		if (entry.Nonce == nonce && entry.Address == addr && entry.Port == port)
+			return true;
+	}
+	return false;
+}
+
+static void HCDERconRememberNonce(const sockaddr_in& from, uint32_t nonce)
+{
+	FHCDERconReplayEntry& slot = HCDERconReplayRing[HCDERconReplayRingHead];
+	slot.Address = from.sin_addr.s_addr;
+	slot.Port = from.sin_port;
+	slot.Nonce = nonce;
+	HCDERconReplayRingHead = (HCDERconReplayRingHead + 1u) % HCDERconReplayRingSize;
+	if (HCDERconReplayRingCount < HCDERconReplayRingSize)
+		++HCDERconReplayRingCount;
+}
+
+static bool HCDERconEnabled()
+{
+	const char* password = sv_rcon_password;
+	return password != nullptr && password[0] != '\0';
+}
+
+static bool ReadRconCommand(const uint8_t* request, int msgSize, size_t offset, FString& command)
+{
+	if (offset >= size_t(msgSize))
+		return false;
+
+	const size_t start = offset;
+	while (offset < size_t(msgSize) && request[offset] != 0u)
+	{
+		const uint8_t ch = request[offset];
+		if (ch < 32u || ch == 127u)
+			return false;
+		++offset;
+	}
+
+	if (offset >= size_t(msgSize))
+		return false;
+	const size_t length = offset - start;
+	if (length == 0u || length > hcde::rcon_protocol::MaxCommandBytes)
+		return false;
+
+	command = FString(reinterpret_cast<const char*>(&request[start]), int(length));
+	command.StripLeftRight();
+	return command.IsNotEmpty() && command.Len() <= int(hcde::rcon_protocol::MaxCommandBytes);
+}
+
+static FString HCDERconFirstToken(const FString& command)
+{
+	const char* text = command.GetChars();
+	while (*text == ' ' || *text == '\t')
+		++text;
+
+	const char* end = text;
+	while (*end != '\0' && *end != ' ' && *end != '\t')
+		++end;
+	return FString(text, int(end - text));
+}
+
+static bool HCDERconTokenInAllowlist(const FString& token)
+{
+	const char* list = sv_rcon_allowlist;
+	if (list == nullptr || *list == '\0')
+		return false;
+
+	const char* cursor = list;
+	while (*cursor != '\0')
+	{
+		while (*cursor == ' ' || *cursor == '\t' || *cursor == ',' || *cursor == ';')
+			++cursor;
+		const char* start = cursor;
+		while (*cursor != '\0' && *cursor != ',' && *cursor != ';' && *cursor != ' ' && *cursor != '\t')
+			++cursor;
+
+		if (cursor > start)
+		{
+			FString candidate(start, int(cursor - start));
+			if (stricmp(candidate.GetChars(), token.GetChars()) == 0)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+static bool HCDERconCommandAllowed(const FString& command)
+{
+	const FString token = HCDERconFirstToken(command);
+	if (token.IsEmpty())
+		return false;
+	if (stricmp(token.GetChars(), "quit") == 0 || stricmp(token.GetChars(), "exit") == 0)
+		return false;
+	return HCDERconTokenInAllowlist(token);
+}
+
+static bool SendRconResponse(const sockaddr_in& to, uint32_t nonce, hcde::rcon_protocol::Status status, const char* message)
+{
+	FQueryWriter writer = {};
+	if (!writer.WriteLong(hcde::rcon_protocol::ResponseMarker) ||
+	    !writer.WriteByte(hcde::rcon_protocol::Version) ||
+	    !writer.WriteByte(uint8_t(status)) ||
+	    !writer.WriteLong(nonce) ||
+	    !writer.WriteString(message != nullptr ? message : ""))
+	{
+		return false;
+	}
+
+	return sendto(MySocket, reinterpret_cast<const char*>(writer.Buffer.data()), static_cast<int>(writer.Offset), 0,
+		reinterpret_cast<const sockaddr*>(&to), sizeof(to)) != SOCKET_ERROR;
+}
+
+static bool TryHandleRconPacket(const sockaddr_in& from, const uint8_t* request, int msgSize)
+{
+	if (msgSize < 13)
+		return false;
+	if (ReadBE32(request) != hcde::rcon_protocol::RequestMarker)
+		return false;
+
+	++HCDERconPackets;
+	const uint8_t version = request[4];
+	const uint32_t nonce = ReadBE32(request + 5u);
+	const uint32_t auth = ReadBE32(request + 9u);
+
+	if (version != hcde::rcon_protocol::Version)
+	{
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusMalformed, "unsupported RCON protocol version");
+		return true;
+	}
+	if (!HCDERconEnabled())
+	{
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusDisabled, "RCON is disabled; set sv_rcon_password to enable it");
+		return true;
+	}
+	if (!sv_rcon_allow_remote && !IsLoopbackAddress(from))
+	{
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusRejected, "remote RCON is disabled; set sv_rcon_allow_remote to enable it");
+		return true;
+	}
+
+	FString command;
+	if (!ReadRconCommand(request, msgSize, 13u, command))
+	{
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusMalformed, "malformed RCON command");
+		return true;
+	}
+
+	const uint32_t expected = hcde::rcon_protocol::ComputeAuth(sv_rcon_password, nonce, command.GetChars());
+	if (auth != expected)
+	{
+		++HCDERconAuthFailed;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusAuthFailed, "RCON authentication failed");
+		return true;
+	}
+	if (HCDERconNonceWasSeen(from, nonce))
+	{
+		// The auth hash is keyed on (password, nonce, command), so a replayed
+		// packet would still pass the hash check. Reject any (sender, nonce)
+		// we've already accepted to close that window.
+		++HCDERconReplayed;
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusRejected, "RCON nonce already used; pick a new nonce");
+		return true;
+	}
+	if (!HCDERconCommandAllowed(command))
+	{
+		++HCDERconRejected;
+		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusRejected, "RCON command is not in sv_rcon_allowlist");
+		return true;
+	}
+
+	HCDERconRememberNonce(from, nonce);
+	AddCommandString(command.GetChars());
+	++HCDERconQueued;
+	DebugTrace::Markf("net", "RCON queued command='%s' from=%s:%u", command.GetChars(), inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+	SendRconResponse(from, nonce, hcde::rcon_protocol::StatusQueued, "RCON command queued");
+	return true;
 }
 }
 
@@ -1772,7 +2005,6 @@ static bool BeginReliableHCDEPregameService(EHCDEPregameService service, FConnec
 	if (FindHCDEReliableService(connection, service, key) != nullptr)
 	{
 		++HCDEPregameServiceProfile.ServiceQueueReused;
-		DebugTrace::Markf("net", "reusing pending reliable service %s key=%u", HCDEServiceName(service), key);
 		return false;
 	}
 	if (FindFreeHCDEReliableService(connection) == nullptr)
@@ -1856,14 +2088,22 @@ static void GetPacket(sockaddr_in* const from = nullptr)
 		else if (msgSize > 0)
 		{
 			++HCDEPregameServiceProfile.PacketReceived;
+			if (TryHandleRconPacket(fromAddress, TransmitBuffer, msgSize))
+			{
+				RemoteClient = -1;
+				NetBufferLength = 0u;
+				if (from != nullptr)
+					*from = fromAddress;
+				return;
+			}
 			if (TryHandleServerQuery(fromAddress, TransmitBuffer, msgSize))
 			{
-			RemoteClient = -1;
-			NetBufferLength = 0u;
-			if (from != nullptr)
-			*from = fromAddress;
-			return;
-		}
+				RemoteClient = -1;
+				NetBufferLength = 0u;
+				if (from != nullptr)
+					*from = fromAddress;
+				return;
+			}
 		if (msgSize < 5)
 		{
 			++HCDEPregameServiceProfile.PacketTooShort;
@@ -3277,6 +3517,29 @@ static bool HostGame(int arg)
 uint16_t I_GetGamePort()
 {
 	return GamePort;
+}
+
+bool I_HCDERconEnabled()
+{
+	return HCDERconEnabled();
+}
+
+bool I_HCDERconRemoteAllowed()
+{
+	return sv_rcon_allow_remote;
+}
+
+void I_GetHCDERconStats(uint64_t& packets, uint64_t& queued, uint64_t& rejected, uint64_t& authFailed)
+{
+	packets = HCDERconPackets;
+	queued = HCDERconQueued;
+	rejected = HCDERconRejected;
+	authFailed = HCDERconAuthFailed;
+}
+
+uint64_t I_GetHCDERconReplayedCount()
+{
+	return HCDERconReplayed;
 }
 
 static FString ReadVerificationError(TArrayView<uint8_t> stream)

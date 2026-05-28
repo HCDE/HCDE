@@ -970,6 +970,100 @@ CCMD(net_rewind_selfcheck)
 	}
 }
 
+CCMD(net_rewind_selfcheck_sweep)
+{
+	if (!I_IsLocalHCDEServiceAuthority())
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck_sweep: requires authority slot.\n");
+		return;
+	}
+	if (gamestate != GS_LEVEL || primaryLevel == nullptr)
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck_sweep: requires a loaded level.\n");
+		return;
+	}
+
+	const int stored = HCDERewind_StoredCount();
+	if (stored <= 0)
+	{
+		Printf(PRINT_HIGH, "net_rewind_selfcheck_sweep: no keyframes stored.\n");
+		HCDERewind_PrintSummary();
+		return;
+	}
+
+	int requestedCount = argv.argc() > 1 ? atoi(argv[1]) : min<int>(stored, 3);
+	if (requestedCount < 1)
+		requestedCount = 1;
+	if (requestedCount > stored)
+		requestedCount = stored;
+
+	int maxCostMS = argv.argc() > 2 ? atoi(argv[2]) : 250;
+	if (maxCostMS < 1)
+		maxCostMS = 1;
+	int maxMemoryMB = argv.argc() > 3 ? atoi(argv[3]) : int(*net_rewind_max_mb);
+	if (maxMemoryMB < 1)
+		maxMemoryMB = 1;
+	int minAgeTics = argv.argc() > 4 ? atoi(argv[4]) : TICRATE;
+	if (minAgeTics < 0)
+		minAgeTics = 0;
+
+	const size_t totalBytes = HCDERewind_TotalBytes();
+	const size_t maxMemoryBytes = size_t(maxMemoryMB) * 1024u * 1024u;
+	int passed = 0;
+	int failed = 0;
+	int checked = 0;
+	uint64_t totalCostMS = 0u;
+	uint64_t maxObservedCostMS = 0u;
+	Printf(PRINT_HIGH,
+		"net_rewind_selfcheck_sweep: count=%d stored=%d max-cost=%dms max-memory=%dMB min-age=%d tics total-bytes=%zu map=%s gametic=%d\n",
+		requestedCount, stored, maxCostMS, maxMemoryMB, minAgeTics, totalBytes,
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>", gametic);
+
+	for (int index = stored - 1; index >= 0 && checked < requestedCount; --index)
+	{
+		const FHCDERewindKeyframe* frame = HCDERewind_FindByIndex(index);
+		const int histGametic = frame != nullptr ? frame->Gametic : -1;
+		const uint32_t histCRC = frame != nullptr ? frame->CombinedCRC32 : 0u;
+		const int ageTics = frame != nullptr ? gametic - frame->Gametic : 0;
+		if (frame == nullptr || ageTics < minAgeTics)
+		{
+			Printf(PRINT_HIGH,
+				"  [skip] index=%d gametic=%d age=%d tics (min-age=%d)\n",
+				index, histGametic, ageTics, minAgeTics);
+			continue;
+		}
+		const uint64_t startMS = I_msTime();
+		const bool ok = HCDERewind_SelfCheck(index, "sweep");
+		const uint64_t costMS = I_msTime() - startMS;
+		totalCostMS += costMS;
+		if (costMS > maxObservedCostMS)
+			maxObservedCostMS = costMS;
+		if (ok)
+			++passed;
+		else
+			++failed;
+		++checked;
+		Printf(PRINT_HIGH,
+			"  [%s] index=%d gametic=%d age=%d tics hash=%08x cost=%llums\n",
+			ok ? "ok" : "fail", index, histGametic, ageTics, unsigned(histCRC),
+			static_cast<unsigned long long>(costMS));
+	}
+
+	const bool costOk = maxObservedCostMS <= uint64_t(maxCostMS);
+	const bool memoryOk = totalBytes <= maxMemoryBytes;
+	Printf(PRINT_HIGH,
+		"net_rewind_selfcheck_sweep: result=%s checked=%d requested=%d pass=%d fail=%d avg-cost=%.2fms max-cost=%llums cost-threshold=%s memory-threshold=%s (%.2f/%.2f MB)\n",
+		(checked == requestedCount && failed == 0 && costOk && memoryOk) ? "pass" : "fail",
+		checked, requestedCount,
+		passed, failed,
+		checked > 0 ? double(totalCostMS) / double(checked) : 0.0,
+		static_cast<unsigned long long>(maxObservedCostMS),
+		costOk ? "ok" : "fail",
+		memoryOk ? "ok" : "fail",
+		double(totalBytes) / (1024.0 * 1024.0),
+		double(maxMemoryBytes) / (1024.0 * 1024.0));
+}
+
 // =====================================================================
 // Phase 5: server-side lag-compensated hit resolution.
 // =====================================================================
@@ -1056,6 +1150,10 @@ HCDELagCompScope::HCDELagCompScope(AActor* attacker, const char* reason)
 
 	++gLagCompTotalScopes;
 
+	mAttackerNetID = attacker->GetNetworkID();
+	if (mAttackerNetID == 0u)
+		return;
+
 	mPlayerNum = int(attacker->player - players);
 	if (mPlayerNum < 0 || mPlayerNum >= MAXPLAYERS)
 		return;
@@ -1091,7 +1189,24 @@ HCDELagCompScope::HCDELagCompScope(AActor* attacker, const char* reason)
 		DebugTrace::Warningf("net.rewind",
 			"lagcomp scope historical-restore failed reason=%s player=%d viewtic=%d hist-index=%d",
 			reason != nullptr ? reason : "?", mPlayerNum, viewTic, historicalIndex);
+		LagCompRestoreLiveKeyframe(mLiveKeyframe, mLiveGametic);
+		LagCompRestoreCaptureTimer(mSavedCaptureGametic, mSavedCaptureMS);
 		mLiveKeyframe.Clear();
+		return;
+	}
+
+	mRewoundAttacker = static_cast<AActor*>(NetworkEntityManager::GetNetworkEntity(mAttackerNetID));
+	if (mRewoundAttacker == nullptr
+		|| (mRewoundAttacker->ObjectFlags & OF_EuthanizeMe) != 0
+		|| mRewoundAttacker->player == nullptr)
+	{
+		DebugTrace::Warningf("net.rewind",
+			"lagcomp scope missing rewound attacker reason=%s player=%d netid=%u viewtic=%d hist-index=%d",
+			reason != nullptr ? reason : "?", mPlayerNum, unsigned(mAttackerNetID), viewTic, historicalIndex);
+		LagCompRestoreLiveKeyframe(mLiveKeyframe, mLiveGametic);
+		LagCompRestoreCaptureTimer(mSavedCaptureGametic, mSavedCaptureMS);
+		mLiveKeyframe.Clear();
+		mRewoundAttacker = nullptr;
 		return;
 	}
 
@@ -1152,6 +1267,7 @@ HCDELagCompScope::~HCDELagCompScope()
 
 	--gLagCompDepth;
 	mEngaged = false;
+	mRewoundAttacker = nullptr;
 }
 
 CCMD(net_lagcomp_summary)

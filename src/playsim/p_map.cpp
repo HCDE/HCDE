@@ -87,6 +87,25 @@ TArray<spechit_t> portalhit;
 EXTERN_CVAR(Bool, net_limitconversations)
 EXTERN_CVAR(Bool, haptics_do_menus)
 
+static bool HCDE_ShouldLagCompLineAttack(AActor* source, int damage, int flags,
+	FTranslatedLineTarget* victim, int* actualdamage)
+{
+	return source != nullptr
+		&& source->player != nullptr
+		&& damage > 0
+		&& (flags & LAF_NOINTERACT) == 0
+		&& victim == nullptr
+		&& actualdamage == nullptr;
+}
+
+static bool HCDE_ShouldLagCompRailAttack(const FRailParams* params)
+{
+	return params != nullptr
+		&& params->source != nullptr
+		&& params->source->player != nullptr
+		&& params->damage > 0;
+}
+
 //==========================================================================
 //
 // P_ShouldPassThroughPlayer
@@ -4693,10 +4712,16 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 		return nullptr;
 	}
 
-	// Phase 5: server-side lag compensation for player hitscan. The scope
-	// rewinds the authority world to the shooter's view tic for the trace,
-	// then restores live state and replays captured damage events.
-	const HCDELagCompScope lagComp(t1, "lineattack");
+	// Phase 5: server-side lag compensation for player hitscan. Limit this to
+	// damage-only traces whose callers do not expect historical puff/victim
+	// pointers to survive the live restore.
+	const HCDELagCompScope lagComp(HCDE_ShouldLagCompLineAttack(t1, damage, flags, victim, actualdamage) ? t1 : nullptr, "lineattack");
+	if (lagComp.Engaged())
+	{
+		t1 = lagComp.RewoundAttacker();
+		if (t1 == nullptr)
+			return nullptr;
+	}
 
 	bool nointeract = !!(flags & LAF_NOINTERACT);
 	DVector3 direction;
@@ -5018,7 +5043,7 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 		puff->Destroy();
 		puff = NULL;
 	}
-	return puff;
+	return lagComp.Engaged() ? nullptr : puff;
 }
 
 AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
@@ -5485,6 +5510,20 @@ void P_RailAttack(FRailParams *p)
 	if (source->Level->localEventManager->WorldRailgunPreFired(damagetype, puffclass, p))
 	{
 		return;
+	}
+
+	// Railguns are another hitscan-style damage path. Use a local params copy
+	// while rewound so no caller-owned live pointers leak into historical state.
+	FRailParams lagCompParams;
+	const HCDELagCompScope lagComp(HCDE_ShouldLagCompRailAttack(p) ? source : nullptr, "railattack");
+	if (lagComp.Engaged())
+	{
+		source = lagComp.RewoundAttacker();
+		if (source == nullptr)
+			return;
+		lagCompParams = *p;
+		lagCompParams.source = source;
+		p = &lagCompParams;
 	}
 
 	DVector3 start;

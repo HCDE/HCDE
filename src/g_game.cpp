@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "a_dynlight.h"
@@ -330,12 +331,46 @@ CVAR (Float, cl_analog_sensitivity_pitch, 0.6f,  CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
 CVAR (Bool,  cl_analog_run,               true,  CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
 CVAR (Bool,  cl_analog_straferun,         false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
 
+static double HCDEGyroQueuedYaw = 0.;
+static double HCDEGyroQueuedPitch = 0.;
+static uint64_t HCDEGyroPendingSamples = 0u;
+static uint64_t HCDEGyroSamplesQueued = 0u;
+static uint64_t HCDEGyroSamplesApplied = 0u;
+static uint64_t HCDEGyroSamplesDropped = 0u;
+
+CUSTOM_CVAR (Bool, cl_gyro_enable, false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
+{
+	if (!self)
+	{
+		// Drop any pending samples when gyro input is disabled so a queued
+		// burst can't fire on the next enable. The counters are kept so the
+		// diag surface can show how much was discarded.
+		if (HCDEGyroPendingSamples > 0u)
+			HCDEGyroSamplesDropped += HCDEGyroPendingSamples;
+		HCDEGyroQueuedYaw = 0.;
+		HCDEGyroQueuedPitch = 0.;
+		HCDEGyroPendingSamples = 0u;
+	}
+}
+CVAR (Bool,  cl_gyro_invert_yaw,          false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
+CVAR (Bool,  cl_gyro_invert_pitch,        false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
+CUSTOM_CVAR (Float, cl_gyro_sensitivity_yaw, 1.f, CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
+{
+	if (self < 0.f) self = 0.f;
+	if (self > 10.f) self = 10.f;
+}
+CUSTOM_CVAR (Float, cl_gyro_sensitivity_pitch, 1.f, CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
+{
+	if (self < 0.f) self = 0.f;
+	if (self > 10.f) self = 10.f;
+}
+
 CVAR (Bool, teamplay, false, CVAR_SERVERINFO)
 CUSTOM_CVAR(Int, sv_gametype, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 {
-	if (self < 0 || self > 4)
+	if (self < 0 || self > 5)
 	{
-		Printf("sv_gametype must be between 0 and 4.\n");
+		Printf("sv_gametype must be between 0 and 5.\n");
 		self = 0;
 	}
 
@@ -362,6 +397,13 @@ CUSTOM_CVAR(Int, sv_gametype, 0, CVAR_ARCHIVE | CVAR_SERVERINFO)
 		// disabled so legacy deathmatch/teamplay rule paths do not apply.
 		deathmatch = 0;
 		teamplay = false;
+		break;
+
+	case 5:
+		// Predator Economy is a native team mode identity. Use team deathmatch
+		// spawn/team plumbing until the dedicated faction rules are fully wired.
+		deathmatch = 1;
+		teamplay = true;
 		break;
 
 	default:
@@ -767,6 +809,41 @@ ADD_STAT (digital)
 	);
 }
 
+CCMD(hcde_gyro_sample)
+{
+	if (argv.argc() < 3)
+	{
+		Printf(PRINT_HIGH,
+			"usage: hcde_gyro_sample <yaw> <pitch>\n"
+			"  Queues a local gyro look sample consumed by the next G_BuildTiccmd.\n"
+			"  Values are analog-look units; platform gyro backends should scale sensor motion before queuing.\n");
+		return;
+	}
+	HCDEGyroQueuedYaw += strtod(argv[1], nullptr);
+	HCDEGyroQueuedPitch += strtod(argv[2], nullptr);
+	++HCDEGyroPendingSamples;
+	++HCDEGyroSamplesQueued;
+	Printf(PRINT_HIGH,
+		"hcde_gyro_sample: queued yaw=%.4f pitch=%.4f total-queued=%llu\n",
+		HCDEGyroQueuedYaw, HCDEGyroQueuedPitch,
+		static_cast<unsigned long long>(HCDEGyroSamplesQueued));
+}
+
+void G_GetHCDEGyroInputStatus(bool& enabled, double& queuedYaw, double& queuedPitch,
+	uint64_t& samplesQueued, uint64_t& samplesApplied)
+{
+	enabled = cl_gyro_enable;
+	queuedYaw = HCDEGyroQueuedYaw;
+	queuedPitch = HCDEGyroQueuedPitch;
+	samplesQueued = HCDEGyroSamplesQueued;
+	samplesApplied = HCDEGyroSamplesApplied;
+}
+
+uint64_t G_GetHCDEGyroSamplesDropped()
+{
+	return HCDEGyroSamplesDropped;
+}
+
 //
 // G_BuildTiccmd
 // Builds a ticcmd from all of the available inputs
@@ -824,6 +901,18 @@ void G_BuildTiccmd (usercmd_t *cmd)
 	axis_side = buttonMap.ButtonAnalog(Button_MoveLeft) - buttonMap.ButtonAnalog(Button_MoveRight);
 	axis_up = buttonMap.ButtonAnalog(Button_MoveUp) - buttonMap.ButtonAnalog(Button_MoveDown);
 
+	double gyroYaw = 0.;
+	double gyroPitch = 0.;
+	if (cl_gyro_enable && (HCDEGyroQueuedYaw != 0. || HCDEGyroQueuedPitch != 0.))
+	{
+		gyroYaw = HCDEGyroQueuedYaw * (cl_gyro_invert_yaw ? -1. : 1.);
+		gyroPitch = HCDEGyroQueuedPitch * (cl_gyro_invert_pitch ? -1. : 1.);
+		HCDEGyroQueuedYaw = 0.;
+		HCDEGyroQueuedPitch = 0.;
+		HCDEGyroSamplesApplied += HCDEGyroPendingSamples;
+		HCDEGyroPendingSamples = 0u;
+	}
+
 	if (cl_analog_straferun)
 	{
 		// Rescale diagonal analog input from roughly [0.77, 0.77] to [1.0, 1.0],
@@ -866,6 +955,8 @@ void G_BuildTiccmd (usercmd_t *cmd)
 	auto i_axis_fly     = joyint(axis_up * 2048);
 	auto i_axis_pitch   = joyint(axis_pitch * ANALOG_LOOK_BASE * cl_analog_sensitivity_pitch);
 	auto i_axis_yaw     = joyint(axis_yaw * -ANALOG_LOOK_BASE * cl_analog_sensitivity_yaw);
+	i_axis_pitch += joyint(gyroPitch * ANALOG_LOOK_BASE * cl_gyro_sensitivity_pitch);
+	i_axis_yaw += joyint(gyroYaw * -ANALOG_LOOK_BASE * cl_gyro_sensitivity_yaw);
 
 	// [RH] only use two stage accelerative turning on the keyboard
 	//		and not the joystick, since we treat the joystick as

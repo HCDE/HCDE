@@ -21,6 +21,7 @@
 
 // HEADER FILES ------------------------------------------------------------
 
+#include <math.h>
 #include <stdlib.h>
 
 #include "doomdef.h"
@@ -281,8 +282,6 @@ void P_SetPsprite(player_t *player, PSPLayers id, FState *state, bool pending)
 	auto psp = player->GetPSprite(id);
 	if (psp)
 	{
-		const char* stateName = state != nullptr ? FState::StaticGetStateName(state).GetChars() : "<null>";
-		DebugTrace::Debugf("playsim.psprite", "P_SetPsprite layer=%d state=%s player=%d", int(id), stateName, int(player - players));
 		psp->SetState(state, pending);
 	}
 }
@@ -602,14 +601,6 @@ void DPSprite::SetState(FState *newstate, bool pending)
 		newstate = State->GetNextState();
 	} while (!Tics); // An initial state of 0 could cycle through.
 
-	if (State != nullptr)
-	{
-		const char* stateName = FState::StaticGetStateName(State).GetChars();
-		int ownerNum = Owner != nullptr ? int(Owner - players) : -1;
-		DebugTrace::Debugf("playsim.psprite", "DPSprite::SetState final state=%s sprite=%d frame=%d tics=%d ID=%d owner=%d",
-			stateName, int(Sprite), int(Frame), int(Tics), int(ID), ownerNum);
-	}
-
 	return;
 }
 
@@ -670,6 +661,38 @@ void P_BringUpWeapon (player_t *player)
 EPSPBobType BobType = PSPB_None;
 FPlayerBob PlayerBob[MAXPLAYERS] = {};
 
+CVAR(Bool, cl_hcde_idle_breathing, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Float, cl_hcde_idle_breathing_amount, 0.55f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.f) self = 0.f;
+	if (self > 4.f) self = 4.f;
+}
+CUSTOM_CVAR(Float, cl_hcde_idle_breathing_speed, 0.18f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.01f) self = 0.01f;
+	if (self > 2.f) self = 2.f;
+}
+
+static bool HCDEPlayerIsIdleForBreathing(const player_t* player)
+{
+	if (player == nullptr || player->mo == nullptr || !cl_hcde_idle_breathing)
+		return false;
+	if (player->cmd.forwardmove != 0 || player->cmd.sidemove != 0 || player->cmd.upmove != 0)
+		return false;
+	return fabs(player->mo->Vel.X) < 0.01 && fabs(player->mo->Vel.Y) < 0.01 && fabs(player->mo->Vel.Z) < 0.01;
+}
+
+static DVector2 HCDEApplyIdleBreathingBob(const player_t* player, DVector2 bob)
+{
+	if (!HCDEPlayerIsIdleForBreathing(player))
+		return bob;
+	const double phase = double(player->BobTimer) * double(cl_hcde_idle_breathing_speed);
+	const double amount = double(cl_hcde_idle_breathing_amount);
+	bob.X += sin(phase * 0.5) * amount * 0.20;
+	bob.Y += sin(phase) * amount;
+	return bob;
+}
+
 void P_BobWeapon(player_t* player)
 {
 	auto& bob = PlayerBob[player - players];
@@ -690,6 +713,8 @@ void P_BobWeapon(player_t* player)
 			}
 			inv = nextinv;
 		}
+
+		result = HCDEApplyIdleBreathingBob(player, result);
 
 		bob.SetBob2D(player->BobTimer, FVector2(result));
 		return;

@@ -1223,6 +1223,54 @@ static bool Net_HasPendingInvasionMirrorSpawn(uint32_t id)
 	return false;
 }
 
+static uint64_t HCDEInvasionGuardNullActorRefs = 0u;
+static uint64_t HCDEInvasionGuardEuthanizedActorRefs = 0u;
+static uint64_t HCDEInvasionGuardIndexPurges = 0u;
+
+static AActor* Net_GetLiveInvasionReplicatedActor(FInvasionReplicatedActorRef& ref)
+{
+	AActor* actor = ref.Actor.Get();
+	if (actor == nullptr)
+	{
+		return nullptr;
+	}
+	if ((actor->ObjectFlags & OF_EuthanizeMe) != 0)
+	{
+		return nullptr;
+	}
+	return actor;
+}
+
+static const AActor* Net_GetLiveInvasionReplicatedActor(const FInvasionReplicatedActorRef& ref)
+{
+	const AActor* actor = ref.Actor.Get();
+	if (actor == nullptr)
+	{
+		return nullptr;
+	}
+	if ((actor->ObjectFlags & OF_EuthanizeMe) != 0)
+	{
+		return nullptr;
+	}
+	return actor;
+}
+
+static bool Net_IsStaleInvasionReplicatedActorRef(FInvasionReplicatedActorRef& ref, AActor*& actor)
+{
+	actor = ref.Actor.Get();
+	if (actor == nullptr)
+	{
+		++HCDEInvasionGuardNullActorRefs;
+		return true;
+	}
+	if ((actor->ObjectFlags & OF_EuthanizeMe) != 0)
+	{
+		++HCDEInvasionGuardEuthanizedActorRefs;
+		return true;
+	}
+	return false;
+}
+
 static void Net_QueueInvasionMirrorSpawn(uint32_t id, int wave, const FString& className,
 	const DVector3& pos, const DVector3& vel, DAngle yaw, DAngle pitch, int health,
 	bool markApplied)
@@ -1233,7 +1281,7 @@ static void Net_QueueInvasionMirrorSpawn(uint32_t id, int wave, const FString& c
 	{
 		return;
 	}
-	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && existing->Actor != nullptr)
+	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && Net_GetLiveInvasionReplicatedActor(*existing) != nullptr)
 		return;
 
 	FInvasionPendingMirrorSpawn pending;
@@ -1584,9 +1632,9 @@ static bool Net_SpawnInvasionMirrorActor(uint32_t id, int wave, const FString& c
 	if (primaryLevel == nullptr || gamestate != GS_LEVEL || NetworkEntityManager::IsPredicting())
 		return false;
 
-	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && existing->Actor != nullptr)
+	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr && Net_GetLiveInvasionReplicatedActor(*existing) != nullptr)
 	{
-		AActor* eact = existing->Actor.Get();
+		AActor* eact = Net_GetLiveInvasionReplicatedActor(*existing);
 		if (authorityCategoryHint == HREP_ACTOR_PROJECTILE)
 			existing->IsProjectile = true;
 		else if (eact != nullptr && Net_ClassDefaultsSuggestProjectile(eact->GetClass()))
@@ -1731,7 +1779,7 @@ static void Net_DrainPendingInvasionMirrorSpawns()
 	TArray<FInvasionPendingMirrorSpawn> retained;
 	for (const auto& pending : InvasionPendingMirrorSpawns)
 	{
-		if (auto existing = Net_FindInvasionReplicatedActor(pending.Id); existing != nullptr && existing->Actor != nullptr)
+		if (auto existing = Net_FindInvasionReplicatedActor(pending.Id); existing != nullptr && Net_GetLiveInvasionReplicatedActor(*existing) != nullptr)
 			continue;
 
 		if (pending.Wave < InvasionWaveDirector.Wave || InvasionState == INVS_DISABLED)
@@ -1766,14 +1814,17 @@ static void Net_DrainPendingInvasionMirrorSpawns()
 		}
 
 		++applied;
-		if (auto ref = Net_FindInvasionReplicatedActor(pending.Id); ref != nullptr && ref->Actor != nullptr)
+		if (auto ref = Net_FindInvasionReplicatedActor(pending.Id); ref != nullptr)
 		{
-			if (Net_ClassDefaultsSuggestProjectile(ref->Actor->GetClass())
-				|| Net_IsInvasionReplicatedProjectile(ref->Actor.Get()))
+			AActor* actor = Net_GetLiveInvasionReplicatedActor(*ref);
+			if (actor == nullptr)
+				continue;
+			if (Net_ClassDefaultsSuggestProjectile(actor->GetClass())
+				|| Net_IsInvasionReplicatedProjectile(actor))
 			{
 				ref->IsProjectile = true;
 			}
-			ref->Actor->Vel = pending.Vel;
+			actor->Vel = pending.Vel;
 			Net_SetInvasionMirrorVisualTarget(*ref, pending.Pos, pending.Vel, pending.Yaw, pending.Pitch, pending.Health);
 		}
 	}
@@ -2409,7 +2460,7 @@ static FHCDEActorInterestResult HCDEComputeInvasionActorInterest(int clientNum, 
 	if (clientNum < 0 || clientNum >= MAXPLAYERS || actorIndex >= InvasionReplicatedActors.Size())
 		return interest;
 
-	AActor* actor = InvasionReplicatedActors[actorIndex].Actor.Get();
+	AActor* actor = Net_GetLiveInvasionReplicatedActor(InvasionReplicatedActors[actorIndex]);
 	if (actor == nullptr)
 		return interest;
 
@@ -2733,16 +2784,19 @@ static void Net_PurgeStaleInvasionMirrorActorsOnClient()
 	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
 	{
 		auto& ref = InvasionReplicatedActors[i];
-		AActor* actor = ref.Actor.Get();
-		if (ref.Id == 0u
-			|| actor == nullptr
-			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+		if (ref.Id == 0u)
 		{
-			if (actor != nullptr)
-			{
-				actor->ClearCounters();
-				actor->Destroy();
-			}
+			Net_SetInvasionReplicatedActorPtr(ref, nullptr);
+			++purged;
+			continue;
+		}
+		AActor* actor = nullptr;
+		const bool staleActor = Net_IsStaleInvasionReplicatedActorRef(ref, actor);
+		if (staleActor)
+		{
+			// Net_IsStaleInvasionReplicatedActorRef only returns true when the
+			// actor is null or already flagged OF_EuthanizeMe, so the engine
+			// will collect it on its own. Just drop our tracking entry.
 			Net_SetInvasionReplicatedActorPtr(ref, nullptr);
 			++purged;
 			continue;
@@ -2846,7 +2900,7 @@ static bool Net_ApplyInvasionDespawnEvent(uint32_t actorId, int serverHealth)
 	}
 
 	auto* ref = Net_FindInvasionReplicatedActor(actorId);
-	if (ref == nullptr || ref->Actor == nullptr)
+	if (ref == nullptr || Net_GetLiveInvasionReplicatedActor(*ref) == nullptr)
 		return true;
 
 	Net_RetireInvasionMirrorActor(*ref, serverHealth);
@@ -2868,10 +2922,10 @@ static bool Net_ApplyInvasionDamageEvent(uint32_t actorId, int serverHealth)
 	}
 
 	auto* ref = Net_FindInvasionReplicatedActor(actorId);
-	if (ref == nullptr || ref->Actor == nullptr)
+	if (ref == nullptr || Net_GetLiveInvasionReplicatedActor(*ref) == nullptr)
 		return true;
 
-	AActor* actor = ref->Actor.Get();
+	AActor* actor = Net_GetLiveInvasionReplicatedActor(*ref);
 	if (serverHealth <= 0 || Net_IsInvasionActorCorpseLike(actor))
 	{
 		Net_RetireInvasionMirrorActor(*ref, serverHealth);
@@ -2897,10 +2951,14 @@ static int Net_CompactInvasionReplicatedActors()
 	for (size_t i = 0u; i < InvasionReplicatedActors.Size(); ++i)
 	{
 		auto& ref = InvasionReplicatedActors[i];
-		AActor* actor = ref.Actor.Get();
-		if (ref.Id == 0u
-			|| actor == nullptr
-			|| (actor->ObjectFlags & OF_EuthanizeMe) != 0)
+		if (ref.Id == 0u)
+		{
+			Net_SetInvasionReplicatedActorPtr(ref, nullptr);
+			continue;
+		}
+		AActor* actor = nullptr;
+		const bool staleActor = Net_IsStaleInvasionReplicatedActorRef(ref, actor);
+		if (staleActor)
 		{
 			if (actor != nullptr && !ref.DeathDeltaSent)
 				Net_RecordInvasionDespawnEvent(ref, actor, actor->health);
@@ -2963,6 +3021,30 @@ static int Net_CompactInvasionReplicatedActors()
 	Net_RebuildInvasionReplicatedActorIndexes();
 	Net_CompactHCDEReplicatedActors();
 	return int(writeIdx);
+}
+
+CCMD(hcde_replication_guard_surfaces)
+{
+	const int invasionBefore = int(InvasionReplicatedActors.Size());
+	const int sharedRemoved = Net_CompactHCDEReplicatedActors();
+	const int invasionActive = Net_CompactInvasionReplicatedActors();
+	Printf(PRINT_HIGH, "\n=== HCDE replication guard surfaces ===\n");
+	Printf(PRINT_HIGH,
+		"tracked: invasion-before=%d invasion-active=%d invasion-after=%u shared=%u shared-removed=%d\n",
+		invasionBefore,
+		invasionActive,
+		unsigned(InvasionReplicatedActors.Size()),
+		unsigned(HCDEReplicatedActors.Size()),
+		sharedRemoved);
+	Printf(PRINT_HIGH,
+		"guards: invasion-null-refs=%llu invasion-euthanized-refs=%llu invasion-index-purges=%llu shared-compacted=%llu\n",
+		static_cast<unsigned long long>(HCDEInvasionGuardNullActorRefs),
+		static_cast<unsigned long long>(HCDEInvasionGuardEuthanizedActorRefs),
+		static_cast<unsigned long long>(HCDEInvasionGuardIndexPurges),
+		static_cast<unsigned long long>(HCDELiveProfile.SharedActorCompacted));
+	Printf(PRINT_HIGH,
+		"boundary: compaction must resolve TObjPtr::Get() before reading ObjectFlags or actor fields.\n");
+	Printf(PRINT_HIGH, "=======================================\n");
 }
 
 static FInvasionReplicatedActorRef* Net_FindInvasionReplicatedActor(uint32_t id)
@@ -3063,7 +3145,7 @@ static void Net_RegisterInvasionReplicatedActor(uint32_t id, AActor* actor)
 
 	if (auto existing = Net_FindInvasionReplicatedActor(id); existing != nullptr)
 	{
-		const bool actorChanged = existing->Actor.Get() != actor;
+		const bool actorChanged = Net_GetLiveInvasionReplicatedActor(*existing) != actor;
 		Net_SetInvasionReplicatedActorPtr(*existing, actor);
 		existing->DeathDeltaSent = false;
 		existing->ForceDeathDelta = false;
@@ -3437,7 +3519,7 @@ static void Net_RegisterHCDEReplicatedActor(uint32_t id, AActor* actor, uint8_t 
 	const uint16_t classId = Net_GetHCDEReplicatedActorClassId(actor->GetClass());
 	if (auto existing = Net_FindHCDEReplicatedActor(id); existing != nullptr)
 	{
-		const bool wasMissingOrRetired = existing->Actor == nullptr || existing->Retired;
+		const bool wasMissingOrRetired = existing->Actor.Get() == nullptr || existing->Retired;
 		Net_SetHCDEReplicatedActorPtr(*existing, actor);
 		existing->ClassId = classId;
 		existing->Category = category;
@@ -3972,8 +4054,12 @@ static AActor* Net_FindLocalHCDEPickupForAuthorityEvent(uint32_t actorId, uint8_
 	if (category != HREP_ACTOR_PICKUP || primaryLevel == nullptr)
 		return nullptr;
 
-	if (auto* ref = Net_FindHCDEReplicatedActor(actorId); ref != nullptr && ref->Actor != nullptr)
-		return ref->Actor.Get();
+	if (auto* ref = Net_FindHCDEReplicatedActor(actorId); ref != nullptr)
+	{
+		AActor* actor = ref->Actor.Get();
+		if (actor != nullptr && (actor->ObjectFlags & OF_EuthanizeMe) == 0)
+			return actor;
+	}
 
 	if (className.IsEmpty())
 		return nullptr;
@@ -4298,7 +4384,7 @@ static void Net_IndexInvasionReplicatedActor(size_t index)
 	const auto& ref = InvasionReplicatedActors[index];
 	if (ref.Id != 0u)
 		InvasionReplicatedActorIdIndex.Insert(ref.Id, unsigned(index));
-	const AActor* actor = ref.Actor.Get();
+	const AActor* actor = Net_GetLiveInvasionReplicatedActor(ref);
 	if (actor != nullptr)
 		InvasionReplicatedActorPtrIndex.Insert(actor, unsigned(index));
 }
@@ -4343,9 +4429,10 @@ static bool Net_GetInvasionReplicatedActorIndexByActor(const AActor* actor, size
 		return false;
 
 	const size_t candidate = size_t(*stored);
-	if (candidate >= InvasionReplicatedActors.Size() || InvasionReplicatedActors[candidate].Actor.Get() != actor)
+	if (candidate >= InvasionReplicatedActors.Size() || Net_GetLiveInvasionReplicatedActor(InvasionReplicatedActors[candidate]) != actor)
 	{
 		InvasionReplicatedActorPtrIndex.Remove(actor);
+		++HCDEInvasionGuardIndexPurges;
 		return false;
 	}
 

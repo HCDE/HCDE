@@ -71,17 +71,14 @@ enum
 	IDC_HCDE_SERVER_KICK,
 	IDC_HCDE_SERVER_KICK_SEND,
 	IDC_HCDE_SERVER_PRESET,
-	IDC_HCDE_SERVER_PRESET_APPLY,
 	IDC_HCDE_SERVER_FLAG,
 	IDC_HCDE_SERVER_FLAG_ON,
 	IDC_HCDE_SERVER_FLAG_OFF,
 	IDC_HCDE_SERVER_REFRESH_CVARS,
 	IDC_HCDE_SERVER_COPY_LOG = 31020,
-	IDC_HCDE_SERVER_APPLY_ALL_SETTINGS,
 	IDC_HCDE_SERVER_ADVANCED_SETTING,
 	IDC_HCDE_SERVER_ADVANCED_VALUE,
 	IDC_HCDE_SERVER_ADVANCED_VALUE_CHOICE,
-	IDC_HCDE_SERVER_ADVANCED_APPLY,
 	IDC_HCDE_SERVER_SETTING_BASE = 31100,
 	IDC_HCDE_SERVER_SETTING_APPLY_BASE = 31200,
 };
@@ -960,11 +957,12 @@ LRESULT MainWindow::LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		return 0;
 
 	case WM_COMMAND:
-		if (HIWORD(wParam) == BN_CLICKED &&
-			LOWORD(wParam) >= IDC_HCDE_SERVER_SETTING_APPLY_BASE &&
-			LOWORD(wParam) < IDC_HCDE_SERVER_SETTING_APPLY_BASE + ServerGuiSettingCount)
+		if (LOWORD(wParam) >= IDC_HCDE_SERVER_SETTING_BASE &&
+			LOWORD(wParam) < IDC_HCDE_SERVER_SETTING_BASE + ServerGuiSettingCount &&
+			(HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == EN_KILLFOCUS))
 		{
-			mainwindow.ApplyServerConsoleSetting(LOWORD(wParam));
+			const int settingIndex = LOWORD(wParam) - IDC_HCDE_SERVER_SETTING_BASE;
+			mainwindow.ApplyServerConsoleSetting(IDC_HCDE_SERVER_SETTING_APPLY_BASE + settingIndex);
 			return 0;
 		}
 
@@ -1042,8 +1040,8 @@ LRESULT MainWindow::LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 			break;
 
-		case IDC_HCDE_SERVER_PRESET_APPLY:
-			if (HIWORD(wParam) == BN_CLICKED)
+		case IDC_HCDE_SERVER_PRESET:
+			if (HIWORD(wParam) == CBN_SELCHANGE)
 			{
 				mainwindow.ApplyServerConsolePreset();
 				return 0;
@@ -1074,14 +1072,6 @@ LRESULT MainWindow::LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 			break;
 
-		case IDC_HCDE_SERVER_APPLY_ALL_SETTINGS:
-			if (HIWORD(wParam) == BN_CLICKED)
-			{
-				mainwindow.ApplyServerConsoleVisibleSettings();
-				return 0;
-			}
-			break;
-
 		case IDC_HCDE_SERVER_ADVANCED_SETTING:
 			if (HIWORD(wParam) == CBN_SELCHANGE)
 			{
@@ -1090,8 +1080,16 @@ LRESULT MainWindow::LConProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 			break;
 
-		case IDC_HCDE_SERVER_ADVANCED_APPLY:
-			if (HIWORD(wParam) == BN_CLICKED)
+		case IDC_HCDE_SERVER_ADVANCED_VALUE:
+			if (HIWORD(wParam) == EN_KILLFOCUS)
+			{
+				mainwindow.ApplyServerConsoleAdvancedSetting();
+				return 0;
+			}
+			break;
+
+		case IDC_HCDE_SERVER_ADVANCED_VALUE_CHOICE:
+			if (HIWORD(wParam) == CBN_SELCHANGE)
 			{
 				mainwindow.ApplyServerConsoleAdvancedSetting();
 				return 0;
@@ -1318,7 +1316,6 @@ void MainWindow::CreateServerConsoleControls()
 
 	ServerSettingsTitle = CreateServerChild(Window, L"STATIC", L"Server Settings", SS_LEFT, 0);
 	HWND refreshCvars = CreateServerChild(Window, L"BUTTON", L"Refresh", BS_PUSHBUTTON, IDC_HCDE_SERVER_REFRESH_CVARS);
-	HWND applyAllSettings = CreateServerChild(Window, L"BUTTON", L"Apply All", BS_PUSHBUTTON, IDC_HCDE_SERVER_APPLY_ALL_SETTINGS);
 	ServerSettingCount = ServerGuiSettingCount;
 	if (ServerSettingCount > ServerMaxSettingControls)
 	{
@@ -1344,14 +1341,12 @@ void MainWindow::CreateServerConsoleControls()
 			ServerSettingInputs[i] = CreateServerChild(Window, L"EDIT", setting.DefaultValue, inputStyle, IDC_HCDE_SERVER_SETTING_BASE + i);
 			SendMessage(ServerSettingInputs[i], EM_SETLIMITTEXT, setting.TextLimit, 0);
 		}
-		ServerSettingButtons[i] = CreateServerChild(Window, L"BUTTON", L"Apply", BS_PUSHBUTTON, IDC_HCDE_SERVER_SETTING_APPLY_BASE + i);
 	}
 
 	ServerAdvancedControlsLabel = CreateServerChild(Window, L"STATIC", L"Presets & Flags", SS_LEFT, 0);
 	ServerPresetLabel = CreateServerChild(Window, L"STATIC", L"Preset", SS_LEFT, 0);
 	ServerPresetCombo = CreateServerChild(Window, L"COMBOBOX", L"",
 		CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, IDC_HCDE_SERVER_PRESET);
-	HWND presetApply = CreateServerChild(Window, L"BUTTON", L"Apply", BS_PUSHBUTTON, IDC_HCDE_SERVER_PRESET_APPLY);
 	for (int i = 0; i < ServerGuiPresetCount; ++i)
 	{
 		SendMessageW(ServerPresetCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(ServerGuiPresets[i].Label));
@@ -1376,7 +1371,6 @@ void MainWindow::CreateServerConsoleControls()
 		ES_AUTOHSCROLL | WS_BORDER, IDC_HCDE_SERVER_ADVANCED_VALUE);
 	ServerAdvancedSettingValueCombo = CreateServerChild(Window, L"COMBOBOX", L"",
 		CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, IDC_HCDE_SERVER_ADVANCED_VALUE_CHOICE);
-	HWND advancedApply = CreateServerChild(Window, L"BUTTON", L"Apply", BS_PUSHBUTTON, IDC_HCDE_SERVER_ADVANCED_APPLY);
 	for (int i = 0; i < ServerGuiAdvancedSettingCount; ++i)
 	{
 		SendMessageW(ServerAdvancedSettingCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(ServerGuiAdvancedSettings[i].Label));
@@ -1390,10 +1384,10 @@ void MainWindow::CreateServerConsoleControls()
 		ServerSessionTitle, ServerMapLabel, ServerMap, mapChange, mapRestart,
 		ServerBroadcastLabel, ServerBroadcast, broadcastSend,
 		ServerKickLabel, ServerKick, kickSend, clearLog, copyLog,
-		ServerSettingsTitle, refreshCvars, applyAllSettings, ServerAdvancedControlsLabel,
-		ServerPresetLabel, ServerPresetCombo, presetApply,
+		ServerSettingsTitle, refreshCvars, ServerAdvancedControlsLabel,
+		ServerPresetLabel, ServerPresetCombo,
 		ServerFlagLabel, ServerFlagCombo, flagOn, flagOff,
-		ServerAdvancedSettingLabel, ServerAdvancedSettingCombo, ServerAdvancedSettingValue, ServerAdvancedSettingValueCombo, advancedApply
+		ServerAdvancedSettingLabel, ServerAdvancedSettingCombo, ServerAdvancedSettingValue, ServerAdvancedSettingValueCombo
 	};
 	for (HWND control : controls)
 	{
@@ -1406,7 +1400,6 @@ void MainWindow::CreateServerConsoleControls()
 	{
 		SendMessage(ServerSettingLabels[i], WM_SETFONT, reinterpret_cast<WPARAM>(ServerFont), TRUE);
 		SendMessage(ServerSettingInputs[i], WM_SETFONT, reinterpret_cast<WPARAM>(ServerFont), TRUE);
-		SendMessage(ServerSettingButtons[i], WM_SETFONT, reinterpret_cast<WPARAM>(ServerFont), TRUE);
 	}
 
 	SendMessage(ServerLog, EM_SETLIMITTEXT, ServerLogLimit, 0);
@@ -1473,16 +1466,14 @@ void MainWindow::ResizeServerConsoleControls(int width, int height)
 	MoveWindow(GetDlgItem(Window, IDC_HCDE_SERVER_COPY_LOG), optionsX + (optionsWidth / 2) + 4, optionsY, (optionsWidth / 2) - 4, 24, TRUE);
 	optionsY += 34;
 
-	MoveWindow(ServerSettingsTitle, optionsX, optionsY, optionsWidth - 150, 22, TRUE);
-	MoveWindow(GetDlgItem(Window, IDC_HCDE_SERVER_APPLY_ALL_SETTINGS), optionsX + optionsWidth - 142, optionsY - 2, 76, 24, TRUE);
+	MoveWindow(ServerSettingsTitle, optionsX, optionsY, optionsWidth - 70, 22, TRUE);
 	MoveWindow(GetDlgItem(Window, IDC_HCDE_SERVER_REFRESH_CVARS), optionsX + optionsWidth - 62, optionsY - 2, 62, 24, TRUE);
 	optionsY += 26;
 	for (int i = 0; i < ServerSettingCount; ++i)
 	{
 		const int inputHeight = ServerGuiSettings[i].Kind == ServerGuiSettingKind::Choice ? 140 : 22;
 		MoveWindow(ServerSettingLabels[i], optionsX, optionsY + 3, 112, 20, TRUE);
-		MoveWindow(ServerSettingInputs[i], optionsX + 118, optionsY, optionsWidth - 188, inputHeight, TRUE);
-		MoveWindow(ServerSettingButtons[i], optionsX + optionsWidth - 62, optionsY, 62, 22, TRUE);
+		MoveWindow(ServerSettingInputs[i], optionsX + 118, optionsY, optionsWidth - 118, inputHeight, TRUE);
 		optionsY += 25;
 	}
 
@@ -1490,8 +1481,7 @@ void MainWindow::ResizeServerConsoleControls(int width, int height)
 	MoveWindow(ServerAdvancedControlsLabel, optionsX, optionsY, optionsWidth, 20, TRUE);
 	optionsY += 22;
 	MoveWindow(ServerPresetLabel, optionsX, optionsY + 3, 54, 20, TRUE);
-	MoveWindow(ServerPresetCombo, optionsX + 58, optionsY, optionsWidth - 128, 160, TRUE);
-	MoveWindow(GetDlgItem(Window, IDC_HCDE_SERVER_PRESET_APPLY), optionsX + optionsWidth - 62, optionsY, 62, 24, TRUE);
+	MoveWindow(ServerPresetCombo, optionsX + 58, optionsY, optionsWidth - 58, 160, TRUE);
 	optionsY += 30;
 	MoveWindow(ServerFlagLabel, optionsX, optionsY + 3, 42, 20, TRUE);
 	MoveWindow(ServerFlagCombo, optionsX + 46, optionsY, optionsWidth - 136, 180, TRUE);
@@ -1501,9 +1491,8 @@ void MainWindow::ResizeServerConsoleControls(int width, int height)
 	MoveWindow(ServerAdvancedSettingLabel, optionsX, optionsY + 3, 108, 20, TRUE);
 	MoveWindow(ServerAdvancedSettingCombo, optionsX + 112, optionsY, optionsWidth - 112, 180, TRUE);
 	optionsY += 30;
-	MoveWindow(ServerAdvancedSettingValue, optionsX, optionsY, optionsWidth - 70, 24, TRUE);
-	MoveWindow(ServerAdvancedSettingValueCombo, optionsX, optionsY, optionsWidth - 70, 180, TRUE);
-	MoveWindow(GetDlgItem(Window, IDC_HCDE_SERVER_ADVANCED_APPLY), optionsX + optionsWidth - 62, optionsY, 62, 24, TRUE);
+	MoveWindow(ServerAdvancedSettingValue, optionsX, optionsY, optionsWidth, 24, TRUE);
+	MoveWindow(ServerAdvancedSettingValueCombo, optionsX, optionsY, optionsWidth, 180, TRUE);
 }
 
 void MainWindow::AppendServerConsoleText(const char* cp)
@@ -2041,42 +2030,6 @@ void MainWindow::ApplyServerConsoleSetting(int applyId)
 	}
 
 	SendServerConsoleCommand(command.GetChars());
-}
-
-void MainWindow::ApplyServerConsoleVisibleSettings()
-{
-	TArray<FString> commands;
-	for (int i = 0; i < ServerSettingCount && i < ServerGuiSettingCount; ++i)
-	{
-		if (ServerSettingInputs[i] == 0)
-		{
-			PrintStr("HCDE server console: cannot apply all settings because a visible setting control is missing.\n");
-			return;
-		}
-
-		const ServerGuiSettingDefinition& setting = ServerGuiSettings[i];
-		FString value = ServerGuiValueFromControl(ServerSettingInputs[i], setting);
-		FString command;
-		FString warning;
-		if (!ServerGuiBuildSettingCommand(setting, value, command, warning))
-		{
-			if (!warning.IsEmpty())
-			{
-				PrintStr(warning.GetChars());
-			}
-			PrintStr("HCDE server console: apply-all cancelled; no settings were changed.\n");
-			return;
-		}
-		commands.Push(command);
-	}
-
-	FString message;
-	message.Format("HCDE server console: applying %u visible server settings.\n", commands.Size());
-	PrintStr(message.GetChars());
-	for (const FString& command : commands)
-	{
-		SendServerConsoleCommand(command.GetChars());
-	}
 }
 
 void MainWindow::ApplyServerConsoleAdvancedSetting()

@@ -19,6 +19,7 @@ $playersounddup	player	male	*land		*grunt
 $playersound	player	male	*jump		dsjump
 $playersound	player	male	*fist		dspunch
 $playersound	player	male	*usefail	dsnoway
+$playersounddup	player	male	*taunt		*usefail
 
 $playersound	player	female	*death		dsfldeth
 $playersound	player	female	*xdeath		dsfdiehi
@@ -32,6 +33,7 @@ $playersounddup	player	female	*land		*grunt
 $playersound	player	female	*jump		dsfjump
 $playersound	player	female	*fist		dspunch
 $playersound	player	female	*usefail	dsfnoway
+$playersounddup	player	female	*taunt		*usefail
 
 $playersound	player	other	*death		dscldeth
 $playersound	player	other	*xdeath		dscdiehi
@@ -45,6 +47,7 @@ $playersounddup	player	other	*land		*grunt
 $playersound	player	other	*jump		dscjump
 $playersound	player	other	*fist		dspunch
 $playersound	player	other	*usefail	dscnoway
+$playersounddup	player	other	*taunt		*usefail
 
 $rumble	*death		P_DEATH
 $rumble	*xdeath		P_DEATH

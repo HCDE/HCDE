@@ -43,6 +43,18 @@ CVAR(Float, underwater_fade_scalar, 1.0f, CVAR_ARCHIVE) // [Nash] user-settable 
 CVAR( Float, blood_fade_scalar, 1.0f, CVAR_ARCHIVE )	// [SP] Pulled from Skulltag - changed default from 0.5 to 1.0
 CVAR( Float, pickup_fade_scalar, 1.0f, CVAR_ARCHIVE )	// [SP] Uses same logic as blood_fade_scalar except for pickups
 CVAR(Float, powerup_fade_scalar, 1.0f, CVAR_ARCHIVE) // [Sal] Adjust screen fades for all inventory items
+CVAR(Bool, sv_hcde_nightvision_allowed, false, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CVAR(Bool, cl_hcde_nightvision, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, cl_hcde_nightvision_lowlight, 96, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < -1) self = -1;
+	if (self > 255) self = 255;
+}
+CUSTOM_CVAR(Float, cl_hcde_nightvision_alpha, 0.22f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0.f) self = 0.f;
+	if (self > 0.75f) self = 0.75f;
+}
 
 // [RH] Amount of red flash for up to 114 damage points. Calculated by hand
 //		using a logarithmic scale and my trusty HP48G.
@@ -341,6 +353,15 @@ FVector4 V_CalcBlend(sector_t* viewsector, PalEntry* modulateColor)
 		// except for fadeto effects
 		player_t* player = (players[consoleplayer].camera->player != NULL) ? players[consoleplayer].camera->player : &players[consoleplayer];
 		V_AddBlend(player->BlendR, player->BlendG, player->BlendB, player->BlendA, blend);
+	}
+
+	if (sv_hcde_nightvision_allowed && cl_hcde_nightvision && viewsector != nullptr)
+	{
+		const int threshold = int(cl_hcde_nightvision_lowlight);
+		if (threshold < 0 || viewsector->GetLightLevel() <= threshold)
+		{
+			V_AddBlend(0.08f, 0.75f, 0.14f, float(cl_hcde_nightvision_alpha), blend);
+		}
 	}
 
 	const float br = clamp(blend[0] * 255.f, 0.f, 255.f);

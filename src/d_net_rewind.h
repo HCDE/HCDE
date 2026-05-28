@@ -160,10 +160,13 @@ public:
 	HCDELagCompScope& operator=(const HCDELagCompScope&) = delete;
 
 	bool Engaged() const { return mEngaged; }
+	AActor* RewoundAttacker() const { return mRewoundAttacker; }
 
 private:
 	bool mEngaged = false;
 	int mPlayerNum = -1;
+	uint32_t mAttackerNetID = 0u;
+	AActor* mRewoundAttacker = nullptr;
 	FHCDERewindKeyframe mLiveKeyframe;
 	int mLiveGametic = 0;
 	int mSavedCaptureGametic = -1;

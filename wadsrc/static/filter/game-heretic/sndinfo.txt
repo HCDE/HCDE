@@ -19,6 +19,7 @@ $playersounddup	player	male	*pain50		*pain100
 $playersounddup	player	male	*pain25		*pain100
 $playersound	player	male	*weaponlaugh	wpnup
 $playersounddup	player	male	*evillaugh	*weaponlaugh
+$playersounddup	player	male	*taunt		*evillaugh
 $playersound	player	male	*grunt		plroof
 $playersounddup	player	male	*usefail	*grunt
 $playersounddup	player	male	*land		*grunt
@@ -30,6 +31,7 @@ $PlayerAlias   	Chicken Male   	*Grunt   	chicken/pain
 $PlayerAlias   	Chicken Male   	*Land      	chicken/pain
 $PlayerAlias   	Chicken Male   	*Jump      	chicken/active
 $PlayerAlias   	Chicken Male   	*EvilLaugh 	chicken/active
+$PlayerAlias   	Chicken Male   	*Taunt     	chicken/active
 
 chicken/sight			chicpai
 chicken/pain			chicpai

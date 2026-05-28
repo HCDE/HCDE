@@ -78,7 +78,6 @@ private:
 	void ApplyServerConsolePreset();
 	void ApplyServerConsoleFlag(bool enabled);
 	void ApplyServerConsoleSetting(int applyId);
-	void ApplyServerConsoleVisibleSettings();
 	void ApplyServerConsoleAdvancedSetting();
 	void SyncServerConsoleSettingsFromCVars(bool logResult);
 	void UpdateServerConsoleAdvancedSettingDefault();
@@ -122,7 +121,6 @@ private:
 	HWND ServerSettingsTitle = 0;
 	HWND ServerSettingLabels[ServerMaxSettingControls] = {};
 	HWND ServerSettingInputs[ServerMaxSettingControls] = {};
-	HWND ServerSettingButtons[ServerMaxSettingControls] = {};
 	int ServerSettingCount = 0;
 	HWND ServerAdvancedControlsLabel = 0;
 	HFONT ServerFont = 0;

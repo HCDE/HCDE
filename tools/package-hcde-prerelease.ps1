@@ -496,7 +496,8 @@ $checksumAssets.Add($compatZip)
 if ($IncludeSymbols) {
     $checksumAssets.Add($symbolsZip)
 }
-Write-ReleaseChecksums -OutputPath (Join-Path $releaseRoot "SHA256SUMS.txt") -Assets $checksumAssets.ToArray()
+$checksumFile = Join-Path $releaseRoot "SHA256SUMS.txt"
+Write-ReleaseChecksums -OutputPath $checksumFile -Assets $checksumAssets.ToArray()
 
 if ($Upload) {
     $resolvedTag = $ReleaseTag
@@ -518,6 +519,7 @@ HCDE $Version
     if ($IncludeSymbols) {
         $assets.Add($symbolsZip)
     }
+    $assets.Add($checksumFile)
 
     Upload-ReleaseAssets `
         -GhCliPath $GhCli `
