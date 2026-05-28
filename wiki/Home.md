@@ -1,8 +1,15 @@
 # HCDE Wiki
 
-Documentation for the HCDE project.
+How-to guides and reference documentation for HCDE.
 
-## Pages
+## How-to
 
-- [CVAR Reference](CVAR-Reference) — console variables, defaults, and runtime audit notes
-- [Getting Started](Getting-Started) — setup and first run (add this page on the wiki when ready)
+- [Getting Started](Getting-Started) — build, host, and join a dedicated server
+- [Building](Building) — compile from source (Windows and Linux)
+- [Windows Updater](Windows-Updater) — launcher update flow, backups, and recovery
+
+## Reference
+
+- [Launcher Protocol](Launcher-Protocol) — dedicated launch, master list (legacy + NMS1), per-server query
+- [Network Protocol](Network-Protocol) — engine session lanes, net diagnostics, debug traces
+- [CVAR Reference](CVAR-Reference) — console variables and defaults
