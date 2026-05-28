@@ -85,7 +85,7 @@ This document collects the main code and playability weak points identified duri
    - these are usability-critical features, but they also mean the gameplay experience can break subtly if not perfectly tuned.
 
 4. Mod compatibility risk
-   - many `COMPATF_*` flags in `src/doomdef.h` and the long `docs/Cvars.md` list show a lot of compatibility overrides.
+   - many `COMPATF_*` flags in `src/doomdef.h` and the long [CVAR Reference wiki](https://github.com/bokoxthexchocobo/HCDE/wiki/CVAR-Reference) show a lot of compatibility overrides.
    - support for legacy Doom/Heretic/Hexen behavior means a wider range of edge cases and inconsistent gameplay across mods.
 
 ## 4. Recommended Cleanup Actions
@@ -116,7 +116,7 @@ This document collects the main code and playability weak points identified duri
 
 - `docs/NETCODE_REVIEW.md`
 - `docs/HCDE_NETCODE_OVERHAUL.md`
-- `docs/Cvars.md`
+- [CVAR Reference (wiki)](https://github.com/bokoxthexchocobo/HCDE/wiki/CVAR-Reference)
 - `src/d_net.cpp`
 - `src/i_net.cpp`
 - `src/p_setup.cpp`
