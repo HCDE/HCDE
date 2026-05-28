@@ -8,6 +8,7 @@ add_custom_target(
 	COMMAND ${CMAKE_COMMAND} -E copy
 		"${CMAKE_CURRENT_SOURCE_DIR}/../src/posix/freedesktop/org.hcde.HCDE.metainfo.xml"
 		"${CMAKE_CURRENT_SOURCE_DIR}/static/meta.xml"
+	# CONTRIBUTORS at repo root is the single source of truth (About tab lump).
 	COMMAND ${CMAKE_COMMAND} -E copy
 		"${CMAKE_CURRENT_SOURCE_DIR}/../CONTRIBUTORS"
 		"${CMAKE_CURRENT_SOURCE_DIR}/static/contributors.txt"
