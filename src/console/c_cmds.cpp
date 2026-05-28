@@ -689,7 +689,7 @@ UNSAFE_CCMD (load)
 	FixPathSeperator(fname);
 	if (fname[0] == '/')
 	{
-		Printf("saving to an absolute path is not allowed\n");
+		Printf("loading from an absolute path is not allowed\n");
 		return;
 	}
 	if (FName_HasParentDirSegment(fname.GetChars()))

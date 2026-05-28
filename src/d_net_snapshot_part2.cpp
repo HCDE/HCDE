@@ -1312,12 +1312,11 @@ static void HSendLiveGameplayPacket(int client, size_t size)
 }
 
 // Native send wrapper for HLIVE_CLIENT_COMMANDS. Returns:
-//   false  -- this peer is not a candidate for native client-input send (the
-//             caller should fall back to HSendLiveGameplayPacket which itself
-//             gates HCDE peers).
-//   true   -- a native send attempt was made for this peer. Success/failure of
-//             the encode is hidden from the caller because in both cases the
-//             peer must NOT be subjected to a legacy fallback packet.
+//   false  -- this peer is not a native client-input target; the caller may use
+//             HSendLiveGameplayPacket for non-gameplay or non-HCDE peers only.
+//   true   -- a native send was attempted (or the peer was rejected for missing
+//             capabilities). Do not legacy-encode gameplay for this peer.
+//             Encode failures call HCDEAbortLiveGameplaySend (replay), not NCMD.
 static bool HSendNativeClientInputPacket(int client, uint8_t controlFlags, uint8_t routingByte,
 	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
 	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, int playerNum, int sequenceOffset,
@@ -1367,11 +1366,10 @@ static bool HSendNativeClientInputPacket(int client, uint8_t controlFlags, uint8
 }
 
 // Native send wrapper for HLIVE_SERVER_SNAPSHOT. Returns false if this peer is
-// not a native server-snapshot target (caller should fall back to
-// HSendLiveGameplayPacket). Otherwise returns true and hides build success/
-// failure: native build failure triggers HCDEAbortLiveGameplaySend (which both
-// records the failure and requests a replay from the peer) instead of falling
-// back to the legacy NCMD encoder.
+// not a native server-snapshot target (caller may use HSendLiveGameplayPacket
+// for non-gameplay traffic only). Returns true after a native attempt; do not
+// legacy-encode gameplay. Build failures use HCDEAbortLiveGameplaySend (replay),
+// not the legacy NCMD encoder. HSendLiveGameplayPacket aborts HCDE gameplay peers.
 static bool HSendNativeServerSnapshotPacket(int client, uint8_t controlFlags, uint8_t routingByte,
 	uint32_t sequenceAck, uint32_t consistencyAck, uint32_t baseSequence, uint32_t baseConsistency,
 	uint8_t commandTics, uint8_t consistencyTics, uint8_t stabilityBuffer, const int* playerNums, uint8_t playerCount,

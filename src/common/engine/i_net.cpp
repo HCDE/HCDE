@@ -1583,7 +1583,8 @@ static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 	return NetStartWindow::NetLoop(loopCallback, data);
 }
 
-// A new client has just entered the game, so add them to the player list.
+// A new client completed setup connect; update launcher UI and log the session.
+// Player mobj/slot assignment happens later in the netgame start path.
 static void I_NetClientConnected(int client, unsigned int charLimit = 0u)
 {
 	if (I_IsServerReservedSlot(client))
@@ -2262,7 +2263,9 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	}
 	else
 	{
-		I_NetLog("Client %u %s%s", client, DedicatedServerMode ? "connected to server using legacy setup" : "joined the host",
+		// Unreachable for admitted clients: TryProcessSetupConnectPacket rejects
+		// peers without HCDE service connect info (see Phase 3 comment there).
+		I_NetLog("Client %u %s%s", client, DedicatedServerMode ? "connected without HCDE service info" : "joined without HCDE service info",
 			runtimeJoin ? " (runtime join)" : "");
 	}
 	I_NetClientUpdated(client);
