@@ -68,7 +68,7 @@ HCDE is **GPL-3.0-or-later** ([`LICENSE`](LICENSE)). Branding and some asset tre
 
 ## Contributors
 
-[`CONTRIBUTORS`](CONTRIBUTORS) — HCDE contributors/Code sourced from
+[`CONTRIBUTORS`](CONTRIBUTORS) — project contributors (packaged in-game as `contributors.txt`)
 
 ## Tech stack
 
