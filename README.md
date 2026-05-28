@@ -6,7 +6,7 @@
 
 # HCDE
 
-HCDE is a Doom-engine project focused on multiplayer, mod compatibility, and dedicated-server workflows that pair cleanly with Doom Connector.
+HCDE is a Doom-engine project focused on multiplayer, mod compatibility, and dedicated-server workflows.
 
 This README is the operator/dev reference for:
 
@@ -36,7 +36,6 @@ HCDE keeps the master protocol boundary explicit:
 - `protocol/` - neutral master-protocol schema/constants
 - `tools/hcdemaster/` - standalone master server source
 - `docs/HCDE_MASTER_PROTOCOL.md` - master protocol contract (human-readable)
-- `docs/HCDE_DOOM_CONNECTOR_LAUNCH.md` - launcher/server launch contract
 - [docs/Cvars.md](docs/Cvars.md) - full list of all cvars and defaults
 - `wadsrc*` - packaged game resources and compat content
 - `docs/licenses/` - license reference docs
@@ -55,15 +54,15 @@ The CMake project can use bundled/internal or system variants for some libraries
 ### Windows (Visual Studio) quick build
 
 ```powershell
-cmake -S C:\Users\user\DoomConnector6\HCDE -B C:\Users\user\DoomConnector6\HCDE\build -G "Visual Studio 17 2022" -A x64
-cmake --build C:\Users\user\DoomConnector6\HCDE\build --config Release
+cmake -S C:\path\to\HCDE -B C:\path\to\HCDE\build -G "Visual Studio 17 2022" -A x64
+cmake --build C:\path\to\HCDE\build --config Release
 ```
 
 Typical outputs:
 
-- `C:\Users\user\DoomConnector6\HCDE\build\Release\hcde.exe`
-- `C:\Users\user\DoomConnector6\HCDE\build\Release\hcdeserv.exe`
-- `C:\Users\user\DoomConnector6\HCDE\build\Release\hcdemaster.exe`
+- `C:\path\to\HCDE\build\Release\hcde.exe`
+- `C:\path\to\HCDE\build\Release\hcdeserv.exe`
+- `C:\path\to\HCDE\build\Release\hcdemaster.exe`
 
 ### Linux quick build
 
@@ -133,7 +132,7 @@ Rollback and recovery:
 Manual validation script (repo utility):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\DoomConnector6\HCDE\tools\verify-hcde-updater.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\to\HCDE\tools\verify-hcde-updater.ps1
 ```
 
 This script validates:
@@ -152,13 +151,9 @@ work so third-party tools can interoperate without reverse engineering.
 
 Source of truth:
 
-- `docs/HCDE_DOOM_CONNECTOR_LAUNCH.md`
 - `docs/HCDE_MASTER_PROTOCOL.md`
 - `protocol/hcde_master_protocol.json`
 - `protocol/hcde_master_protocol.h`
-- Doom Connector client implementation files (separate repository/worktree):
-  - `DoomConnector.Client.Core/Networking/HCDEMasterService.cs`
-  - `DoomConnector.Client.Core/Networking/HCDELauncherQuery.cs`
 
 ### 1) Roles and Process Model
 
@@ -544,7 +539,6 @@ Detailed stage notes live in:
 
 - `docs/HCDE_NETCODE_OVERHAUL.md`
 - `tests/netcode_step12/README.md`
-- `docs/HCDE_DOOM_CONNECTOR_LAUNCH.md`
 - `docs/HCDE_NETCODE_STAGE*.md`
 
 ## Licensing (GPL-3.0-or-later)
