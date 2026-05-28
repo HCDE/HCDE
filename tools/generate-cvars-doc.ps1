@@ -1,6 +1,6 @@
 param(
-    [string]$BaselineCsv = "C:\Users\user\DoomConnector6\tmp_cvar_baseline.csv",
-    [string]$SetpassReport = "C:\Users\user\DoomConnector6\tmp_cvar_setpass_report.json",
+    [string]$BaselineCsv = "",
+    [string]$SetpassReport = "",
     [string]$OutputPath = "",
     [string]$RepoRoot = ""
 )
@@ -9,10 +9,24 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $PSScriptRoot "..\docs\Cvars.md"
+    $OutputPath = Join-Path $PSScriptRoot "..\wiki\CVAR-Reference.md"
 }
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).ProviderPath
+}
+
+if ([string]::IsNullOrWhiteSpace($BaselineCsv)) {
+    $BaselineCsv = Join-Path $RepoRoot "tmp_cvar_baseline.csv"
+}
+if ([string]::IsNullOrWhiteSpace($SetpassReport)) {
+    $SetpassReport = Join-Path $RepoRoot "tmp_cvar_setpass_report.json"
+}
+
+if (-not (Test-Path -LiteralPath $BaselineCsv)) {
+    throw "Runtime baseline CSV not found: $BaselineCsv"
+}
+if (-not (Test-Path -LiteralPath $SetpassReport)) {
+    throw "Set/get report JSON not found: $SetpassReport"
 }
 
 $BaselineCsv = (Resolve-Path -LiteralPath $BaselineCsv).ProviderPath

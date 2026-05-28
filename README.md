@@ -36,7 +36,7 @@ HCDE keeps the master protocol boundary explicit:
 - `protocol/` - neutral master-protocol schema/constants
 - `tools/hcdemaster/` - standalone master server source
 - `docs/HCDE_MASTER_PROTOCOL.md` - master protocol contract (human-readable)
-- [docs/Cvars.md](docs/Cvars.md) - full list of all cvars and defaults
+- [CVAR Reference (wiki)](https://github.com/bokoxthexchocobo/HCDE/wiki/CVAR-Reference) - full list of all cvars and defaults
 - `wadsrc*` - packaged game resources and compat content
 - `docs/licenses/` - license reference docs
 

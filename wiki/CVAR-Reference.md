@@ -14,8 +14,8 @@ This reference combines source-defined CVAR inventory with the imported runtime 
 - Successful get responses: **176**
 - Missing get responses: **0**
 - Unexpected parser/runtime lines during sweep: **0**
-- Runtime baseline CSV: `C:\Users\user\DoomConnector6\tmp_cvar_baseline.csv`
-- Set/get report: `C:\Users\user\DoomConnector6\tmp_cvar_setpass_report.json`
+- Runtime baseline CSV: `C:\path\to\HCDE\tmp_cvar_baseline.csv`
+- Set/get report: `C:\path\to\HCDE\tmp_cvar_setpass_report.json`
 
 > Note: the source catalog is regenerated from the current checkout. The runtime snapshot is imported from the audit files above, so entries marked absent may still be valid source CVARs that were not visible in that older runtime capture.
 
