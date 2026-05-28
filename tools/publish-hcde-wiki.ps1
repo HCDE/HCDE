@@ -1,5 +1,6 @@
 # Publishes wiki/*.md to https://github.com/bokoxthexchocobo/HCDE/wiki
-# Requires git credentials with push access to the HCDE.wiki repository.
+# Prefer the "Publish wiki" GitHub Actions workflow after merging to main.
+# This script is for manual/local runs when you have push access to HCDE.wiki.git.
 param(
     [string]$RepoRoot = "",
     [string]$WikiRemote = "https://github.com/bokoxthexchocobo/HCDE.wiki.git"
