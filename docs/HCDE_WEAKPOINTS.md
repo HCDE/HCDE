@@ -4,6 +4,8 @@
 
 This document collects the main code and playability weak points identified during the review of the HCDE repository. It is intended as a focused cleanup checklist.
 
+For a broader file-by-file audit (bugs, races, dead code, stale paths, and comment fixes), see **`docs/HCDE_CODE_AUDIT.md`**.
+
 ## 1. Network / Multiplayer Weak Points
 
 1. `docs/NETCODE_REVIEW.md`

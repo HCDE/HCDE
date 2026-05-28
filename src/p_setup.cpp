@@ -426,8 +426,7 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 
 	Level->ShaderStartTime = I_msTimeFS(); // indicate to the shader system that the level just started
 
-	// This is motivated as follows:
-
+	// Reset map-type classification until mapinfo/EDF defines it for this map.
 	Level->maptype = MAPTYPE_UNKNOWN;
 
 	if (!savegamerestore)

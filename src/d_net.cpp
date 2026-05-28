@@ -7799,9 +7799,10 @@ static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int a
 }
 
 // TODO: This really needs to be replaced with some kind of packet system that can simply read through packets and opt
-// not to execute them. Right now this is making setting up net commands a nightmare.
-// Reads through the network stream but doesn't actually execute any command. Used for getting the size of a stream.
-// The skip amount is the number of bytes the command possesses. This should mirror the bytes in Net_DoCommand().
+// not to execute them. Must stay byte-for-byte aligned with Net_DoCommand(); any new
+// DEM_ opcode needs matching skip logic here or packet sizing/desync will break.
+// Reads through the network stream without executing commands (size/skip only).
+// The skip amount is the number of bytes the command possesses.
 static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 {
 	size_t skip = 0;
