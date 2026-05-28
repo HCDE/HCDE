@@ -68,7 +68,7 @@ HCDE is **GPL-3.0-or-later** ([`LICENSE`](LICENSE)). Branding and some asset tre
 
 ## Contributors
 
-[`contributors.md`](contributors.md) — HCDE contributors · [`CONTRIBUTORS`](CONTRIBUTORS) — upstream history
+[`CONTRIBUTORS`](CONTRIBUTORS) — HCDE contributors/Code sourced from
 
 ## Tech stack
 
