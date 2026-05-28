@@ -8,7 +8,20 @@
 
 HCDE is a Doom-engine project focused on multiplayer, mod compatibility, and dedicated-server workflows.
 
-**Documentation:** [HCDE Wiki](https://github.com/bokoxthexchocobo/HCDE/wiki) — build, dedicated servers, protocols, CVARs, and Windows updater guides.
+## Documentation (Wiki)
+
+How-to guides and reference docs live on the [HCDE Wiki](https://github.com/bokoxthexchocobo/HCDE/wiki).
+
+| | Page |
+| --- | --- |
+| **How-to** | |
+| Getting started | [Getting Started](https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started) |
+| Build from source | [Building](https://github.com/bokoxthexchocobo/HCDE/wiki/Building) |
+| Windows launcher updates | [Windows Updater](https://github.com/bokoxthexchocobo/HCDE/wiki/Windows-Updater) |
+| **Reference** | |
+| Dedicated launch & master list | [Launcher Protocol](https://github.com/bokoxthexchocobo/HCDE/wiki/Launcher-Protocol) |
+| Engine netcode & diagnostics | [Network Protocol](https://github.com/bokoxthexchocobo/HCDE/wiki/Network-Protocol) |
+| Console variables | [CVAR Reference](https://github.com/bokoxthexchocobo/HCDE/wiki/CVAR-Reference) |
 
 ## What ships in this repo
 
@@ -36,7 +49,7 @@ cmake -S /path/to/HCDE -B /path/to/HCDE/build -DCMAKE_BUILD_TYPE=Release
 cmake --build /path/to/HCDE/build -j
 ```
 
-See the wiki [Building](https://github.com/bokoxthexchocobo/HCDE/wiki/Building) page for requirements and output paths. See [Getting Started](https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started) to host or join a dedicated server.
+See [Building](https://github.com/bokoxthexchocobo/HCDE/wiki/Building) for requirements and output paths, or [Getting Started](https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started) to host or join a dedicated server.
 
 ## Repository layout
 
