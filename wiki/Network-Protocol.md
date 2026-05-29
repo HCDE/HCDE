@@ -81,6 +81,5 @@ Current payload families documented in code/docs include:
 
 Detailed stage notes live in:
 
-- `docs/HCDE_NETCODE_OVERHAUL.md`
 - `tests/netcode_step12/README.md`
 - `docs/HCDE_NETCODE_STAGE*.md`

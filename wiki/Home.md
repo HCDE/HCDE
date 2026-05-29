@@ -12,4 +12,5 @@ How-to guides and reference documentation for HCDE.
 
 - [Launcher Protocol](Launcher-Protocol) — dedicated launch, master list (legacy + NMS1), per-server query
 - [Network Protocol](Network-Protocol) — engine session lanes, net diagnostics, debug traces
+- [Subsystems](Subsystems) — rewind, RCON, Invasion, Predator, AI Director, ID24/NanoBSP imports, killfeed/gyro/taunts
 - [CVAR Reference](CVAR-Reference) — console variables and defaults

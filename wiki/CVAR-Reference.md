@@ -8573,6 +8573,21 @@ This section is generated from CVAR, CUSTOM_CVAR, CVARD, CUSTOM_CVARD, and named
 - Present in runtime snapshot: No
 - Runtime snapshot value: `n/a`
 
+### `r_fullbright_overrides`
+
+- Description: Enables HCDE's International Doom-style brightmap-aware
+  fullbright sprite override path. When enabled, GLDEFS `fullbright` texture
+  metadata can force sprite fullbright in hardware and software renderers;
+  GLDEFS `disablefullbright` still wins for opt-out rotations/brightmaps.
+- Type: `Bool`
+- Source default: `false`
+- Source flags: `CVAR_ARCHIVE | CVAR_GLOBALCONFIG`
+- Macro: `CUSTOM_CVAR`
+- Ref symbol: `same as cvar name`
+- Source: `src/d_main.cpp`
+- Present in runtime snapshot: No
+- Runtime snapshot value: `n/a`
+
 ### `r_fuzzscale`
 
 - Description: Likely controls r fuzzscale.
