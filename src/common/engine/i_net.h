@@ -236,6 +236,7 @@ bool I_HCDERconEnabled();
 bool I_HCDERconRemoteAllowed();
 void I_GetHCDERconStats(uint64_t& packets, uint64_t& queued, uint64_t& rejected, uint64_t& authFailed);
 uint64_t I_GetHCDERconReplayedCount();
+uint64_t I_GetHCDERconRateLimitedCount();
 void HandleIncomingConnection();
 void HandleIncomingConnectionMaintenance();
 void CloseNetwork();

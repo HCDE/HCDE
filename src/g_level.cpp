@@ -514,9 +514,12 @@ void G_NewInit ()
 //
 //==========================================================================
 
+extern void HCDE_ResetTauntCooldowns();
+
 void G_DoNewGame (void)
 {
 	G_NewInit ();
+	HCDE_ResetTauntCooldowns();
 	// G_NewInit just reset consoleplayer to 0 and cleared playeringame[].
 	// On a dedicated server (-server) slot 0 is the reserved transport-only
 	// authority slot, so we must NOT promote it to a playable slot here, or

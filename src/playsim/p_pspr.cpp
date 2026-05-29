@@ -693,6 +693,21 @@ static DVector2 HCDEApplyIdleBreathingBob(const player_t* player, DVector2 bob)
 	return bob;
 }
 
+// 3D weapon bob translation gets the same breathing offset applied to its
+// X (horizontal sway) and Y (vertical rise/fall) components. Z is the depth
+// axis in the 3D bob convention and is intentionally left alone to avoid
+// pushing the weapon into the view plane.
+static DVector3 HCDEApplyIdleBreathingBob3D(const player_t* player, DVector3 bob)
+{
+	if (!HCDEPlayerIsIdleForBreathing(player))
+		return bob;
+	const double phase = double(player->BobTimer) * double(cl_hcde_idle_breathing_speed);
+	const double amount = double(cl_hcde_idle_breathing_amount);
+	bob.X += sin(phase * 0.5) * amount * 0.20;
+	bob.Y += sin(phase) * amount;
+	return bob;
+}
+
 void P_BobWeapon(player_t* player)
 {
 	auto& bob = PlayerBob[player - players];
@@ -743,6 +758,8 @@ void P_BobWeapon3D(player_t* player)
 			}
 			inv = nextinv;
 		}
+
+		t = HCDEApplyIdleBreathingBob3D(player, t);
 
 		bob.SetBob3D(player->BobTimer, FVector3(t), FVector3(r));
 		return;

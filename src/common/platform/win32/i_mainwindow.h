@@ -121,6 +121,8 @@ private:
 	HWND ServerSettingsTitle = 0;
 	HWND ServerSettingLabels[ServerMaxSettingControls] = {};
 	HWND ServerSettingInputs[ServerMaxSettingControls] = {};
+	FString ServerSettingLastApplied[ServerMaxSettingControls] = {};
+	bool ServerSettingLastAppliedValid[ServerMaxSettingControls] = {};
 	int ServerSettingCount = 0;
 	HWND ServerAdvancedControlsLabel = 0;
 	HFONT ServerFont = 0;

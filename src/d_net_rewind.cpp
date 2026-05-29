@@ -1012,6 +1012,8 @@ CCMD(net_rewind_selfcheck_sweep)
 	int passed = 0;
 	int failed = 0;
 	int checked = 0;
+	int skippedTooYoung = 0;
+	int skippedMissing = 0;
 	uint64_t totalCostMS = 0u;
 	uint64_t maxObservedCostMS = 0u;
 	Printf(PRINT_HIGH,
@@ -1025,10 +1027,17 @@ CCMD(net_rewind_selfcheck_sweep)
 		const int histGametic = frame != nullptr ? frame->Gametic : -1;
 		const uint32_t histCRC = frame != nullptr ? frame->CombinedCRC32 : 0u;
 		const int ageTics = frame != nullptr ? gametic - frame->Gametic : 0;
-		if (frame == nullptr || ageTics < minAgeTics)
+		if (frame == nullptr)
 		{
+			++skippedMissing;
+			Printf(PRINT_HIGH, "  [skip-missing] index=%d\n", index);
+			continue;
+		}
+		if (ageTics < minAgeTics)
+		{
+			++skippedTooYoung;
 			Printf(PRINT_HIGH,
-				"  [skip] index=%d gametic=%d age=%d tics (min-age=%d)\n",
+				"  [skip-young] index=%d gametic=%d age=%d tics (min-age=%d)\n",
 				index, histGametic, ageTics, minAgeTics);
 			continue;
 		}
@@ -1051,12 +1060,16 @@ CCMD(net_rewind_selfcheck_sweep)
 
 	const bool costOk = maxObservedCostMS <= uint64_t(maxCostMS);
 	const bool memoryOk = totalBytes <= maxMemoryBytes;
+	const bool checkedAny = checked > 0;
+	const bool verdictPass = checkedAny && failed == 0 && costOk && memoryOk;
+	const bool partialCoverage = checked < requestedCount;
+	const char* verdict = !checkedAny ? "no-coverage" : (verdictPass ? (partialCoverage ? "pass-partial" : "pass") : "fail");
 	Printf(PRINT_HIGH,
-		"net_rewind_selfcheck_sweep: result=%s checked=%d requested=%d pass=%d fail=%d avg-cost=%.2fms max-cost=%llums cost-threshold=%s memory-threshold=%s (%.2f/%.2f MB)\n",
-		(checked == requestedCount && failed == 0 && costOk && memoryOk) ? "pass" : "fail",
+		"net_rewind_selfcheck_sweep: result=%s checked=%d requested=%d pass=%d fail=%d skipped-young=%d skipped-missing=%d avg-cost=%.2fms max-cost=%llums cost-threshold=%s memory-threshold=%s (%.2f/%.2f MB)\n",
+		verdict,
 		checked, requestedCount,
-		passed, failed,
-		checked > 0 ? double(totalCostMS) / double(checked) : 0.0,
+		passed, failed, skippedTooYoung, skippedMissing,
+		checkedAny ? double(totalCostMS) / double(checked) : 0.0,
 		static_cast<unsigned long long>(maxObservedCostMS),
 		costOk ? "ok" : "fail",
 		memoryOk ? "ok" : "fail",

@@ -340,17 +340,16 @@ static uint64_t HCDEGyroSamplesDropped = 0u;
 
 CUSTOM_CVAR (Bool, cl_gyro_enable, false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
 {
-	if (!self)
-	{
-		// Drop any pending samples when gyro input is disabled so a queued
-		// burst can't fire on the next enable. The counters are kept so the
-		// diag surface can show how much was discarded.
-		if (HCDEGyroPendingSamples > 0u)
-			HCDEGyroSamplesDropped += HCDEGyroPendingSamples;
-		HCDEGyroQueuedYaw = 0.;
-		HCDEGyroQueuedPitch = 0.;
-		HCDEGyroPendingSamples = 0u;
-	}
+	// Drop any pending samples on either edge. The disable edge prevents a
+	// stale burst from firing on the next enable, and the enable edge guards
+	// against accumulated values from a CCMD that ran while gyro was off
+	// (the CCMD itself rejects those now, but legacy demos/configs may have
+	// queued samples before this guard existed).
+	if (HCDEGyroPendingSamples > 0u)
+		HCDEGyroSamplesDropped += HCDEGyroPendingSamples;
+	HCDEGyroQueuedYaw = 0.;
+	HCDEGyroQueuedPitch = 0.;
+	HCDEGyroPendingSamples = 0u;
 }
 CVAR (Bool,  cl_gyro_invert_yaw,          false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
 CVAR (Bool,  cl_gyro_invert_pitch,        false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE);
@@ -817,6 +816,16 @@ CCMD(hcde_gyro_sample)
 			"usage: hcde_gyro_sample <yaw> <pitch>\n"
 			"  Queues a local gyro look sample consumed by the next G_BuildTiccmd.\n"
 			"  Values are analog-look units; platform gyro backends should scale sensor motion before queuing.\n");
+		return;
+	}
+	// Drop samples that arrive while gyro input is disabled. Without this gate
+	// the queue accumulates while disabled and a stale burst can fire when the
+	// player later enables gyro.
+	if (!cl_gyro_enable)
+	{
+		++HCDEGyroSamplesDropped;
+		Printf(PRINT_HIGH, "hcde_gyro_sample: cl_gyro_enable is 0; sample dropped (total dropped=%llu).\n",
+			static_cast<unsigned long long>(HCDEGyroSamplesDropped));
 		return;
 	}
 	HCDEGyroQueuedYaw += strtod(argv[1], nullptr);

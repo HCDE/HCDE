@@ -5043,7 +5043,20 @@ AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,
 		puff->Destroy();
 		puff = NULL;
 	}
-	return lagComp.Engaged() ? nullptr : puff;
+	if (lagComp.Engaged())
+	{
+		// The puff was spawned at rewound geometry. The lagComp scope is
+		// about to restore live state on the function return, so the puff
+		// would otherwise persist in the live world at a position that no
+		// longer matches anything visible. Destroy it before the restore.
+		if (puff != nullptr)
+		{
+			puff->Destroy();
+			puff = nullptr;
+		}
+		return nullptr;
+	}
+	return puff;
 }
 
 AActor *P_LineAttack(AActor *t1, DAngle angle, double distance,

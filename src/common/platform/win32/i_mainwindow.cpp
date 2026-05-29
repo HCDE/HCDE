@@ -2018,6 +2018,16 @@ void MainWindow::ApplyServerConsoleSetting(int applyId)
 
 	const ServerGuiSettingDefinition& setting = ServerGuiSettings[index];
 	FString value = ServerGuiValueFromControl(ServerSettingInputs[index], setting);
+
+	// EN_KILLFOCUS fires whenever the edit loses focus, including when the
+	// user just tabbed away without typing. Skip the dispatch if the value
+	// hasn't changed since the last apply so we don't spam the server log
+	// with no-op CVar updates.
+	if (ServerSettingLastAppliedValid[index] && ServerSettingLastApplied[index].Compare(value) == 0)
+	{
+		return;
+	}
+
 	FString command;
 	FString warning;
 	if (!ServerGuiBuildSettingCommand(setting, value, command, warning))
@@ -2030,6 +2040,8 @@ void MainWindow::ApplyServerConsoleSetting(int applyId)
 	}
 
 	SendServerConsoleCommand(command.GetChars());
+	ServerSettingLastApplied[index] = value;
+	ServerSettingLastAppliedValid[index] = true;
 }
 
 void MainWindow::ApplyServerConsoleAdvancedSetting()
@@ -2063,6 +2075,10 @@ void MainWindow::SyncServerConsoleSettingsFromCVars(bool logResult)
 	for (int i = 0; i < ServerSettingCount && i < ServerGuiSettingCount; ++i)
 	{
 		ServerGuiSetControlFromCVar(ServerSettingInputs[i], ServerGuiSettings[i]);
+		// Seed the cache with the freshly-loaded CVar value so a focus loss
+		// immediately after a refresh doesn't re-apply the same value.
+		ServerSettingLastApplied[i] = ServerGuiValueFromControl(ServerSettingInputs[i], ServerGuiSettings[i]);
+		ServerSettingLastAppliedValid[i] = true;
 	}
 
 	UpdateServerConsoleAdvancedSettingDefault();

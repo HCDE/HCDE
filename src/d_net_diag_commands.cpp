@@ -2355,6 +2355,16 @@ static void HCDETauntEnsureInitialized()
 		HCDETauntLastTic[i] = HCDETauntNeverTic;
 	HCDETauntLastTicInitialized = true;
 }
+
+// Called from G_DoNewGame so the surface shows clean taunt state and the
+// inline gametic-rewind guard doesn't have to handle the legit newgame case
+// case-by-case.
+void HCDE_ResetTauntCooldowns()
+{
+	for (size_t i = 0; i < MAXPLAYERS; ++i)
+		HCDETauntLastTic[i] = HCDETauntNeverTic;
+	HCDETauntLastTicInitialized = true;
+}
 static uint64_t HCDETauntRequests = 0u;
 static uint64_t HCDETauntsPlayed = 0u;
 static uint64_t HCDETauntsBlocked = 0u;
@@ -2388,13 +2398,24 @@ static bool HCDEPlayTauntForPlayer(int playernum, const char* variant, bool prin
 	}
 	if (HCDETauntLastTic[playernum] != HCDETauntNeverTic)
 	{
-		const int elapsed = gametic - HCDETauntLastTic[playernum];
-		if (elapsed >= 0 && elapsed < int(cl_hcde_taunt_cooldown_tics))
+		// Catch savegame loads / demo playback / new game where gametic moved
+		// backwards relative to a previously stored last-taunt tic. Without
+		// this, the cooldown comparison would treat the future-tic state as
+		// "very recent" and block taunts for the rest of the cooldown window.
+		if (HCDETauntLastTic[playernum] > gametic)
 		{
-			++HCDETauntsBlocked;
-			if (printResult)
-				Printf(PRINT_HIGH, "hcde_taunt: cooldown %d/%d tics.\n", elapsed, int(cl_hcde_taunt_cooldown_tics));
-			return false;
+			HCDETauntLastTic[playernum] = HCDETauntNeverTic;
+		}
+		else
+		{
+			const int elapsed = gametic - HCDETauntLastTic[playernum];
+			if (elapsed < int(cl_hcde_taunt_cooldown_tics))
+			{
+				++HCDETauntsBlocked;
+				if (printResult)
+					Printf(PRINT_HIGH, "hcde_taunt: cooldown %d/%d tics.\n", elapsed, int(cl_hcde_taunt_cooldown_tics));
+				return false;
+			}
 		}
 	}
 
@@ -2527,15 +2548,17 @@ CCMD(hcde_maintenance_surfaces)
 	uint64_t rconAuthFailed = 0u;
 	I_GetHCDERconStats(rconPackets, rconQueued, rconRejected, rconAuthFailed);
 	const uint64_t rconReplayed = I_GetHCDERconReplayedCount();
+	const uint64_t rconRateLimited = I_GetHCDERconRateLimitedCount();
 	Printf(PRINT_HIGH,
-		"rcon: enabled=%d remote=%d packets=%llu queued=%llu rejected=%llu auth-failed=%llu replayed=%llu utility=hcdercon allowlist=sv_rcon_allowlist\n",
+		"rcon: enabled=%d remote=%d packets=%llu queued=%llu rejected=%llu auth-failed=%llu replayed=%llu rate-limited=%llu utility=hcdercon allowlist=sv_rcon_allowlist\n",
 		I_HCDERconEnabled() ? 1 : 0,
 		I_HCDERconRemoteAllowed() ? 1 : 0,
 		static_cast<unsigned long long>(rconPackets),
 		static_cast<unsigned long long>(rconQueued),
 		static_cast<unsigned long long>(rconRejected),
 		static_cast<unsigned long long>(rconAuthFailed),
-		static_cast<unsigned long long>(rconReplayed));
+		static_cast<unsigned long long>(rconReplayed),
+		static_cast<unsigned long long>(rconRateLimited));
 	Printf(PRINT_HIGH,
 		"boundary: updater/UI/RCON tooling must not mutate gameplay state through client-only or gameplay packet lanes.\n");
 	Printf(PRINT_HIGH, "========================================\n");

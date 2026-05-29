@@ -407,6 +407,7 @@ static uint64_t HCDERconQueued = 0u;
 static uint64_t HCDERconRejected = 0u;
 static uint64_t HCDERconAuthFailed = 0u;
 static uint64_t HCDERconReplayed = 0u;
+static uint64_t HCDERconRateLimited = 0u;
 
 // Small ring of recently-accepted (sender,nonce) pairs so a captured packet
 // cannot be replayed. Fixed-size FIFO; the ring is intentionally small because
@@ -423,6 +424,24 @@ static constexpr size_t HCDERconReplayRingSize = 64u;
 static FHCDERconReplayEntry HCDERconReplayRing[HCDERconReplayRingSize] = {};
 static size_t HCDERconReplayRingHead = 0u;
 static size_t HCDERconReplayRingCount = 0u;
+
+// Per-source-address auth-failure tracker. Closes the brute-force window:
+// FNV-1a/32 only has ~4B keyspace, so without this an attacker on the LAN
+// could spray packets at sustained rates. We block further packets from a
+// (sin_addr) once it has accumulated too many failures within the window.
+// Loopback is exempt because legitimate local tooling may rapid-fire while
+// being interactively debugged.
+struct FHCDERconRateEntry
+{
+	uint32_t Address = 0u;
+	uint64_t WindowStartMS = 0u;
+	uint32_t FailuresInWindow = 0u;
+};
+static constexpr size_t HCDERconRateRingSize = 32u;
+static constexpr uint64_t HCDERconRateWindowMS = 10000u;
+static constexpr uint32_t HCDERconRateMaxFailures = 8u;
+static FHCDERconRateEntry HCDERconRateRing[HCDERconRateRingSize] = {};
+static size_t HCDERconRateRingHead = 0u;
 
 namespace
 {
@@ -1054,6 +1073,58 @@ static bool IsLoopbackAddress(const sockaddr_in& from)
 	return (hostAddress >> 24) == 127u;
 }
 
+static FHCDERconRateEntry* HCDERconFindRateEntry(uint32_t addr)
+{
+	for (size_t i = 0u; i < HCDERconRateRingSize; ++i)
+	{
+		if (HCDERconRateRing[i].Address == addr)
+			return &HCDERconRateRing[i];
+	}
+	return nullptr;
+}
+
+static bool HCDERconShouldRateLimit(const sockaddr_in& from)
+{
+	if (IsLoopbackAddress(from))
+		return false;
+	const uint32_t addr = from.sin_addr.s_addr;
+	const uint64_t nowMS = I_msTime();
+	FHCDERconRateEntry* entry = HCDERconFindRateEntry(addr);
+	if (entry == nullptr)
+		return false;
+	if (nowMS - entry->WindowStartMS >= HCDERconRateWindowMS)
+	{
+		// Window expired; clear so the source can try again.
+		entry->FailuresInWindow = 0u;
+		entry->WindowStartMS = nowMS;
+		return false;
+	}
+	return entry->FailuresInWindow >= HCDERconRateMaxFailures;
+}
+
+static void HCDERconRecordAuthFailure(const sockaddr_in& from)
+{
+	if (IsLoopbackAddress(from))
+		return;
+	const uint32_t addr = from.sin_addr.s_addr;
+	const uint64_t nowMS = I_msTime();
+	FHCDERconRateEntry* entry = HCDERconFindRateEntry(addr);
+	if (entry == nullptr)
+	{
+		entry = &HCDERconRateRing[HCDERconRateRingHead];
+		HCDERconRateRingHead = (HCDERconRateRingHead + 1u) % HCDERconRateRingSize;
+		entry->Address = addr;
+		entry->WindowStartMS = nowMS;
+		entry->FailuresInWindow = 0u;
+	}
+	else if (nowMS - entry->WindowStartMS >= HCDERconRateWindowMS)
+	{
+		entry->WindowStartMS = nowMS;
+		entry->FailuresInWindow = 0u;
+	}
+	++entry->FailuresInWindow;
+}
+
 static bool HCDERconNonceWasSeen(const sockaddr_in& from, uint32_t nonce)
 {
 	const uint32_t addr = from.sin_addr.s_addr;
@@ -1185,6 +1256,15 @@ static bool TryHandleRconPacket(const sockaddr_in& from, const uint8_t* request,
 	const uint32_t nonce = ReadBE32(request + 5u);
 	const uint32_t auth = ReadBE32(request + 9u);
 
+	if (HCDERconShouldRateLimit(from))
+	{
+		// Silently drop. Replying would still cost bandwidth and confirm the
+		// service is alive to whoever is trying to brute-force the password.
+		++HCDERconRateLimited;
+		++HCDERconRejected;
+		return true;
+	}
+
 	if (version != hcde::rcon_protocol::Version)
 	{
 		++HCDERconRejected;
@@ -1216,6 +1296,7 @@ static bool TryHandleRconPacket(const sockaddr_in& from, const uint8_t* request,
 	if (auth != expected)
 	{
 		++HCDERconAuthFailed;
+		HCDERconRecordAuthFailure(from);
 		SendRconResponse(from, nonce, hcde::rcon_protocol::StatusAuthFailed, "RCON authentication failed");
 		return true;
 	}
@@ -3540,6 +3621,11 @@ void I_GetHCDERconStats(uint64_t& packets, uint64_t& queued, uint64_t& rejected,
 uint64_t I_GetHCDERconReplayedCount()
 {
 	return HCDERconReplayed;
+}
+
+uint64_t I_GetHCDERconRateLimitedCount()
+{
+	return HCDERconRateLimited;
 }
 
 static FString ReadVerificationError(TArrayView<uint8_t> stream)
