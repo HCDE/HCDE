@@ -1800,6 +1800,8 @@ EXTERN_CVAR(Bool, cl_gyro_invert_yaw)
 EXTERN_CVAR(Bool, cl_gyro_invert_pitch)
 EXTERN_CVAR(Float, cl_gyro_sensitivity_yaw)
 EXTERN_CVAR(Float, cl_gyro_sensitivity_pitch)
+EXTERN_CVAR(Bool, cl_doautoaim)
+EXTERN_CVAR(Bool, r_deathcamera)
 EXTERN_CVAR(Bool, sv_hcde_nightvision_allowed)
 EXTERN_CVAR(Bool, cl_hcde_nightvision)
 EXTERN_CVAR(Int, cl_hcde_nightvision_lowlight)
@@ -1822,7 +1824,7 @@ CCMD(hcde_presentation_surfaces)
 {
 	Printf(PRINT_HIGH, "\n=== HCDE presentation surfaces ===\n");
 	Printf(PRINT_HIGH,
-		"timing: cl_capfps=%d vid_vsync=%d vid_maxfps=%d r_ticstability=%d ticrate=%d\n",
+		"timing: cl_capfps=%d vid_vsync=%d vid_maxfps=%d r_ticstability=%d ticrate=%d preset-command=hcde_crispy_framerate_preset\n",
 		cl_capfps ? 1 : 0, vid_vsync ? 1 : 0, int(vid_maxfps), r_ticstability ? 1 : 0, TICRATE);
 	Printf(PRINT_HIGH,
 		"lighting: r_dynlights=%d gl_lights=%d shadowmap=%d quality=%d filter=%d maxlights=%d prioritize=%d\n",
@@ -1840,6 +1842,56 @@ CCMD(hcde_presentation_surfaces)
 		"boundary: these are render/presentation controls only; fixed-tic playsim remains %d Hz.\n",
 		TICRATE);
 	Printf(PRINT_HIGH, "==================================\n");
+}
+
+CCMD(hcde_crispy_framerate_preset)
+{
+	if (argv.argc() < 2)
+	{
+		Printf(PRINT_HIGH,
+			"usage: hcde_crispy_framerate_preset <35|60|70|uncapped>\n"
+			"  35       original fixed-tic presentation (cl_capfps=1 vid_maxfps=%d)\n"
+			"  60       LCD-friendly fixed frame cap with interpolation\n"
+			"  70       CRT-friendly double-tic frame cap with interpolation\n"
+			"  uncapped interpolated renderer pacing with vid_maxfps=0\n",
+			TICRATE);
+		Printf(PRINT_HIGH,
+			"current: cl_capfps=%d vid_vsync=%d vid_maxfps=%d r_ticstability=%d ticrate=%d\n",
+			cl_capfps ? 1 : 0, vid_vsync ? 1 : 0, int(vid_maxfps), r_ticstability ? 1 : 0, TICRATE);
+		return;
+	}
+
+	const char* preset = argv[1];
+	if (!stricmp(preset, "35"))
+	{
+		cl_capfps = true;
+		vid_maxfps = TICRATE;
+	}
+	else if (!stricmp(preset, "60"))
+	{
+		cl_capfps = false;
+		vid_maxfps = 60;
+	}
+	else if (!stricmp(preset, "70"))
+	{
+		cl_capfps = false;
+		vid_maxfps = 70;
+	}
+	else if (!stricmp(preset, "uncapped") || !stricmp(preset, "0"))
+	{
+		cl_capfps = false;
+		vid_maxfps = 0;
+	}
+	else
+	{
+		Printf(PRINT_HIGH, "hcde_crispy_framerate_preset: unknown preset '%s'.\n", preset);
+		return;
+	}
+
+	r_ticstability = true;
+	Printf(PRINT_HIGH,
+		"hcde_crispy_framerate_preset: preset=%s cl_capfps=%d vid_maxfps=%d r_ticstability=%d\n",
+		preset, cl_capfps ? 1 : 0, int(vid_maxfps), r_ticstability ? 1 : 0);
 }
 
 // Step 5 smoke check: input-feel imports should terminate in the normal ticcmd
@@ -1881,6 +1933,9 @@ CCMD(hcde_input_feel_surfaces)
 		"prediction: netgame=%d multiplayer=%d cl_noprediction=%d dedicated-predict=%d max=%d\n",
 		netgame ? 1 : 0, multiplayer ? 1 : 0, cl_noprediction ? 1 : 0,
 		cl_hcde_predict_dedicated ? 1 : 0, int(cl_predict_max));
+	Printf(PRINT_HIGH,
+		"player-feel: crouch-command=present autoaim=%d death-camera=%d quake-api=A_Quake/A_QuakeEx/Radius_Quake\n",
+		cl_doautoaim ? 1 : 0, r_deathcamera ? 1 : 0);
 	Printf(PRINT_HIGH,
 		"physics boundary: sv_aircontrol=%.6f; Doom Retro-style physics must be server-authoritative/gated in netgames.\n",
 		double(sv_aircontrol));

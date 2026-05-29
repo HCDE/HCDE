@@ -21,6 +21,11 @@ state changes and must be treated as server-authoritative work.
   `cl_gyro_invert_pitch` control a local gyro-look adapter. Samples queued by
   `hcde_gyro_sample <yaw> <pitch>` are consumed by `G_BuildTiccmd()` and become
   normal yaw/pitch command deltas.
+- **Nugget-style feel inventory**: crouch already enters the normal button path,
+  `cl_doautoaim` covers existing autoaim behavior, `r_deathcamera` provides the
+  death-camera presentation surface, and the existing quake specials
+  (`A_Quake`, `A_QuakeEx`, `Radius_Quake`) are the engine-facing explosion
+  shake APIs.
 - **Physics/feel**: air control, friction, bobbing, gravity, and movement
   compatibility behavior live in playsim code. These are not local presentation
   features once they can affect actor state.
@@ -36,6 +41,9 @@ hcde_input_feel_surfaces
 The command reports the active input knobs, prediction settings, and the current
 physics boundary. It also reports gyro queued/applied sample counters so the
 input adapter can be smoke-tested without adding a gameplay side channel.
+It additionally inventories the existing player-feel presentation hooks for
+`#9`; remaining behavior such as explicit vertical lock-on or damage flinch
+still needs a separate design pass before it should be closed.
 
 For Step 10, the minimal runtime smoke is:
 

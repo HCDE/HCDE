@@ -19,7 +19,9 @@ the canonical HCDE runtime.
   the PK3 resources are renderer-facing surfaces.
 - **Variable framerate / interpolation**: `cl_capfps`, `vid_vsync`,
   `vid_maxfps`, and `r_ticstability` affect frame pacing and interpolation.
-  They must not change the fixed-tic simulation rate.
+  They must not change the fixed-tic simulation rate. `#10` also exposes
+  `hcde_crispy_framerate_preset <35|60|70|uncapped>` as a named preset layer
+  over those existing controls.
 
 ## Runtime smoke check
 
@@ -27,6 +29,9 @@ Use the console command:
 
 ```text
 hcde_presentation_surfaces
+hcde_crispy_framerate_preset 60
+hcde_crispy_framerate_preset 70
+hcde_crispy_framerate_preset 35
 ```
 
 The command reports the current render/timing knobs and prints the fixed
