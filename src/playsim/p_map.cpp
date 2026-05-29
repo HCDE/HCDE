@@ -419,11 +419,23 @@ void P_FindFloorCeiling(AActor *actor, int flags)
 	}
 }
 
-// Debug CCMD for checking errors in the MultiBlockLinesIterator (needs to be removed when this code is complete)
+// Debug CCMD for checking errors in the MultiBlockLinesIterator. Verbose-prints
+// the floor/ceiling search for the local player; gated so it cannot be invoked
+// in netgame (mutates physics traces) and so a missing pawn does not crash.
 CCMD(ffcf)
 {
+	if (netgame)
+	{
+		Printf("ffcf is a single-player debug tool\n");
+		return;
+	}
+	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS || players[consoleplayer].mo == nullptr)
+	{
+		Printf("ffcf needs a live local player\n");
+		return;
+	}
 	ffcf_verbose = true;
-	P_FindFloorCeiling(players[0].mo, 0);
+	P_FindFloorCeiling(players[consoleplayer].mo, 0);
 	ffcf_verbose = false;
 }
 //==========================================================================
@@ -6657,6 +6669,19 @@ void P_FindBelowIntersectors(AActor *actor)
 void P_DoCrunch(AActor *thing, FChangePosition *cpos)
 {
 	if (!(thing && thing->CallGrind(true) && cpos)) return;
+
+	if ((thing->Level->i_compatflags2 & COMPATF2_DR_CRUSHER) &&
+		thing->player == nullptr &&
+		(thing->flags & MF_CORPSE) &&
+		!(thing->flags & MF_ICECORPSE))
+	{
+		// Doom Retro compatibility: ordinary dead corpses should not keep a
+		// crusher blocked/reversing forever. Keep ice corpses and all live
+		// actors on the existing path because they have distinct collision and
+		// shatter/gameplay behavior.
+		return;
+	}
+
 	cpos->nofit = true;
 
 	if ((cpos->crushchange > 0) && !(thing->Level->maptime & 3))

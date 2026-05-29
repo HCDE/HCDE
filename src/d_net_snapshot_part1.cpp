@@ -1432,6 +1432,17 @@ static void Net_TickInvasionMirrorVisualActors(unsigned& updated, unsigned& skip
 				actor->Prev = ref.VisualTargetPos;
 				actor->PrevPortalGroup = actor->Sector != nullptr ? actor->Sector->PortalGroup : actor->PrevPortalGroup;
 				actor->ClearInterpolation();
+
+				// HCDE roadmap #15 audit (item 5): level-2 trace for high-ping
+				// mirror convergence spot-check. Large snaps indicate the 8–12
+				// unit/step + 1.10x multiplier is being exercised.
+				if (Net_InvasionDebugEnabled(2))
+				{
+					DebugTrace::Markf("invasion",
+						"mirror-snap id=%u dist=%.1f combat=%d wave=%d",
+						ref.Id, sqrt(distSq), combatVisual ? 1 : 0,
+						InvasionWaveDirector.Wave);
+				}
 			}
 			else if (ref.IsProjectile)
 			{
@@ -3272,6 +3283,13 @@ static void Net_ClearHCDEReplicatedActorIndexes()
 	HCDEReplicatedActorPtrIndex.Clear();
 }
 
+// HCDE roadmap #22: defensive null/guard pass for the index rebuild.
+//
+// Net_IndexHCDEReplicatedActor inserts the (Id, Actor) pair into the side
+// indexes. After compaction the active row count is small (the table just
+// shrank) so detecting duplicate Ids cheaply is worth doing: collisions
+// indicate that two rows hold the same authoritative id, which is a hard
+// invariant violation and should not be silenced.
 static void Net_IndexHCDEReplicatedActor(size_t index)
 {
 	if (index >= HCDEReplicatedActors.Size())
@@ -3279,16 +3297,39 @@ static void Net_IndexHCDEReplicatedActor(size_t index)
 
 	const auto& ref = HCDEReplicatedActors[index];
 	if (ref.Id != 0u)
-		HCDEReplicatedActorIdIndex.Insert(ref.Id, unsigned(index));
+	{
+		if (const unsigned int* existing = HCDEReplicatedActorIdIndex.CheckKey(ref.Id))
+		{
+			DebugTrace::Warningf("net",
+				"HCDE index: duplicate id=%u at slot %zu (already mapped to %u); keeping earlier slot",
+				unsigned(ref.Id), index, *existing);
+		}
+		else
+		{
+			HCDEReplicatedActorIdIndex.Insert(ref.Id, unsigned(index));
+		}
+	}
 	const AActor* actor = ref.Actor.Get();
 	if (actor != nullptr)
-		HCDEReplicatedActorPtrIndex.Insert(actor, unsigned(index));
+	{
+		if (const unsigned int* existing = HCDEReplicatedActorPtrIndex.CheckKey(actor))
+		{
+			DebugTrace::Warningf("net",
+				"HCDE index: duplicate actor ptr at slot %zu (already mapped to %u); keeping earlier slot",
+				index, *existing);
+		}
+		else
+		{
+			HCDEReplicatedActorPtrIndex.Insert(actor, unsigned(index));
+		}
+	}
 }
 
 static void Net_RebuildHCDEReplicatedActorIndexes()
 {
 	Net_ClearHCDEReplicatedActorIndexes();
-	for (size_t i = 0u; i < HCDEReplicatedActors.Size(); ++i)
+	const size_t count = HCDEReplicatedActors.Size();
+	for (size_t i = 0u; i < count; ++i)
 	{
 		Net_IndexHCDEReplicatedActor(i);
 	}
@@ -3554,45 +3595,79 @@ static void Net_RecordHCDEPickupRetireEvent(const FHCDEReplicatedActorRef& ref, 
 		event.Pos.Z);
 }
 
+// HCDE roadmap #22: defensive null/guard pass.
+//
+// Compaction must never invalidate a live replication ID that another peer
+// still references. Three classes of input are tolerated and explicitly
+// distinguished here:
+//
+//   1. Live entries (Actor != nullptr, !Retired)         -> always kept.
+//   2. Live remote baselines (Actor == nullptr, Active,
+//      Source in {SHARED, COOP, DM}, recently touched)   -> kept; Actor
+//      pointer is normalised to null and indexes refresh on rebuild.
+//   3. Stale / retired / Id==0 entries                   -> dropped.
+//
+// Id == 0 is treated as a defect rather than silently dropping. Registration
+// guarantees a non-zero Id; encountering one here means the registry was
+// mutated outside the contracted helpers, and the diagnostic log lets soak
+// runs catch the regression rather than swallowing it. The returned count is
+// the number of slots dropped, which the live profile aggregates.
+//
+// Empty input fast-paths out so the rebuild does not pay for hashing an
+// empty table on every gametic when no actors are tracked.
 static int Net_CompactHCDEReplicatedActors()
 {
+	const size_t initialSize = HCDEReplicatedActors.Size();
+	if (initialSize == 0u)
+	{
+		Net_ClearHCDEReplicatedActorIndexes();
+		return 0;
+	}
+
 	size_t writeIdx = 0u;
 	int removed = 0;
+	int defectIdZero = 0;
+	int retiredExpiredCount = 0;
+	int liveBaselineKept = 0;
 	for (size_t i = 0u; i < HCDEReplicatedActors.Size(); ++i)
 	{
-		AActor* actor = HCDEReplicatedActors[i].Actor;
+		FHCDEReplicatedActorRef& ref = HCDEReplicatedActors[i];
+		AActor* actor = ref.Actor;
 		const bool staleActor = actor == nullptr || (actor->ObjectFlags & OF_EuthanizeMe) != 0;
-		if (staleActor && Net_ShouldRecordHCDEPickupRetireEvent(HCDEReplicatedActors[i], actor))
+		if (staleActor && Net_ShouldRecordHCDEPickupRetireEvent(ref, actor))
 		{
-			Net_RecordHCDEPickupRetireEvent(HCDEReplicatedActors[i], actor);
-			Net_SetHCDEReplicatedActorPtr(HCDEReplicatedActors[i], nullptr);
-			HCDEReplicatedActors[i].Active = false;
-			HCDEReplicatedActors[i].Retired = true;
-			HCDEReplicatedActors[i].RetireTic = gametic;
-			HCDEReplicatedActors[i].LastTouchedTic = gametic;
+			Net_RecordHCDEPickupRetireEvent(ref, actor);
+			Net_SetHCDEReplicatedActorPtr(ref, nullptr);
+			ref.Active = false;
+			ref.Retired = true;
+			ref.RetireTic = gametic;
+			ref.LastTouchedTic = gametic;
 			++HCDELiveProfile.SharedActorRetired;
 		}
 		const bool liveRemoteBaseline = actor == nullptr
-			&& HCDEReplicatedActors[i].Active
-			&& !HCDEReplicatedActors[i].Retired
-			&& (HCDEReplicatedActors[i].Source == HREP_SOURCE_SHARED
-				|| HCDEReplicatedActors[i].Source == HREP_SOURCE_COOP
-				|| HCDEReplicatedActors[i].Source == HREP_SOURCE_DM)
-			&& HCDEReplicatedActors[i].LastTouchedTic > 0
-			&& gametic - HCDEReplicatedActors[i].LastTouchedTic <= TICRATE * 10;
-		const bool retireExpired = HCDEReplicatedActors[i].Retired
-			&& HCDEReplicatedActors[i].RetireTic > 0
-			&& gametic - HCDEReplicatedActors[i].RetireTic > TICRATE * 2;
-		if (HCDEReplicatedActors[i].Id == 0u || retireExpired || (staleActor && !HCDEReplicatedActors[i].Retired && !liveRemoteBaseline))
+			&& ref.Active
+			&& !ref.Retired
+			&& Net_IsHCDEAuthorityPickupSource(ref.Source)
+			&& ref.LastTouchedTic > 0
+			&& gametic - ref.LastTouchedTic <= TICRATE * 10;
+		const bool retireExpired = ref.Retired
+			&& ref.RetireTic > 0
+			&& gametic - ref.RetireTic > TICRATE * 2;
+		const bool idDefect = ref.Id == 0u;
+		if (idDefect || retireExpired || (staleActor && !ref.Retired && !liveRemoteBaseline))
 		{
+			if (idDefect) ++defectIdZero;
+			if (retireExpired) ++retiredExpiredCount;
 			++removed;
 			continue;
 		}
 
 		if (staleActor && !liveRemoteBaseline)
-			Net_SetHCDEReplicatedActorPtr(HCDEReplicatedActors[i], nullptr);
+			Net_SetHCDEReplicatedActorPtr(ref, nullptr);
+		if (liveRemoteBaseline)
+			++liveBaselineKept;
 		if (writeIdx != i)
-			HCDEReplicatedActors[writeIdx] = HCDEReplicatedActors[i];
+			HCDEReplicatedActors[writeIdx] = ref;
 		++writeIdx;
 	}
 
@@ -3600,6 +3675,38 @@ static int Net_CompactHCDEReplicatedActors()
 		HCDEReplicatedActors.Resize(unsigned(writeIdx));
 	Net_RebuildHCDEReplicatedActorIndexes();
 	HCDELiveProfile.SharedActorCompacted += uint64_t(max<int>(removed, 0));
+
+	// Soft check: every row with a non-zero Id should have made it into the
+	// id index. A short-fall here means Net_IndexHCDEReplicatedActor saw a
+	// duplicate id and refused the second insert. We already logged the
+	// individual collision; this is the aggregate signal so soak runs can
+	// graph "compaction left baselines behind".
+	{
+		size_t expectedIndexed = 0u;
+		for (const auto& ref : HCDEReplicatedActors)
+			if (ref.Id != 0u)
+				++expectedIndexed;
+		const size_t actualIndexed = HCDEReplicatedActorIdIndex.CountUsed();
+		if (actualIndexed < expectedIndexed)
+		{
+			DebugTrace::Warningf("net",
+				"HCDE compact: id-index shortfall (expected=%zu actual=%zu rows=%zu) -- duplicate ids dropped",
+				expectedIndexed, actualIndexed, size_t(writeIdx));
+		}
+	}
+
+	if (defectIdZero > 0)
+	{
+		DebugTrace::Warningf("net",
+			"HCDE compact: dropped %d Id==0 row(s); registration is supposed to assign non-zero ids (gametic=%d before=%zu after=%zu)",
+			defectIdZero, gametic, initialSize, size_t(writeIdx));
+	}
+	if (retiredExpiredCount > 0 || liveBaselineKept > 0)
+	{
+		DebugTrace::Markf("net",
+			"HCDE compact: gametic=%d before=%zu after=%zu removed=%d retired-expired=%d live-baseline-kept=%d",
+			gametic, initialSize, size_t(writeIdx), removed, retiredExpiredCount, liveBaselineKept);
+	}
 	return removed;
 }
 

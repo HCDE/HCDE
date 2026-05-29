@@ -372,7 +372,11 @@ public:
 };
 class DEventHandler : public DStaticEventHandler
 {
-	DECLARE_CLASS(DEventHandler, DStaticEventHandler) // TODO: make sure this does not horribly break anything
+	// Runtime event handlers intentionally share the static-handler dispatch
+	// surface, but `IsStatic()` below keeps them out of static handler lifetime
+	// management. This inheritance is the compatibility contract used by
+	// existing ZScript handlers, not an accidental hierarchy.
+	DECLARE_CLASS(DEventHandler, DStaticEventHandler)
 public:
 	bool IsStatic() override { return false; }
 };

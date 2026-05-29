@@ -184,7 +184,12 @@ void Clipper::AddClipRange(angle_t start, angle_t end)
 
 				if (node->end < end)
 				{
-					node->end = end; // [DVR] This never triggers because of previous while loop. Remove?
+					// Reachable when the new range partially overlaps `node`
+					// on the left (node->start < start && node->end < end).
+					// The earlier "fully contains" loop only removes nodes
+					// where node->start >= start, so left-overlap survives
+					// here and we extend the existing node's right edge.
+					node->end = end;
 				}
 
 				ClipNode *node2 = node->next;

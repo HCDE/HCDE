@@ -825,6 +825,19 @@ static bool Net_SpawnInvasionMonster(FInvasionSpawnSpotRecord& spot, const char*
 	Net_AwakenInvasionMonster(spawned);
 	InvasionWaveDirector.ActiveMonsters.Push(MakeObjPtr<AActor*>(spawned));
 	Net_RecordInvasionSpawnEvent(spawned);
+
+	// HCDE roadmap #15: level-2 per-spawn detail for `sv_invasiondebug >= 2`.
+	if (Net_InvasionDebugEnabled(2))
+	{
+		DebugTrace::Markf("invasion",
+			"spawn-detail class=%s spot-src=%s wave=%d/%d budget-remain=%d pos=(%.1f,%.1f,%.1f)",
+			monsterClass != nullptr ? monsterClass->TypeName.GetChars() : "<null>",
+			Net_InvasionSpawnSourceName(spot.Source),
+			InvasionWaveDirector.Wave, InvasionWaveDirector.MaxWaves,
+			InvasionWaveDirector.WaveBudget,
+			spawned->X(), spawned->Y(), spawned->Z());
+	}
+
 	return true;
 }
 
@@ -1373,6 +1386,26 @@ static void Net_BuildFallbackInvasionSpots(FLevelLocals* level)
 
 	if (InvasionSpawnDirectory.Spots.Size() > 0)
 		InvasionSpawnDirectory.FallbackSource = INVSPAWN_PLAYERSTART;
+
+	// HCDE roadmap #15 audit: per-fallback diagnostic so soak runs can graph
+	// fallback rates and correlate with map/wave conditions.
+	const char* why = "no-classic-spots";
+	if (InvasionSpawnDirectory.FallbackSource == INVSPAWN_MAPSPOT)
+		why = "no-classic-spots;used-mapspot";
+	else if (InvasionSpawnDirectory.FallbackSource == INVSPAWN_DEATHMATCH)
+		why = "no-classic-spots;used-deathmatch";
+	else if (InvasionSpawnDirectory.FallbackSource == INVSPAWN_PLAYERSTART)
+		why = "no-classic-spots;used-playerstart";
+	else if (InvasionSpawnDirectory.FallbackSource == INVSPAWN_NONE)
+		why = "no-classic-spots;no-playerstart-available";
+
+	DebugTrace::Markf("invasion",
+		"fallback used=%d source=%s why=%s spots=%u map=%s",
+		InvasionSpawnDirectory.UsingFallback ? 1 : 0,
+		Net_InvasionSpawnSourceName(InvasionSpawnDirectory.FallbackSource),
+		why,
+		unsigned(InvasionSpawnDirectory.Spots.Size()),
+		primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>");
 }
 
 static void Net_RebuildInvasionSpawnSpots(int wave)

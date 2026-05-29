@@ -52,3 +52,17 @@ __pycache__/
 /build-codex-audit/
 /build_test/
 /tmp_stage9_dry/
+/tests/id24_validation/dist/
+/tests/nanobsp_validation/dist/
+/tests/doomretro_validation/dist/
+/tests/predator_validation/dist/
+/tests/aidirector_validation/dist/
+
+# IWADs / test artifacts that should never be committed
+DOOM2.WAD
+doom2.wad
+*.WAD
+*.wad
+!wadsrc/**/*.wad
+*.err
+/CrashReport*

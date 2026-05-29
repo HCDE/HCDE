@@ -144,6 +144,12 @@ NetworkPage::NetworkPage(LauncherWindow* launcher, const FStartupSelectionInfo& 
 	HostPage = new HostSubPage(this, info);
 	JoinPage = new JoinSubPage(this, info);
 	StartPages->OnCurrentChanged = [this]() { OnStartPageChanged(); };
+	IWADsDropdown->OnChanged = [this](int) { UpdatePlayButton(); };
+	ParametersEdit->FuncAfterEditChanged = [this]() { UpdatePlayButton(); };
+	SaveFileEdit->FuncAfterEditChanged = [this]() { UpdatePlayButton(); };
+	SaveFileCheckbox->FuncChanged = [this](bool) { UpdatePlayButton(); };
+	SaveParametersCheckbox->FuncChanged = [this](bool) { UpdatePlayButton(); };
+	PlayerClassEdit->FuncAfterEditChanged = [this]() { UpdatePlayButton(); };
 
 	for (const auto& wad : *info.Wads)
 	{
@@ -342,6 +348,14 @@ HostSubPage::HostSubPage(NetworkPage* main, const FStartupSelectionInfo& info) :
 	MaxPlayerHintLabel->SetStyleColor("color", Theme::getMain(COLOR_MIX));
 	PortHintLabel->SetStyleColor("color", Theme::getMain(COLOR_MIX));
 	TeamHintLabel->SetStyleColor("color", Theme::getMain(COLOR_MIX));
+
+	TicDupDropdown->OnChanged = [this](int) { MainTab->UpdatePlayButton(); };
+	ExtraTicCheckbox->FuncChanged = [this](bool) { MainTab->UpdatePlayButton(); };
+	GameModesDropdown->OnChanged = [this](int) { MainTab->UpdatePlayButton(); };
+	AltDeathmatchCheckbox->FuncChanged = [this](bool) { MainTab->UpdatePlayButton(); };
+	TeamEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
+	MaxPlayersEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
+	PortEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
 }
 
 void HostSubPage::SetValues(FStartupSelectionInfo& info) const
@@ -511,6 +525,9 @@ JoinSubPage::JoinSubPage(NetworkPage* main, const FStartupSelectionInfo& info) :
 	QueryButton->OnClick = [this]() { QueryServerInfo(); };
 	AddressEdit->FuncEnterPressed = [this]() { QueryServerInfo(); };
 	AddressPortEdit->FuncEnterPressed = [this]() { QueryServerInfo(); };
+	AddressEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
+	AddressPortEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
+	TeamEdit->FuncAfterEditChanged = [this]() { MainTab->UpdatePlayButton(); };
 	QueryButton->SetText("Refresh");
 	ServerInfoLabel->SetText("Press Refresh to query the server.");
 }

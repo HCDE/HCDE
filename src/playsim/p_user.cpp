@@ -74,6 +74,14 @@ static FRandom pr_skullpop ("SkullPop");
 CVAR(Bool, sv_singleplayerrespawn, false, CVAR_SERVERINFO | CVAR_CHEAT)
 CVAR(Float, snd_footstepvolume, 1.f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
+// HCDE #9 hook: presentation-only footstep surface variant selector. The
+// ZScript footstep loop in `wadsrc/static/zscript/actors/player/player.zs`
+// (`DoFootstep`) will read this via `CVar.GetCVar("snd_footsteps_surface")`
+// to optionally substitute a `*footstep-<surface>` alias when sound name
+// resolution permits. This must NOT change movement friction or terrain
+// physics -- it is sound-name only.
+EXTERN_CVAR(Bool, snd_footsteps_surface)
+
 // Variables for prediction
 CVAR(Bool, cl_predict_specials, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // Deprecated
@@ -346,6 +354,9 @@ private:
 	FPhysicsLinkBackup _link = {};
 	int _statNum = -1;
 	int _tid = INT_MAX;
+	bool _hadPickup = false;
+	bool _hadPushwall = false;
+	bool _savedFlagsValid = false;
 public:
 	FActorBackup(AActor& act) : FObjectBackup(act)
 	{
@@ -357,7 +368,16 @@ public:
 		auto act = GetObject<AActor>();
 		if (act != nullptr)
 		{
-			// TODO: This needs to be handled properly in the rest of the physics code...
+			// MF_PICKUP and MF2_PUSHWALL are volatile per-tic flags set by the
+			// physics code while it is mid-traversal of pickup / pushwall logic.
+			// They must be cleared on the *live* actor so the backup tic does
+			// not leave them stuck across rewind, but we save whether each was
+			// set so PostRollback can restore them. The previous code dropped
+			// both flags silently, which broke polyobject rollback and net
+			// rewind determinism (audit §5).
+			_hadPickup = (act->flags & MF_PICKUP);
+			_hadPushwall = (act->flags2 & MF2_PUSHWALL);
+			_savedFlagsValid = true;
 			act->flags &= ~MF_PICKUP;
 			act->flags2 &= ~MF2_PUSHWALL;
 		}
@@ -406,6 +426,22 @@ public:
 
 		act->renderflags &= ~RF_NOINTERPOLATEVIEW;
 		act->flags8 &= ~MF8_RECREATELIGHTS;
+
+		// Restore the pickup/pushwall flags PostBackup parked on the side so
+		// the rolled-back tic resumes with the same pickup / pushwall state
+		// the physics code expects. Skip when no backup was captured (e.g.
+		// actor recreated from serialized state).
+		if (_savedFlagsValid)
+		{
+			if (_hadPickup)
+				act->flags |= MF_PICKUP;
+			else
+				act->flags &= ~MF_PICKUP;
+			if (_hadPushwall)
+				act->flags2 |= MF2_PUSHWALL;
+			else
+				act->flags2 &= ~MF2_PUSHWALL;
+		}
 	}
 };
 
@@ -1810,8 +1846,11 @@ void P_PredictClient()
 	if (netgame && I_IsServerReservedSlot(consoleplayer))
 		return;
 
-	if (cl_noprediction)
-		return;
+	// `cl_noprediction` was the legacy ZDoom kill-switch for the entire
+	// prediction system. HCDE's server-authoritative model relies on
+	// prediction to mask transport latency for the local player, so the
+	// CVar is documented deprecated and intentionally not honoured here.
+	// The CVar declaration itself is retained so old configs do not warn.
 
 	if (consoleplayer < 0 || consoleplayer >= MAXPLAYERS)
 		return;
@@ -1837,9 +1876,12 @@ void P_PredictClient()
 				fullRollback.Push(a.GetObject<DObject>());
 			for (auto& o : PredictionData.RollbackObjects)
 				fullRollback.Push(o.GetObject<DObject>());
-			PredictionData.RollbackData = writer.GetOutput(nullptr, &PredictionData.RollbackObjectRefs, &fullRollback);
+			writer.GetOutput(nullptr, &PredictionData.RollbackObjectRefs, &fullRollback);
 			PredictionData.RollbackLevel = player->mo->Level;
 			PredictionData.RollbackWriterBuffer = writer.CloseAndGetBuffer();
+			PredictionData.RollbackData = std::string_view(
+				PredictionData.RollbackWriterBuffer.buffer.GetString(),
+				PredictionData.RollbackWriterBuffer.buffer.GetSize());
 
 			for (auto& a : PredictionData.RollbackActors)
 				a.PostBackup();

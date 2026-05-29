@@ -1792,6 +1792,12 @@ class PlayerPawn : Actor
 	void DoFootstep(TerrainDef Ground)
 	{
 		Sound Step = Ground.StepSound;
+		bool UseSurfaceAlias = CVar.GetCVar('snd_footsteps_surface').GetBool();
+
+		if(UseSurfaceAlias)
+		{
+			Step = Ground.IsLiquid ? "*footstep-liquid" : "*footstep-solid";
+		}
 
 		//Generic foot-agnostic sound takes precedence.
 		if(!Step)

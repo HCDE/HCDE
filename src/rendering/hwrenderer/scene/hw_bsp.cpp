@@ -85,30 +85,46 @@ class RenderJobQueue
 	std::atomic<int> readindex{};
 	std::atomic<int> writeindex{};
 public:
+	// Single-producer (main thread) / single-consumer (worker thread) ring.
+	// Memory contract:
+	//   AddJob       (producer): writes pool[index] then publishes the new
+	//                            writeindex with `release` so the value
+	//                            store is visible before the index update.
+	//   GetJob       (consumer): loads writeindex with `acquire` so that
+	//                            once the index has advanced, the matching
+	//                            pool[index] write is observable here.
+	//   ReleaseAll              : called only after the worker has been
+	//                            joined, so plain stores are safe.
 	void AddJob(int type, subsector_t *sub, seg_t *seg = nullptr)
 	{
 		// Keep a hard guard here so oversized scenes fail loudly instead of corrupting memory.
 		constexpr int MaxRenderJobs = static_cast<int>(sizeof(pool) / sizeof(pool[0]));
-		const int index = writeindex;
+		const int index = writeindex.load(std::memory_order_relaxed);
 		if (index >= MaxRenderJobs)
 		{
 			I_FatalError("Render job queue overflow (%d jobs).", MaxRenderJobs);
 		}
 
 		pool[index] = { type, sub, seg };
-		writeindex = index + 1;	// update index only after the value has been written.
+		writeindex.store(index + 1, std::memory_order_release);	// publish only after the value has been written.
 	}
 
 	RenderJob *GetJob()
 	{
-		if (readindex < writeindex) return &pool[readindex++];
+		const int r = readindex.load(std::memory_order_relaxed);
+		const int w = writeindex.load(std::memory_order_acquire);
+		if (r < w)
+		{
+			readindex.store(r + 1, std::memory_order_relaxed);
+			return &pool[r];
+		}
 		return nullptr;
 	}
 
 	void ReleaseAll()
 	{
-		readindex = 0;
-		writeindex = 0;
+		readindex.store(0, std::memory_order_relaxed);
+		writeindex.store(0, std::memory_order_relaxed);
 	}
 };
 
@@ -1050,8 +1066,12 @@ void HWDrawInfo::RenderBSP(void *node, bool drawpsprites)
 		Bsp.Unclock();
 	}
 
-	// Make rendered targets set dither transparency flags on level geometry for next pass
-	// Can't do this inside DoSubsector() because both Trace() and P_CheckSight() affect 'validcount' global variable
+	// Make rendered targets set dither transparency flags on level geometry for next pass.
+	// `validcount` is a single global counter shared by Trace() and P_CheckSight(); calling
+	// either of them inside DoSubsector() would race the worker thread because the worker
+	// reads/writes `validcount` while traversing visible geometry. We therefore defer the
+	// sight checks until after `future.wait()` above has joined the worker, which makes
+	// `validcount` exclusively owned by the main thread again.
 	for (int ii = 0; ii < MAXDITHERACTORS; ii++)
 	{
 		if ( RenderedTargets[ii] && P_CheckSight(players[consoleplayer].mo, RenderedTargets[ii], 0) )

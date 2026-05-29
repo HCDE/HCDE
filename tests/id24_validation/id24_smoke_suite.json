@@ -1,0 +1,31 @@
+{
+  "name": "HCDE ID24 smoke validation",
+  "status": "generated-fixture",
+  "cases": [
+    {
+      "id": "id24-map-numbering",
+      "description": "Verify E1M10 / UMAPINFO id24_levelnum ordering and intermission conditions.",
+      "artifact": "planned"
+    },
+    {
+      "id": "id24-intermission-anim",
+      "description": "Verify EnterAnim / ExitAnim parsing and presentation-only behavior.",
+      "artifact": "planned"
+    },
+    {
+      "id": "id24-nightmare-respawn",
+      "description": "Verify MinRespawnTics and RespawnDice defaults, VM exposure, save serialization, and runtime respawn gate.",
+      "artifact": "planned"
+    },
+    {
+      "id": "id24-dehextra-high-slots",
+      "description": "Verify highest ID24-promised thing/state/sprite slots parse and spawn/render.",
+      "artifact": "generated"
+    },
+    {
+      "id": "id24-extended-flags",
+      "description": "Verify every ID24-specific flag is supported, mapped, missing, or intentionally rejected.",
+      "artifact": "generated"
+    }
+  ]
+}

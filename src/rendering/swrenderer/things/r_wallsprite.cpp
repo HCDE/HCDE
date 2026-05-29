@@ -65,6 +65,8 @@
 #include "r_memory.h"
 #include "swrenderer/r_renderthread.h"
 
+EXTERN_CVAR(Bool, r_fullbright_overrides)
+
 namespace swrenderer
 {
 	void RenderWallSprite::Project(RenderThread *thread, AActor *thing, const DVector3 &pos, FSoftwareTexture *pic, const DVector2 &scale, int renderflags, int lightlevel, bool foggy, FDynamicColormap *basecolormap)
@@ -140,7 +142,11 @@ namespace swrenderer
 		{
 			basecolormap = GetSpecialLights(basecolormap->Color, 0, basecolormap->Desaturate);
 		}
-		bool fullbright = !vis->foggy && ((renderflags & RF_FULLBRIGHT) || (thing->flags5 & MF5_BRIGHT));
+		FGameTexture* gameTex = pic != nullptr ? pic->GetTexture() : nullptr;
+		const bool textureDisablesFullbright = gameTex != nullptr && gameTex->isFullbrightDisabled();
+		const bool textureForcesFullbright = r_fullbright_overrides && gameTex != nullptr && gameTex->isFullbright();
+		bool fullbright = !vis->foggy && ((thing->flags5 & MF5_BRIGHT) ||
+			(!textureDisablesFullbright && ((renderflags & RF_FULLBRIGHT) || textureForcesFullbright)));
 
 		bool invertcolormap = (vis->RenderStyle.Flags & STYLEF_InvertOverlay) != 0;
 		if (vis->RenderStyle.Flags & STYLEF_InvertSource)

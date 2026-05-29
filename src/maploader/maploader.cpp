@@ -31,6 +31,7 @@
 #include "maploader.h"
 #include "c_cvars.h"
 #include "actor.h"
+#include "d_nanobsp_loader.h"
 #include "g_levellocals.h"
 #include "p_lnspec.h"
 
@@ -3144,11 +3145,19 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 		};
 		leveldata.FindMapBounds();
 
-		FNodeBuilder builder(leveldata, polyspots, anchors, BuildGLNodes);
-		builder.Extract(*Level);
+		if (HCDENanoBSPShouldUseForBuildFromScratch() &&
+			HCDENanoBSPBuildFromScratch(leveldata, polyspots, anchors, BuildGLNodes, *Level))
+		{
+			DPrintf(DMSG_NOTIFY, "HCDE NanoBSP generated build-from-scratch nodes\n");
+		}
+		else
+		{
+			FNodeBuilder builder(leveldata, polyspots, anchors, BuildGLNodes);
+			builder.Extract(*Level);
+			oldvertextable = builder.GetOldVertexTable();
+		}
 		endTime = I_msTime();
 		DPrintf(DMSG_NOTIFY, "BSP generation took %.3f sec (%d segs)\n", (endTime - startTime) * 0.001, Level->segs.Size());
-		oldvertextable = builder.GetOldVertexTable();
 		reloop = true;
 	}
 	else

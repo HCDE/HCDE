@@ -22,6 +22,7 @@
 */
 
 #pragma once
+#include <optional>
 const char* UnicodeToString(const char* cc);
 const char* StringToUnicode(const char* cc, int size = -1);
 
@@ -190,12 +191,22 @@ struct FWriter
 struct FReader
 {
 	TArray<FJSONObject> mObjects;
+	// IMPORTANT: mOwnedAllocator MUST be declared before mDoc. mDoc stores
+	// a raw pointer to mOwnedAllocator->buffer; if the allocator only lives
+	// in a stack-local constructor parameter the pointer dangles into freed
+	// memory and rapidjson::Document's destructor walks a corrupted chunk
+	// list -> access violation in ~MemoryPoolAllocator. This was the cause
+	// of the prediction-rollback crash on dedicated-join clients.
+	std::optional<FReaderAllocator> mOwnedAllocator;
 	rapidjson::Document mDoc;
 	TArray<DObject *> mDObjects;
 	rapidjson::Value *mKeyValue = nullptr;
 	bool mObjectsRead = false;
+	bool mPredictionRollback = false;
 
-	FReader(FReaderAllocator allocator, const char *buffer, size_t length) : mDoc(rapidjson::Document(&allocator.buffer))
+	FReader(FReaderAllocator allocator, const char *buffer, size_t length)
+		: mOwnedAllocator(std::move(allocator))
+		, mDoc(&mOwnedAllocator->buffer)
 	{
 		mDoc.Parse(buffer, length);
 		mObjects.Push(FJSONObject(&mDoc));

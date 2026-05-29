@@ -670,6 +670,34 @@ void P_BringUpWeapon (player_t *player)
 EPSPBobType BobType = PSPB_None;
 FPlayerBob PlayerBob[MAXPLAYERS] = {};
 
+// HCDE roadmap #11 (International Doom import): smooth weapon bob curve.
+// When enabled, the renderer applies a smoothed (ease-in-out) curve to the
+// per-frame interpolation fraction passed to `FPlayerBob::Interpolate2D`.
+// This reduces visible snapping at low refresh-to-tic ratios and gives the
+// classic "fluid" feel without changing the authoritative tic-rate bob.
+// Presentation-only: not part of playsim, not networked, demo-safe.
+CUSTOM_CVAR(Bool, r_weapon_bob_smooth, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	// No immediate action; the renderer samples this CVAR per frame via
+	// R_WeaponBobSmoothFrac().
+}
+
+double R_WeaponBobSmoothFrac(double ticFrac)
+{
+	if (!r_weapon_bob_smooth)
+		return ticFrac;
+
+	// Clamp to [0,1] - render-frame fractions can occasionally exceed the
+	// expected range under heavy frame stutter; the smoothstep polynomial is
+	// only well-behaved inside the unit interval.
+	if (ticFrac <= 0.0) return 0.0;
+	if (ticFrac >= 1.0) return 1.0;
+
+	// Smoothstep: 3t^2 - 2t^3. Equivalent to (1 - cos(pi*t)) * 0.5 but
+	// cheaper and avoids a transcendental call per frame.
+	return ticFrac * ticFrac * (3.0 - 2.0 * ticFrac);
+}
+
 void P_BobWeapon(player_t* player)
 {
 	auto& bob = PlayerBob[player - players];

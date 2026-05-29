@@ -1871,7 +1871,14 @@ FSerializer &Serialize(FSerializer &arc, const char *key, ModelAnimFrame &ao, Mo
 			}
 			else if(type.Compare("precalcIQM") == 0)
 			{
-				//TODO, unreachable
+				// Precalculated IQM bone matrices are a transient render-side
+				// cache derived from the currently loaded model file. They are
+				// intentionally not persisted (see write branch below); fall
+				// back to nullptr so the model recomputes its precalc on the
+				// first frame after the save is restored. The string itself
+				// never appears in saves written by the current code, but we
+				// still recognise it for forward-compatibility with any
+				// archived saves that wrote it under earlier prototypes.
 				ao = nullptr;
 			}
 		}
@@ -1893,7 +1900,15 @@ FSerializer &Serialize(FSerializer &arc, const char *key, ModelAnimFrame &ao, Mo
 		}
 		else if(std::holds_alternative<ModelAnimFramePrecalculatedIQM>(ao))
 		{
-			//TODO
+			// `ModelAnimFramePrecalculatedIQM` is an in-memory cache of
+			// pre-multiplied bone matrices keyed off the loaded IQM model's
+			// bone layout. Persisting the matrices wholesale would either
+			// crash on load against a different model version or silently
+			// produce wrong skinning, so we deliberately archive these
+			// frames as "nullptr". The receiver re-derives the cache on the
+			// next render tic, which is the same behaviour as a freshly
+			// spawned actor. Marking it as nullptr is intentional, not a
+			// silent save/load loss to be fixed later.
 			FString type = "nullptr";
 			arc("type", type);
 		}

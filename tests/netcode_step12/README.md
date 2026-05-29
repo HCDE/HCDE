@@ -141,8 +141,9 @@ keep clients alive via process lifetime:
   legacy NCMD.
 
 Both drivers parse the server's final `net_profile` and emit a JSON summary,
-which is the source of the Step F6 numbers in
-`docs/HCDE_NETCODE_OVERHAUL.md`.
+which is the source of the Step F6 native-traffic numbers (run locally to
+regenerate; the figures used to be archived in `docs/HCDE_NETCODE_OVERHAUL.md`,
+which has been retired).
 
 ## Reading Results
 

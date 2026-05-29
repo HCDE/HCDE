@@ -163,15 +163,19 @@ class ACSLocalVariables
 {
 public:
 	ACSLocalVariables(TArray<int32_t> &variables)
-	: memory(&variables[0])
-	, count(variables.Size())
 	{
+		Reset(variables.Size() != 0 ? &variables[0] : nullptr, variables.Size());
 	}
 
 	void Reset(int32_t *const memory, const size_t count)
 	{
-		// TODO: pointer sanity check?
-		// TODO: constraints on count?
+		// A non-empty locals window must always point at real backing storage.
+		// Empty scripts are valid and use a null pointer with a zero count.
+		if (memory == nullptr && count != 0)
+		{
+			I_Error("Invalid ACS local variables window (script=%s pcode=%d count=%zu)",
+				ACS_DebugScriptName.GetChars(), ACS_DebugPCode, count);
+		}
 
 		this->memory = memory;
 		this->count = count;
@@ -179,7 +183,7 @@ public:
 
 	int32_t& operator[](const size_t index)
 	{
-		if (index >= count)
+		if (memory == nullptr || index >= count)
 		{
 			I_Error("Out of bounds access to local variables in ACS VM (script=%s pcode=%d index=%zu size=%zu)",
 				ACS_DebugScriptName.GetChars(), ACS_DebugPCode, index, count);

@@ -36,6 +36,7 @@
 #include "g_levellocals.h"
 #include "gi.h"
 #include "gstrings.h"
+#include "hcde_killfeed.h"
 #include "i_net.h"
 #include "p_acs.h"
 #include "r_utility.h"
@@ -72,6 +73,12 @@ EXTERN_CVAR (Bool, am_showtotaltime)
 EXTERN_CVAR (Bool, am_showlevelname)
 EXTERN_CVAR(Bool, inter_subtitles)
 EXTERN_CVAR(Bool, ui_screenborder_classic_scaling)
+
+// HCDE Nugget feel hooks. Default-off scaffolds for roadmap item #9.
+// Real recoil/killfeed presentation lands later; today we only keep the CVARs
+// observable on the draw path so future patches can hook here without churn.
+EXTERN_CVAR(Bool, r_crosshair_recoil)
+EXTERN_CVAR(Bool, r_killfeed)
 
 CVAR(Int, hud_scale, -1, CVAR_ARCHIVE);
 CVAR(Bool, log_vgafont, false, CVAR_ARCHIVE);
@@ -1017,8 +1024,22 @@ void DBaseStatusBar::DrawCrosshair (double ticFrac)
 	int health = Scale(CPlayer->health, 100, CPlayer->mo->GetDefault()->health);
 
 	const double size = PrevCrosshairSize * (1.0 - ticFrac) + CrosshairSize * ticFrac;
-	const double x = viewwindowx + (0.5+crosshair_offset_x/2)*viewwidth;
-	const double y = viewwindowy + (0.5-crosshair_offset_y/2)*viewheight;
+	double x = viewwindowx + (0.5+crosshair_offset_x/2)*viewwidth;
+	double y = viewwindowy + (0.5-crosshair_offset_y/2)*viewheight;
+	if (r_crosshair_recoil)
+	{
+		double recoil = double(CPlayer->refire);
+		if (recoil > 8.0)
+		{
+			recoil = 8.0;
+		}
+		recoil /= 8.0;
+		recoil = recoil * recoil * (3.0 - 2.0 * recoil);
+
+		const double fireBob = CPlayer->userinfo.GetWBobFire();
+		const double scale = fireBob > 0.0 ? fireBob : 1.0;
+		y -= recoil * scale * size * 6.0;
+	}
 	ST_DrawCrosshair(health, x, y, size);
 }
 
@@ -1207,6 +1228,21 @@ void DBaseStatusBar::DrawTopStuff (EHudState state)
 	}
 	DrawMessages (HUDMSGLayer_OverHUD, (state == HUD_StatusBar) ? GetTopOfStatusbar() : twod->GetHeight());
 	primaryLevel->localEventManager->RenderOverlay(state);
+
+	if (r_killfeed && primaryLevel != nullptr)
+	{
+		FHCDEKillfeedEntry entries[6];
+		const int count = HCDEKillfeed_CopyRecent(entries, countof(entries), primaryLevel->time, TICRATE * 6);
+		int y = int(24 * CleanYfac);
+		for (int i = 0; i < count; ++i)
+		{
+			const char* text = entries[i].Text.GetChars();
+			const int width = SmallFont->StringWidth(text);
+			const int x = twod->GetWidth() - int((width + 8) * CleanXfac);
+			DrawText(twod, SmallFont, CR_UNTRANSLATED, x, y, text, DTA_CleanNoMove, true, TAG_DONE);
+			y += SmallFont->GetHeight() * CleanYfac;
+		}
+	}
 
 	double yOfs = DrawConsistancy (0.0);
 	DrawWaiting (yOfs);

@@ -32,6 +32,7 @@
 #include "actorinlines.h"
 #include "g_game.h"
 #include "am_map.h"
+#include "d_net_rcon.h"
 #include "hcde_servermode.h"
 #include "i_interface.h"
 #include "i_net.h"
@@ -190,6 +191,8 @@ void P_Ticker (void)
 		// is delayed slightly due to latency. (Even on a singleplayer game!)
 //		GSnd->SetSfxPaused(!!playerswiping, 2);
 	}
+
+	HCDERconPollListener();
 
 	// run the tic
 	if (paused || P_CheckTickerPaused())

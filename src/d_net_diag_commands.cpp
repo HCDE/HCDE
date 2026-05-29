@@ -671,6 +671,9 @@ static void HCDEPrintLiveProfile()
 	const uint64_t pregamePacketErrs = pregame.PacketTooShort + pregame.PacketMissingPayload + pregame.PacketBadCrc
 		+ pregame.PacketCompressedMalformed + pregame.PacketCompressedDecompressFailure + pregame.PacketOversized;
 
+	// HCDE roadmap #15: the `lod=%u/%u/%u` triplet (full/reduced/dormant) in this
+	// compact line, together with the multi-line "sim-lod" block below, makes a
+	// 200+ actor Simulation LOD soak observable via `net_stressreport`.
 	DebugTrace::Infof("net",
 		"stress report mode=%s clients=%u world_avg_ms=%.3f world_max_ms=%.3f shared_active=%d invasion_active=%d player_snapshot_max=%llu player_snapshot_pressure=%llu local_repairs=%llu hard_repairs=%llu authority_records=%llu authority_deferred=%llu catchup_records=%llu baseline_repairs=%d delta_packets=%llu delta_records=%llu deferred=%llu queue_max=%llu projectile_eval=%llu projectile_skipped=%llu projectile_protected=%llu lod=%u/%u/%u pregame_packet_rx=%llu pregame_service_tx=%llu pregame_service_drops=%llu pregame_packet_errors=%llu",
 		Net_IsInvasionModeEnabled() ? "invasion" : (deathmatch ? "dm" : "coop"),
@@ -1423,9 +1426,33 @@ CCMD(net_invasion_missing_classes)
 			pair->Value.FirstSeenWave);
 	}
 	Printf(PRINT_HIGH,
-		"If any of these are from a mod (e.g. a monster pack), the client is missing\n"
+		"		If any of these are from a mod (e.g. a monster pack), the client is missing\n"
 		"the PK3/WAD that defines the class. Load it on the client side to make those\n"
 		"monsters visible. The server-authoritative monster is already shooting at you.\n");
+}
+
+// HCDE roadmap #15 audit item: diagnostic to verify boss-wave cadence.
+// Prints the pattern for the next 10 waves under the current
+// `sv_invasionbosswaveevery` setting so soak runs can confirm the modulo
+// logic matches the documented "every Nth wave" contract.
+CCMD(net_invasion_bosswave_test)
+{
+	const int every = max<int>(*sv_invasionbosswaveevery, 0);
+	Printf(PRINT_HIGH, "sv_invasionbosswaveevery=%d (0=disabled)\n", every);
+	if (every <= 0)
+	{
+		Printf(PRINT_HIGH, "Boss waves disabled; no pattern to show.\n");
+		return;
+	}
+
+	Printf(PRINT_HIGH, "Wave pattern for next 10 waves (B=boss):\n");
+	for (int w = 1; w <= 10; ++w)
+	{
+		const bool boss = (w % every) == 0;
+		Printf(PRINT_HIGH, "  %2d: %c\n", w, boss ? 'B' : '.');
+	}
+	Printf(PRINT_HIGH, "Expected: boss every %d waves (wave %d, %d, ...).\n",
+		every, every, every * 2);
 }
 
 ADD_STAT(network)

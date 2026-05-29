@@ -70,6 +70,7 @@ EXTERN_CVAR(Bool, gl_light_sprites)
 EXTERN_CVAR(Int, gl_texture_hqresizemult)
 EXTERN_CVAR(Int, gl_texture_hqresizemode)
 EXTERN_CVAR(Int, gl_texture_hqresize_targets)
+EXTERN_CVAR(Bool, r_fullbright_overrides)
 
 namespace swrenderer
 {
@@ -192,7 +193,11 @@ namespace swrenderer
 			basecolormap = GetSpecialLights(basecolormap->Color, 0, basecolormap->Desaturate);
 		}
 
-		bool fullbright = !vis->foggy && ((renderflags & RF_FULLBRIGHT) || (thing->flags5 & MF5_BRIGHT));
+		FGameTexture* gameTex = tex != nullptr ? tex->GetTexture() : nullptr;
+		const bool textureDisablesFullbright = gameTex != nullptr && gameTex->isFullbrightDisabled();
+		const bool textureForcesFullbright = r_fullbright_overrides && gameTex != nullptr && gameTex->isFullbright();
+		bool fullbright = !vis->foggy && ((thing->flags5 & MF5_BRIGHT) ||
+			(!textureDisablesFullbright && ((renderflags & RF_FULLBRIGHT) || textureForcesFullbright)));
 		bool fadeToBlack = (vis->RenderStyle.Flags & STYLEF_FadeToBlack) != 0;
 
 		if (isSpriteShadow)

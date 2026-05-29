@@ -56,6 +56,7 @@
 extern TArray<spritedef_t> sprites;
 extern TArray<spriteframe_t> SpriteFrames;
 extern uint32_t r_renderercaps;
+EXTERN_CVAR(Bool, r_fullbright_overrides)
 
 const float LARGE_VALUE = 1e19f;
 const float MY_SQRT2    = 1.41421356237309504880; // sqrt(2)
@@ -1236,9 +1237,11 @@ void HWSprite::Process(HWDrawInfo *di, AActor* thing, sector_t * sector, area_t 
 
 	bool enhancedvision = false;
 
-	// allow disabling of the fullbright flag by a brightmap definition
-	// (e.g. to do the gun flashes of Doom's zombies correctly.
+	// Allow GLDEFS brightmap metadata to opt specific sprites in or out of
+	// fullbright rendering. `disablefullbright` always wins; `fullbright` only
+	// participates when HCDE's default-off import toggle is enabled.
 	fullbright = (thing->flags5 & MF5_BRIGHT) ||
+		(texture != nullptr && r_fullbright_overrides && texture->isFullbright() && !texture->isFullbrightDisabled()) ||
 		((thing->renderflags & RF_FULLBRIGHT) && (!texture || !texture->isFullbrightDisabled()));
 
 	if (fullbright)	lightlevel = 255;

@@ -808,6 +808,13 @@ set (PCH_SOURCES
 	d_net_checksum.cpp
 	d_net_movement_diag.cpp
 	d_net_rewind.cpp
+	d_net_rcon.cpp
+	d_net_predator.cpp
+	d_net_aidirector.cpp
+	d_nanobsp_loader.cpp
+	hcde_killfeed.cpp
+	i_input_feel.cpp
+	i_input_gyro.cpp
 	d_netinfo.cpp
 	d_protocol.cpp
 	d_steam.cpp
@@ -817,6 +824,7 @@ set (PCH_SOURCES
 	g_game.cpp
 	g_hub.cpp
 	g_level.cpp
+	g_taunt.cpp
 	gameconfigfile.cpp
 	hu_scores.cpp
 	m_cheat.cpp
@@ -849,6 +857,7 @@ set (PCH_SOURCES
 	serializer_doom.cpp
 	scriptutil.cpp
 	st_stuff.cpp
+	r_view_pain_smooth.cpp
 	r_data/v_palette.cpp
 	wi_stuff.cpp
 	gamedata/a_keys.cpp
@@ -997,6 +1006,7 @@ set (PCH_SOURCES
 	common/audio/sound/oalsound.cpp
 	common/audio/sound/s_environment.cpp
 	common/audio/sound/s_sound.cpp
+	common/audio/sound/s_sound_eternity.cpp
 	common/audio/sound/s_reverbedit.cpp
 	common/audio/music/music_midi_base.cpp
 	common/audio/music/music.cpp
@@ -1345,6 +1355,14 @@ endif()
 
 target_link_libraries( zdoom ${PROJECT_LIBRARIES} lzma ${ZMUSIC_LIBRARIES} absl::base absl::flat_hash_map absl::strings absl::hash)
 target_link_libraries( hcdeserv ${PROJECT_LIBRARIES} lzma ${ZMUSIC_LIBRARIES} absl::base absl::flat_hash_map absl::strings absl::hash)
+
+find_package(CURL QUIET)
+if(CURL_FOUND)
+	target_compile_definitions(zdoom PRIVATE HCDE_HAVE_LIBCURL=1)
+	target_compile_definitions(hcdeserv PRIVATE HCDE_HAVE_LIBCURL=1)
+	target_link_libraries(zdoom CURL::libcurl)
+	target_link_libraries(hcdeserv CURL::libcurl)
+endif()
 include_directories(
 	BEFORE
 	.

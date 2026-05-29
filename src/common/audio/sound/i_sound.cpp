@@ -67,6 +67,7 @@ bool nosound;
 bool nosfx;
 
 void I_CloseSound ();
+SoundRenderer* I_CreateEternitySoundRenderer();
 
 
 //
@@ -255,10 +256,13 @@ void I_InitSound ()
 		return;
 	}
 
-	// Keep it simple: let everything except "null" init the sound.
 	if (stricmp(snd_backend, "null") == 0)
 	{
 		GSnd = new NullSoundRenderer;
+	}
+	else if (stricmp(snd_backend, "eternity") == 0)
+	{
+		GSnd = I_CreateEternitySoundRenderer();
 	}
 	else
 	{

@@ -472,8 +472,10 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 		I_Error("Unable to open map '%s'\n", Level->MapName.GetChars());
 	}
 
-	// [ZZ] init per-map static handlers. we need to call this before everything is set up because otherwise scripts don't receive PlayerEntered event
-	//      (which happens at god-knows-what stage in this function, but definitely not the last part, because otherwise it'd work to put E_InitStaticHandlers before the player spawning)
+	// [ZZ] Init per-map static handlers before map loading/spawn setup. PlayerEntered
+	// is emitted while the player pawns are spawned later in P_SetupLevel, so handlers
+	// must already exist before MapLoader builds the level and the spawn pass runs.
+	// Moving this below player spawning drops PlayerEntered for static event handlers.
 	Level->localEventManager->InitStaticHandlers(Level, true);
 
 	// generate a checksum for the level, to be included and checked with savegames.
@@ -490,6 +492,16 @@ void P_SetupLevel(FLevelLocals *Level, int position, bool newGame)
 	loader.LoadLevel(map, Level->MapName.GetChars(), position);
 	delete map;
 
+	// Player-spawn phase. MapLoader may already have spawned players from map
+	// starts; the branches below only cover modes that need to override or fill
+	// missing starts. Keep this phase after `LoadLevel()` (starts must exist) and
+	// before post-load thinker/counter passes (player pawns must be linked).
+	//
+	// Deathmatch and random-start modes deliberately clear `mo` before spawning
+	// because the spawn helpers replace the player pawn. The later "unfriendly
+	// players onto deathmatch starts" pass only destroys the old pawn after a
+	// successful replacement so a failed replacement cannot leave an active slot
+	// actorless.
 	// if deathmatch, randomly spawn the active players
 	if (deathmatch)
 	{

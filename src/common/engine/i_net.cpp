@@ -142,16 +142,16 @@ FARG(join, "Multiplayer", "Connects to a multiplayer host.", "host's IP address[
 FARG(server, "Multiplayer", "Starts a dedicated multiplayer server without the session window.", "x",
 	"This machine will function as a dedicated multiplayer server with x players (including this"
 	" machine). Use this for HCDE's separate server mode so the launcher can start a server process"
-	" and a local join client without showing the old room/session window.");
+	" and a local join client without opening the interactive pregame window.");
 FARG(netwaitsilent, "Multiplayer", "Suppresses the multiplayer connection status window.", "",
-	"Run the pregame network handshake without showing the old room/session window. Launchers can"
+	"Run the pregame network handshake without opening the interactive pregame window. Launchers can"
 	" use this when they intentionally want a silent dedicated-server join.");
 FARG(dedicatedjoin, "Multiplayer", "Connects to a dedicated server with a reserved server authority slot.", "",
 	"Treat the network arbitrator as a transport-only slot. This is used by launchers when joining"
 	" HCDE's separate dedicated server executable so the server does not appear as an in-game player.");
 FARG(joindedicated, "Multiplayer", "Legacy alias for dedicated server join.", "host's IP address[:host's port]",
-	"Compatibility alias for older launcher args. Equivalent to -dedicatedjoin with an explicit"
-	" host address.");
+	"Compatibility shim for older launcher args. Equivalent to -dedicatedjoin with an explicit"
+	" host address; retained intentionally until every supported launcher has moved to -dedicatedjoin.");
 FARG(dup, "Multiplayer", "Send less player movement commands over the network.", "x",
 	"Causes " GAMENAME " to transmit fewer player movement commands across the network. Valid"
 	" values range from 1–9. For example, -dup 2 would cause " GAMENAME " to send half as many"
@@ -374,6 +374,15 @@ FClientStack NetworkClients = {};
 uint8_t	TicDup = 1u;
 int	MaxClients = 1;
 int RemoteClient = -1;
+
+// Transport state ownership contract:
+// All variables below (`NetBuffer`, `TransmitBuffer`, `Connected[]`, socket
+// state, and the HCDE pregame profile) are owned by the main net pump. HCDE
+// does not read or mutate them from worker threads; dedicated-server console
+// pumping is interleaved on the same thread while `I_NetLoop()` is blocked.
+// If networking is ever moved to an async thread, this block must become the
+// synchronization boundary rather than sprinkling ad-hoc locks through packet
+// parsers that assume a single mutable cursor.
 size_t NetBufferLength = 0u;
 uint8_t NetBuffer[MAX_MSGLEN] = {};
 
@@ -1536,8 +1545,11 @@ static void I_NetInit(const char* msg, bool host)
 	}
 }
 
-// todo: later these must be dispatched by the main menu, not the start screen.
-// Updates the general status of the session flow.
+// Updates the general status of the pregame session flow. Interactive listen-host
+// startup still uses NetStartWindow, while dedicated-server and silent launcher
+// flows route the same messages to stdout / the dedicated status window. If this
+// path is ever moved to a main-menu presenter, keep those two non-interactive
+// sinks wired directly so headless startup remains UI-free.
 static void I_NetMessage(const char* msg)
 {
 	Printf("%s:: %s\n", DedicatedServerMode ? "NetServer" : "NetSession", msg);
@@ -1554,14 +1566,27 @@ static void I_NetMessage(const char* msg)
 	}
 }
 
-// Listen for incoming connections while the pregame server flow is active. The main thread needs to be locked up
-// here to prevent the engine from continuing to start the game until everyone is ready.
+extern void HCDERconPollListener();
+
+// Listen for incoming connections while the pregame server flow is active. This
+// intentionally blocks engine startup until the connect/setup handshake reaches
+// a terminal state:
+//   * dedicated / silent launcher modes pump the callback in a small sleep loop
+//     and never open NetStartWindow;
+//   * interactive listen-host mode delegates to NetStartWindow::NetLoop so the
+//     UI can keep processing messages while the same callback advances.
 static bool I_NetLoop(bool (*loopCallback)(void*), void* data)
 {
 	if (DedicatedServerMode || SilentNetStartMode)
 	{
-		while (!loopCallback(data))
+		for (;;)
 		{
+			if (DedicatedServerMode)
+			{
+				HCDERconPollListener();
+			}
+			if (loopCallback(data))
+				break;
 #if defined(_WIN32) && defined(HCDE_DEDICATED_SERVER)
 			if (DedicatedServerMode)
 			{
@@ -1773,13 +1798,22 @@ static bool BeginReliableHCDEPregameService(EHCDEPregameService service, FConnec
 	if (FindHCDEReliableService(connection, service, key) != nullptr)
 	{
 		++HCDEPregameServiceProfile.ServiceQueueReused;
-		DebugTrace::Markf("net", "reusing pending reliable service %s key=%u", HCDEServiceName(service), key);
+		DebugTrace::Markf("net", "reusing pending reliable service %s key=%u peerAck=%u tx=%u rx=%u",
+			HCDEServiceName(service), key, connection.HCDEServicePeerAck,
+			connection.HCDEServiceTxSeq, connection.HCDEServiceRxSeq);
 		return false;
 	}
 	if (FindFreeHCDEReliableService(connection) == nullptr)
 	{
 		++HCDEPregameServiceProfile.ServiceQueueFullAdd;
-		DebugTrace::Markf("net", "reliable service queue full while adding %s key=%u", HCDEServiceName(service), key);
+		auto* oldest = FindOldestHCDEReliableService(connection);
+		DebugTrace::Warningf("net", "reliable service queue full while adding %s key=%u oldest=%s oldest-key=%u oldest-seq=%u oldest-sends=%u peerAck=%u tx=%u rx=%u",
+			HCDEServiceName(service), key,
+			oldest != nullptr ? HCDEServiceName(oldest->Service) : "<none>",
+			oldest != nullptr ? oldest->Key : 0u,
+			oldest != nullptr ? oldest->Sequence : 0u,
+			oldest != nullptr ? oldest->SendCount : 0u,
+			connection.HCDEServicePeerAck, connection.HCDEServiceTxSeq, connection.HCDEServiceRxSeq);
 		return false;
 	}
 
@@ -2256,6 +2290,13 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	Connected[client].HCDEConnectFlags = connectInfo.Flags;
 	Connected[client].bRuntimeJoin = runtimeJoin;
 	NetworkClients += client;
+	// HCDE-only admission gate: TryProcessSetupConnectPacket rejects every
+	// peer that does not advertise HCDE service connect info (Phase 3),
+	// so `connectInfo.Present` is true here for every admitted client. The
+	// else-branch log that used to claim "legacy setup" was misleading: it
+	// could only fire if the admission policy regressed. Treat that as a
+	// hard programming error so we notice immediately instead of silently
+	// admitting a non-HCDE peer.
 	if (connectInfo.Present)
 	{
 		I_NetLog("Client %u connected to server with HCDE service connect v%u flags=0x%02x%s",
@@ -2263,10 +2304,9 @@ static void AddClientConnection(const sockaddr_in& from, int client, const FHCDE
 	}
 	else
 	{
-		// Unreachable for admitted clients: TryProcessSetupConnectPacket rejects
-		// peers without HCDE service connect info (see Phase 3 comment there).
-		I_NetLog("Client %u %s%s", client, DedicatedServerMode ? "connected without HCDE service info" : "joined without HCDE service info",
-			runtimeJoin ? " (runtime join)" : "");
+		assert(false && "AddClientConnection: HCDE service connect info missing - admission policy bug");
+		I_NetLog("Client %u admitted without HCDE service info (admission policy bug)%s",
+			client, runtimeJoin ? " (runtime join)" : "");
 	}
 	I_NetClientUpdated(client);
 
@@ -2512,6 +2552,18 @@ static void DriveRuntimeSetupStateForClient(int client, int connectedPlayers)
 			con.Status = CSTAT_READY;
 			I_NetClientUpdated(client);
 			DebugTrace::Markf("net", "runtime late-join setup reached ready slot=%d", client);
+		}
+		else if (con.bHCDEConnect)
+		{
+			auto* oldest = FindOldestHCDEReliableService(con);
+			DebugTrace::Debugf("net", "runtime setup waiting slot=%d status=WAITING has-map=%d has-game=%d ack-self=%d pending=%s key=%u seq=%u sends=%u peerAck=%u",
+				client, con.bHasMapLoadInfo ? 1 : 0, con.bHasGameInfo ? 1 : 0,
+				ClientGotAck(client, client) ? 1 : 0,
+				oldest != nullptr ? HCDEServiceName(oldest->Service) : "<none>",
+				oldest != nullptr ? oldest->Key : 0u,
+				oldest != nullptr ? oldest->Sequence : 0u,
+				oldest != nullptr ? oldest->SendCount : 0u,
+				con.HCDEServicePeerAck);
 		}
 		if (con.bHCDEConnect)
 			FlushHCDEReliableServices(con.Address, con);
@@ -4022,6 +4074,9 @@ bool I_InitNetwork()
 	}
 	else if ((arg = Args->CheckParm(FArg_joindedicated)))
 	{
+		// Backwards-compatible spelling for older launchers. Keep this branch
+		// functionally identical to -dedicatedjoin until the external launchers
+		// that shipped it are no longer supported.
 		DedicatedJoinMode = true;
 		if (!JoinGame(arg + 1))
 			return false;

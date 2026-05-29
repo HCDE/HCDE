@@ -296,13 +296,13 @@ static void Net_EnsureRuntimeClientSlot(int client, int sourceClient);
 static void DisconnectClient(int clientNum);
 
 // Translate `eventCount` canonical HCDE tic events starting at `body[bodyCursor]`
-// into the legacy NCMD/DEM_* layout expected by Net_DoCommand and store the result
-// into `output[outputCursor..]`. Advances `bodyCursor` past each event regardless
-// of whether the translation succeeds; the caller treats a false return as a
-// malformed packet. The `clientInput` flag selects the receive-side allow-list:
-// client-input bodies are gated by HCDEIsAllowedClientInputEventType, while server
-// snapshot bodies use the broader HCDEIsAllowedTicEventType.
-static bool HCDEAppendNativeCommandEventsToLegacyBuffer(const uint8_t* body, size_t bodyBytes, size_t& bodyCursor,
+// into the byte stream consumed by Net_DoCommand. Native gameplay packets are
+// applied natively everywhere else; this adapter exists only because tic events
+// still share the demo/console executor (`DEM_*` opcodes) with demos and single
+// player. It is intentionally scoped to event payloads, never whole gameplay
+// packets, and all callers have already validated/apply their native headers and
+// usercmd fields directly.
+static bool HCDEAppendNativeCommandEventsToExecutorBuffer(const uint8_t* body, size_t bodyBytes, size_t& bodyCursor,
 	size_t eventCount, bool clientInput, uint8_t* output, size_t outputCapacity, size_t& outputCursor)
 {
 	for (size_t e = 0u; e < eventCount; ++e)
@@ -333,13 +333,13 @@ static bool HCDEAppendNativeCommandEventsToLegacyBuffer(const uint8_t* body, siz
 	return true;
 }
 
-// Apply the shared NCMD-style header bits carried by native HCDE gameplay packets:
-// the retransmit flag/resend identifier, room-id staleness check, sequence ack,
-// late-join sync gating (authority side), and the authority watchdog (non-
-// authority side). Mirrors the inline logic in the legacy NetUpdate receive loop;
-// `staleRoom` is set true when the routing byte does not match `CurrentRoomID`,
-// in which case the caller must skip applying the rest of the payload.
-static void HCDEApplyNativeGameplayHeader(int clientNum, uint8_t controlFlags, uint8_t routingByte, uint32_t sequenceAck, uint32_t consistencyAck, bool& staleRoom)
+// Apply the gameplay header bits shared by legacy NCMD gameplay packets and
+// native HCDE gameplay envelopes: retransmit flag/resend id, room-id staleness,
+// sequence ack, late-join sync gating (authority side), and the authority
+// watchdog (non-authority side). `staleRoom` is set true when the routing byte
+// does not match `CurrentRoomID`; callers must skip applying the rest of the
+// payload in that case.
+static void HCDEApplyGameplayHeader(int clientNum, uint8_t controlFlags, uint8_t routingByte, uint32_t sequenceAck, uint32_t consistencyAck, bool& staleRoom)
 {
 	staleRoom = false;
 	auto& clientState = ClientStates[clientNum];
@@ -388,20 +388,20 @@ static void HCDEApplyNativeGameplayHeader(int clientNum, uint8_t controlFlags, u
 		if (seqReady && conReady)
 		{
 			players[clientNum].waiting = false;
-			Net_ClearLateJoinSyncPending(clientNum, "acks-caught-up-native");
+			Net_ClearLateJoinSyncPending(clientNum, "acks-caught-up-gameplay");
 		}
 		else if (timedOut)
 		{
 			DebugTrace::Warningf("net", "late-join native sync promotion timed out client=%d seq=%d/%d con=%d/%d room=%u",
 				clientNum, clientState.SequenceAck, targetSeq, int(consistencyAck), targetCon, unsigned(CurrentRoomID));
 			players[clientNum].waiting = false;
-			Net_ClearLateJoinSyncPending(clientNum, "promotion-timeout-native");
+			Net_ClearLateJoinSyncPending(clientNum, "promotion-timeout-gameplay");
 		}
 	}
 	if (!I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(clientNum))
 	{
 		const bool wasWaiting = players[clientNum].waiting;
-		Net_ResetAuthorityWaitWatchdog("authority-native-packet", wasWaiting);
+		Net_ResetAuthorityWaitWatchdog("authority-gameplay-packet", wasWaiting);
 		if (wasWaiting)
 		{
 			DebugTrace::Markf("net", "authority wait cleared by native current-room packet client=%d seq=%d ack=%d room=%u",
@@ -492,7 +492,7 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 			commandOffsetsSeen |= commandMask;
 
 			size_t eventCursor = 0u;
-			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+			if (!HCDEAppendNativeCommandEventsToExecutorBuffer(body, bodyBytes, bodyCursor,
 				eventCount, true, eventScratch, sizeof(eventScratch), eventCursor))
 			{
 				return fail("client-input-event-records-invalid");
@@ -517,7 +517,7 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 		return fail("client-input-body-trailing-bytes");
 
 	bool staleRoom = false;
-	HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+	HCDEApplyGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
 	if (staleRoom)
 		return fail("client-input-stale-room");
 	if (I_IsLocalHCDEServiceAuthority())
@@ -569,7 +569,7 @@ static bool HCDETryApplyNativeClientInputPayload(int clientNum, const uint8_t* p
 			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
 			bodyCursor += 2u;
 			size_t eventCursor = 0u;
-			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+			if (!HCDEAppendNativeCommandEventsToExecutorBuffer(body, bodyBytes, bodyCursor,
 				eventCount, true, eventScratch, sizeof(eventScratch), eventCursor))
 			{
 				// Validation pass should have rejected this already; bail without mutating
@@ -730,7 +730,7 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 	if (!I_IsLocalHCDEServiceAuthority() && remoteGameTic <= livePeer.LastAppliedSnapshotGameTic)
 	{
 		bool staleRoom = false;
-		HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+		HCDEApplyGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
 		if (staleRoom)
 			return fail("server-snapshot-stale-room");
 		ClearHCDELiveReplayPressure(clientNum, remoteGameTic < livePeer.LastAppliedSnapshotGameTic
@@ -788,7 +788,7 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 			commandOffsetsSeen |= commandMask;
 
 			size_t eventCursor = 0u;
-			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+			if (!HCDEAppendNativeCommandEventsToExecutorBuffer(body, bodyBytes, bodyCursor,
 				eventCount, false, eventScratch, sizeof(eventScratch), eventCursor))
 			{
 				return fail("server-snapshot-event-records-invalid");
@@ -802,7 +802,7 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 	const size_t playerSnapshotBodyEnd = bodyCursor;
 
 	bool staleRoom = false;
-	HCDEApplyNativeGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
+	HCDEApplyGameplayHeader(clientNum, controlFlags, routingByte, sequenceAck, consistencyAck, staleRoom);
 	if (staleRoom)
 		return fail("server-snapshot-stale-room");
 
@@ -878,7 +878,7 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 			const size_t eventCount = HCDELiveReadBE16(&body[bodyCursor]);
 			bodyCursor += 2u;
 			size_t eventCursor = 0u;
-			if (!HCDEAppendNativeCommandEventsToLegacyBuffer(body, bodyBytes, bodyCursor,
+			if (!HCDEAppendNativeCommandEventsToExecutorBuffer(body, bodyBytes, bodyCursor,
 				eventCount, false, eventScratch, sizeof(eventScratch), eventCursor))
 			{
 				// Validation should have caught this; bail without mutating pState further.
@@ -939,6 +939,12 @@ static bool HCDETryApplyNativeServerSnapshotPayload(int clientNum, const uint8_t
 	}
 	else if (hasInvasionSnapshot && !HCDELivePeerHasCapability(clientNum, HCDELiveCapInvasionSnapshotV2))
 	{
+		// HCDE roadmap #15 audit decision: reject peers that advertise an
+		// invasion snapshot but lack V2 capability. Downgrade to V1 is not
+		// supported; the V1 path is legacy and maintaining dual serializers
+		// would hide desync bugs. The capability system exists to gate
+		// protocol evolution; a peer without V2 cannot participate in the
+		// current invasion snapshot contract.
 		return fail("server-snapshot-invasion-capability-missing");
 	}
 	if (bodyCursor < bodyBytes

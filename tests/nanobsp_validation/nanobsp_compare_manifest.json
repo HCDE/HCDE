@@ -1,0 +1,32 @@
+{
+  "name": "HCDE NanoBSP comparison harness",
+  "status": "adapter-pending",
+  "cases": [
+    {
+      "id": "tiny-square",
+      "description": "Single convex sector baseline; ZDBSP and NanoBSP should produce one subsector and no splits.",
+      "map": "generated:tiny-square",
+      "los_samples": [
+        [[64, 64], [448, 448]],
+        [[128, 256], [384, 256]],
+        [[256, 128], [256, 384]]
+      ]
+    },
+    {
+      "id": "split-corridor",
+      "description": "Simple concave corridor that forces at least one partition and validates line mapping.",
+      "map": "generated:split-corridor",
+      "los_samples": [
+        [[64, 64], [448, 64]],
+        [[64, 64], [448, 448]],
+        [[256, 128], [256, 384]]
+      ]
+    },
+    {
+      "id": "polyobject-reservation",
+      "description": "Placeholder row for the polyobject quirk set that must pass before NanoBSP can be enabled.",
+      "map": "pending:polyobject-fixture",
+      "los_samples": []
+    }
+  ]
+}

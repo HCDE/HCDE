@@ -106,12 +106,9 @@ void DBot::ThinkForMove (usercmd_t *cmd)
 		missile = nullptr; //Probably ended its travel.
 	}
 
-#if 0	// this has always been broken and without any reference it cannot be fixed.
-	if (player->mo->Angles.Pitch > 0)
-		player->mo->Angles.Pitch -= 80;
-	else if (player->mo->Angles.Pitch <= -60)
-		player->mo->Angles.Pitch += 80;
-#endif
+	// Historical ZDoom bot pitch-snap that has always been broken and was
+	// never figured out. Do not re-enable without a working repro: the
+	// numbers below were inherited as-is from a much older bot codebase.
 
 	//HOW TO MOVE:
 	if (missile && (player->mo->Distance2D(missile)<AVOID_DIST)) //try avoid missile got from P_Mobj.c thinking part.

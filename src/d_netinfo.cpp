@@ -558,21 +558,9 @@ void D_UserInfoChanged (FBaseCVar *cvar)
 	FString escaped_val;
 	char foo[256];
 
-#if 0
-	if (cvar == autoaim->get())
-	{
-		if (autoaim < 0.0f)
-		{
-			autoaim = 0.0f;
-			return;
-		}
-		else if (autoaim > 35.0f)
-		{
-			autoaim = 35.f;
-			return;
-		}
-	}
-#endif
+	// Note: ZDoom historically clamped `autoaim` here. The CVar is now
+	// handled at the gameplay layer, so the user-info path no longer
+	// touches it.
 
 	val = cvar->GetGenericRep (CVAR_String);
 	escaped_val = D_EscapeUserInfo(val.String);
@@ -636,19 +624,10 @@ static const char *SetServerVar (char *name, ECVarType type, TArrayView<uint8_t>
 		delete[] value.String;
 	}
 
-#if 0
-	if (var == teamplay->get())
-	{
-		// Put players on teams if teamplay turned on
-		for (int i = 0; i < MAXPLAYERS; ++i)
-		{
-			if (playeringame[i])
-			{
-				UpdateTeam (i, players[i].userinfo.GetTeam(), true);
-			}
-		}
-	}
-#endif
+	// Note: ZDoom used to migrate every player onto a team here when
+	// `teamplay` flipped on. HCDE handles team assignment through user-info
+	// updates from the player rather than a server-side broadcast, so the
+	// migration loop is intentionally absent.
 
 	if (var)
 	{

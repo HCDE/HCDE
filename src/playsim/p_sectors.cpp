@@ -110,13 +110,15 @@ static bool IsDamaging(sector_t& sec, int moTID)
 		return true;
 
 	// Check for any sector actions that might eventually lead to it dealing damage in some way.
-	// TODO: This needs to verify that 214's passed tag is this sector's. Currently there's no
-	// easy way to get this as sectors can have multiple tags.
+	// Sector special 214 is SECTOR_DAMAGE3D and takes (tag, amount, mod): only treat it as
+	// dangerous when the tag matches this sector. Sectors can have multiple tags, so use the
+	// tag manager (a tag of 0 means "this sector" in the action argument convention).
 	for (AActor* secAct = sec.SecActTarget; secAct != nullptr; secAct = secAct->tracer)
 	{
 		if ((secAct->special == 73 && secAct->args[0] >= 0)
 			|| (secAct->special == 119 && secAct->args[1] > 0 && (!secAct->args[0] || secAct->args[1] == moTID))
-			|| (secAct->special == 214 && secAct->args[1] > 0))
+			|| (secAct->special == 214 && secAct->args[1] > 0
+				&& (secAct->args[0] == 0 || sec.Level->SectorHasTag(&sec, secAct->args[0]))))
 		{
 			return true;
 		}

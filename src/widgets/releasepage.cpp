@@ -19,6 +19,7 @@
 #include <string>
 
 #include <rapidxml/rapidxml.hpp>
+#include <rapidjson/document.h>
 #include <string_view>
 #include <zwidget/widgets/checkboxlabel/checkboxlabel.h>
 #include <zwidget/widgets/textedit/textedit.h>
@@ -34,16 +35,183 @@
 #include "version.h"
 #include "zstring.h"
 
-constexpr unsigned NUMBER_OF_RELEASES_TO_DISPLAY = 3;
-
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#endif
+
+#ifdef HCDE_HAVE_LIBCURL
+#include <curl/curl.h>
+#endif
+
+constexpr unsigned NUMBER_OF_RELEASES_TO_DISPLAY = 3;
 
 namespace
 {
+constexpr const char* HCDE_GITHUB_REPO = "bokoxthexchocobo/HCDE";
+
+enum class EHCDEChangelogFetchStatus
+{
+	NativeUnavailable,
+	LiveOk,
+	NetworkError,
+	JsonError,
+	NoReleases
+};
+
+struct FHCDEChangelogFetchResult
+{
+	EHCDEChangelogFetchStatus Status = EHCDEChangelogFetchStatus::NativeUnavailable;
+	FString Text;
+};
+
+struct FHCDEHttpGetResult
+{
+	bool Ok = false;          // True on HTTP 2xx with a non-empty body.
+	int  HttpStatus = 0;       // HTTP status code, 0 if request never completed.
+	FString Body;              // Response body (UTF-8, trimmed of trailing newline).
+	FString ErrorMessage;      // Human-readable transport error, if any.
+};
+
+#ifdef HCDE_HAVE_LIBCURL
+static size_t HCDE_CurlWriteToFString(char* ptr, size_t size, size_t nmemb, void* userdata)
+{
+	const size_t bytes = size * nmemb;
+	if (bytes == 0)
+		return 0;
+
+	auto* body = static_cast<FString*>(userdata);
+	body->AppendCStrPart(ptr, bytes);
+	return bytes;
+}
+#endif
+
+static FHCDEHttpGetResult HCDE_HttpGet(const char* url, const char* userAgent, int timeoutSeconds)
+{
+	FHCDEHttpGetResult result;
+#ifdef HCDE_HAVE_LIBCURL
+	CURL* curl = curl_easy_init();
+	if (curl == nullptr)
+	{
+		result.ErrorMessage = "curl_easy_init failed";
+		return result;
+	}
+
+	char errorBuffer[CURL_ERROR_SIZE] = {};
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, long(timeoutSeconds));
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, long(timeoutSeconds));
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, HCDE_CurlWriteToFString);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.Body);
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
+
+	const CURLcode code = curl_easy_perform(curl);
+	long httpStatus = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpStatus);
+	curl_easy_cleanup(curl);
+
+	result.HttpStatus = int(httpStatus);
+	result.Body.StripLeftRight();
+	if (code != CURLE_OK)
+	{
+		result.ErrorMessage = errorBuffer[0] ? errorBuffer : curl_easy_strerror(code);
+		return result;
+	}
+	if (httpStatus < 200 || httpStatus >= 300)
+	{
+		result.ErrorMessage.Format("HTTP %ld", httpStatus);
+		return result;
+	}
+
+	result.Ok = result.Body.IsNotEmpty();
+	if (!result.Ok)
+	{
+		result.ErrorMessage = "empty HTTP response";
+	}
+#else
+	(void)url;
+	(void)userAgent;
+	(void)timeoutSeconds;
+	result.ErrorMessage = "libcurl support not compiled in";
+#endif
+	return result;
+}
+
+static const char* HCDE_JsonString(const rapidjson::Value& value, const char* member)
+{
+	if (!value.IsObject() || !value.HasMember(member) || !value[member].IsString())
+		return "";
+	return value[member].GetString();
+}
+
+static bool HCDE_JsonBool(const rapidjson::Value& value, const char* member)
+{
+	return value.IsObject() && value.HasMember(member) && value[member].IsBool() && value[member].GetBool();
+}
+
+static FHCDEChangelogFetchResult FetchGitHubChangelogNative()
+{
+	FHCDEChangelogFetchResult result;
+	FString url;
+	url.Format("https://api.github.com/repos/%s/releases?per_page=8", HCDE_GITHUB_REPO);
+
+	const FHCDEHttpGetResult http = HCDE_HttpGet(url.GetChars(), "HCDE-Changelog", 6);
+	if (!http.Ok)
+	{
+		result.Status = http.ErrorMessage.IsNotEmpty() ? EHCDEChangelogFetchStatus::NetworkError : EHCDEChangelogFetchStatus::NativeUnavailable;
+		return result;
+	}
+
+	rapidjson::Document doc;
+	doc.Parse(http.Body.GetChars(), http.Body.Len());
+	if (doc.HasParseError() || !doc.IsArray())
+	{
+		result.Status = EHCDEChangelogFetchStatus::JsonError;
+		return result;
+	}
+
+	FString text;
+	unsigned count = 0;
+	for (const auto& release : doc.GetArray())
+	{
+		if (!release.IsObject() || HCDE_JsonBool(release, "draft") || HCDE_JsonBool(release, "prerelease"))
+			continue;
+
+		const char* tag = HCDE_JsonString(release, "tag_name");
+		const char* published = HCDE_JsonString(release, "published_at");
+		const char* body = HCDE_JsonString(release, "body");
+		if (tag[0] == 'v' || tag[0] == 'V')
+			++tag;
+
+		if (count > 0)
+			text.AppendFormat("\n\n---\n\n");
+		text.AppendFormat("HCDE v%s", tag[0] ? tag : "unknown");
+		if (published[0])
+			text.AppendFormat(" [%s]", published);
+		text.AppendFormat("\n\n%s", body[0] ? body : "- No changelog provided.");
+
+		++count;
+		if (count >= NUMBER_OF_RELEASES_TO_DISPLAY)
+			break;
+	}
+
+	if (count == 0)
+	{
+		result.Status = EHCDEChangelogFetchStatus::NoReleases;
+		return result;
+	}
+
+	text.StripLeftRight();
+	result.Status = EHCDEChangelogFetchStatus::LiveOk;
+	result.Text = text;
+	return result;
+}
+
+#if defined(_WIN32) && defined(HCDE_ALLOW_LEGACY_POWERSHELL_CHANGELOG)
 static std::wstring CreateTempScriptPath(const wchar_t* prefix)
 {
 	wchar_t tempPath[MAX_PATH] = {};
@@ -113,7 +281,7 @@ static FString RunPowerShellScriptCapture(const std::wstring& scriptPath)
 
 static FString FetchGitHubChangelog()
 {
-	// Match Doom Connector-style release body viewing, but keep this best-effort:
+	// Match the launcher's release-body view, but keep this best-effort:
 	// if network fetch fails, the launcher falls back to packaged changelog text.
 	const std::wstring scriptPath = CreateTempScriptPath(L"hcl");
 	if (scriptPath.empty())
@@ -121,10 +289,11 @@ static FString FetchGitHubChangelog()
 		return {};
 	}
 
-	const std::string script = R"PS(
+	FString scriptText;
+	scriptText.Format(R"PS(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$api = 'https://api.github.com/repos/bokoxthexchocobo/HCDE/releases?per_page=8'
+$api = 'https://api.github.com/repos/%s/releases?per_page=8'
 $headers = @{ 'User-Agent' = 'HCDE-Changelog' }
 $sb = New-Object System.Text.StringBuilder
 try {
@@ -167,9 +336,9 @@ try {
 } catch {
 	# Keep the launcher responsive and fall back to packaged changelog if this fails.
 }
-)PS";
+)PS", HCDE_GITHUB_REPO);
 
-	if (!WriteUtf8ScriptFile(scriptPath, script))
+	if (!WriteUtf8ScriptFile(scriptPath, scriptText.GetChars()))
 	{
 		DeleteFileW(scriptPath.c_str());
 		return {};
@@ -180,8 +349,8 @@ try {
 	output.StripLeftRight();
 	return output;
 }
-}
 #endif
+}
 
 ReleasePage::ReleasePage(LauncherWindow* launcher, const FStartupSelectionInfo& info) : Widget(nullptr), Launcher(launcher)
 {
@@ -402,7 +571,13 @@ char * ReleasePage::_OpenReleaseNotes()
 //==========================================================================
 FString ReleasePage::GetReleaseNotes()
 {
-#ifdef _WIN32
+	const FHCDEChangelogFetchResult nativeChangelog = FetchGitHubChangelogNative();
+	if (nativeChangelog.Status == EHCDEChangelogFetchStatus::LiveOk && nativeChangelog.Text.IsNotEmpty())
+	{
+		return nativeChangelog.Text;
+	}
+
+#if defined(_WIN32) && defined(HCDE_ALLOW_LEGACY_POWERSHELL_CHANGELOG)
 	const FString liveChangelog = FetchGitHubChangelog();
 	if (liveChangelog.IsNotEmpty())
 	{

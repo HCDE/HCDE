@@ -12,23 +12,18 @@ For a broader file-by-file audit (bugs, races, dead code, stale paths, and comme
    - explicitly calls out a potential buffer overflow and UI freezes under high-pressure scenarios.
    - notes inconsistent logging between `DebugTrace::Markf()` and `Printf()`.
 
-2. `docs/HCDE_NETCODE_OVERHAUL.md`
-   - the multiplayer netcode is still under active overhaul.
-   - many live protocols and actor/authority lanes are being reworked, making multiplayer reliability a natural weak point.
-   - complex features include lane budgets, late-join repair windows, actor delta streams, unlagged validation, and server-side simulation LOD.
-
-3. `src/d_net.cpp`
+2. `src/d_net.cpp`
    - contains numerous desync warnings and packet validation paths.
    - has explicit warnings for malformed packets, oversized payloads, and consistency mismatches.
    - the netcode is clearly a high-risk area because it is large, stateful, and sensitive to malformed or lossy input.
 
-4. `src/i_net.cpp` (referenced by `docs/NETCODE_REVIEW.md`)
+3. `src/i_net.cpp` (referenced by `docs/NETCODE_REVIEW.md`)
    - `HandleIncomingConnection()` was flagged for shared-state access and possible race conditions.
    - `GetPacket()` was flagged for unsafe buffer handling and malformed packet risk.
    - `DriveRuntimeSetupStateForClient()` and connection setup queues were flagged for saturation issues.
    - `Host_CheckForConnections()` was flagged for callback/state-modification complexity.
 
-5. Session token / packet parsing logic
+4. Session token / packet parsing logic
    - session token mismatch handling is currently simple reject logic.
      * No retry/backoff strategy for transient token failures.
      * No token refresh or rotation mechanism for degraded connections.
@@ -83,7 +78,8 @@ For a broader file-by-file audit (bugs, races, dead code, stale paths, and comme
    - current repair and catchup logic is complex and likely to be a source of playability bugs.
 
 3. High-ping / desync handling
-   - `docs/HCDE_NETCODE_OVERHAUL.md` emphasizes unlagged player history and high-ping audits.
+   - HCDE relies on per-client unlagged player history and prediction repair to keep
+     high-ping competitive play stable.
    - these are usability-critical features, but they also mean the gameplay experience can break subtly if not perfectly tuned.
 
 4. Mod compatibility risk
@@ -117,7 +113,7 @@ For a broader file-by-file audit (bugs, races, dead code, stale paths, and comme
 ## 5. File References for Cleanup
 
 - `docs/NETCODE_REVIEW.md`
-- `docs/HCDE_NETCODE_OVERHAUL.md`
+- `docs/LEGACY_NETCODE_REMAINDER_AUDIT.md`
 - [CVAR Reference (wiki)](https://github.com/bokoxthexchocobo/HCDE/wiki/CVAR-Reference)
 - `src/d_net.cpp`
 - `src/i_net.cpp`

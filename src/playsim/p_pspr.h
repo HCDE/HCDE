@@ -244,4 +244,10 @@ void A_ReFire(AActor *self, FState *state = NULL);
 extern EPSPBobType BobType;
 extern FPlayerBob PlayerBob[MAXPLAYERS];
 
+// HCDE roadmap #11: International Doom-style smooth weapon bob.
+// Maps a per-frame interpolation fraction into a smoothed (ease-in-out) curve
+// when `r_weapon_bob_smooth` is enabled. Otherwise returns the input
+// unchanged. Presentation-only: not part of playsim, not networked.
+double R_WeaponBobSmoothFrac(double ticFrac);
+
 #endif	// __P_PSPR_H__

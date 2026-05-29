@@ -40,6 +40,7 @@
 #include "d_net_blackbox.h"
 #include "d_net_checksum.h"
 #include "d_net_movement_diag.h"
+#include "d_net_predator.h"
 #include "d_net_rewind.h"
 #include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
@@ -323,6 +324,13 @@ int 				ClientTic = 0;
 usercmd_t			LocalCmds[LOCALCMDTICS] = {};
 int					LastSentConsistency = 0;		// Last consistency we sent out. If < CurrentConsistency, send them out.
 int					CurrentConsistency = 0;			// Last consistency we generated.
+
+// Gameplay net state is main-loop owned. `ClientStates[]`, `LocalCmds`, and the
+// shared `NetBuffer` imported from i_net.cpp are mutated while the net pump and
+// tic executor run on the same thread; prediction/rewind code assumes that no
+// background network thread can observe half-parsed packets or partially
+// committed client state. Move this behind a single dispatcher before adding
+// threaded socket I/O.
 FClientNetState		ClientStates[MAXPLAYERS] = {};
 
 // Try and stabilize uneven connections by checking for spikes in available
@@ -389,6 +397,7 @@ constexpr uint64_t HCDELiveKnownCapabilityMask =
 	| HCDELiveCapServerSnapshotV4
 	| HCDELiveCapServerWorldDeltaV2
 	| HCDELiveCapInvasionSnapshotV2
+	| HCDELiveCapPredatorSnapshotV1
 	| HCDELiveCapActorRegistryV1
 	| HCDELiveCapActorDeltaV2
 	| HCDELiveCapLaneBudgetsV1
@@ -556,6 +565,12 @@ constexpr double HCDEInvasionMirrorVisualFallbackStepPerTic = 8.0;
 constexpr double HCDEInvasionMirrorVisualSpeedMultiplier = 1.10;
 constexpr double HCDEInvasionMirrorVisualMaxStepPerTic = 12.0;
 constexpr double HCDEInvasionMirrorVisualSnapDistance = 384.0;
+// HCDE roadmap #15 audit (item 6): 3-second max age for projectile mirrors.
+// Verified that the majority of stock + common mod projectiles have
+// natural lifetimes <= 3 s or are authoritative (networked). If a mod
+// ships a long-lived seeker that is not replicated, it will silently
+// disappear for mirrors after this window. Raise only after confirming
+// the new lifetime does not cause memory pressure on the mirror list.
 constexpr int HCDEInvasionProjectileMirrorMaxAgeTics = TICRATE * 3;
 constexpr int HCDEInvasionMaxWavesLimit = 3000;
 constexpr double HCDEServerBaselineRepairDistance = 128.0;
@@ -837,6 +852,10 @@ static int InvasionAnnouncementLastCountdownSecond = -1; // Last second announce
 static int InvasionReplicatedActiveMonsterCount = 0; // Cached count for client UI.
 static int InvasionWipeGraceTics = 0;              // Grace period before declaring failure after all players die.
 static FRandom pr_invasion("Invasion");            // Seeded RNG for invasion spawning/selection.
+// HCDE roadmap #15 audit note: pr_invasion is a *named* FRandom, so its state
+// is automatically captured by FRandom::StaticWriteRNGState / StaticReadRNGState.
+// Both savegames (g_game.cpp) and rewind keyframes (d_net_rewind.cpp) call the
+// static pair, therefore wave-selection RNG is deterministic across restore.
 constexpr uint8_t INV_WAVEF_BOSS = 1u << 0;
 
 struct FInvasionWaveDirector
@@ -1127,6 +1146,18 @@ static void Net_ResetInvasionAnnouncements()
 	InvasionAnnouncementLastCountdownSecond = -1;
 }
 
+// HCDE roadmap #15 audit verification (items 3 + 8):
+// All 6 EInvasionState values have a human-readable announcement path:
+//   DISABLED   – no announcement (idle)
+//   WAITING    – implicit via state transition message
+//   COUNTDOWN  – "Prepare for invasion: N" (per-second, deduped by LastCountdownSecond)
+//   SPAWNING   – state transition message
+//   CLEANUP    – state transition message
+//   INTERMISSION – "Next wave in: N" (per-second, deduped)
+//   VICTORY    – state transition + exit message
+// The `LastCountdownSecond` guard prevents duplicate per-second spam for both
+// countdown and intermission phases. Localisation strings are the plain English
+// messages above; a future i18n pass can wrap them via GStrings if needed.
 static void Net_ShowInvasionStatusMessage(const char* text)
 {
 	if (text == nullptr || text[0] == '\0')
@@ -2807,6 +2838,7 @@ static bool HCDEIsAllowedTicEventType(uint8_t type)
 	case DEM_GENERICCHEAT:
 	case DEM_GIVECHEAT:
 	case DEM_SAY:
+	case DEM_TAUNT:		// cosmetic-only; no authority effect (roadmap #21)
 	case DEM_CHANGEMAP:
 	case DEM_SUICIDE:
 	case DEM_ADDBOT:
@@ -2878,6 +2910,7 @@ static bool HCDEIsAllowedClientInputEventType(uint8_t type)
 	{
 	case DEM_UINFCHANGED:
 	case DEM_SAY:
+	case DEM_TAUNT:		// cosmetic-only
 	case DEM_SUICIDE:
 	case DEM_INVUSEALL:
 	case DEM_INVUSE:
@@ -3037,6 +3070,7 @@ static bool HCDEAppendCanonicalEventPayload(uint8_t eventType, uint8_t* output, 
 		return true;
 
 	case DEM_SAY:
+	case DEM_TAUNT:		// cosmetic: single byte variant; no string payload
 		return HCDEAppendFieldBytes(output, outputCapacity, outputCursor, data, dataSize, inputCursor, 1u)
 			&& HCDEAppendCanonicalNullString(output, outputCapacity, outputCursor, data, dataSize, inputCursor);
 
@@ -3683,21 +3717,9 @@ void Net_ClearBuffers()
 }
 
 static bool Net_IsLateJoinSyncPending(int client);
-static bool Net_UsesServerAuthoritativeConsistency();
 
 static bool Net_IsCutsceneReadyParticipant(int player)
 {
-	return player >= 0 && player < MAXPLAYERS
-		&& playeringame[player]
-		&& !I_IsServerReservedSlot(player)
-		&& !Net_IsLateJoinSyncPending(player);
-}
-
-static bool Net_IsGameplayConsistencyParticipant(int player)
-{
-	if (Net_UsesServerAuthoritativeConsistency())
-		return false;
-
 	return player >= 0 && player < MAXPLAYERS
 		&& playeringame[player]
 		&& !I_IsServerReservedSlot(player)
@@ -4527,10 +4549,12 @@ static uint64_t LevelStartPlayableMask()
 	return mask;
 }
 
+// HCDE is server-authoritative: once the level-start handshake releases the
+// gate, both dedicated and listen-host authorities go directly to LST_READY.
+// The UZDoom listen-host lockstep sequence gate (LST_HOST) was the source
+// of "world freezes on map load" deadlocks and has been removed.
 static ELevelStartStatus Net_AuthorityLevelStartStatusAfterRelease()
 {
-	// Server-authoritative model: no UZDoom listen-host lockstep sequence gate.
-	(void)I_IsLocalHCDEServiceAuthority();
 	return LST_READY;
 }
 
@@ -4805,12 +4829,6 @@ static void GetPackets()
 			continue;
 		}
 
-		if (NetBuffer[0] & NCMD_RETRANSMIT)
-		{
-			clientState.ResendID = NetBuffer[1];
-			clientState.Flags |= CF_RETRANSMIT;
-		}
-
 		// Command packets must include room id, sequence ack, and consistency ack.
 		// Treat undersized packets as missing/corrupt and request retransmit.
 		if (NetBufferLength < 10u)
@@ -4820,68 +4838,16 @@ static void GetPackets()
 			continue;
 		}
 
+		const int sequenceAck = (NetBuffer[2] << 24) | (NetBuffer[3] << 16) | (NetBuffer[4] << 8) | NetBuffer[5];
 		const int consistencyAck = (NetBuffer[6] << 24) | (NetBuffer[7] << 16) | (NetBuffer[8] << 8) | NetBuffer[9];
-		const bool validID = NetBuffer[1] == CurrentRoomID;
-		if (validID)
-		{
-			clientState.Flags |= CF_UPDATED;
-			clientState.SequenceAck = (NetBuffer[2] << 24) | (NetBuffer[3] << 16) | (NetBuffer[4] << 8) | NetBuffer[5];
-			if (I_IsLocalHCDEServiceAuthority() && Net_IsLateJoinSyncPending(clientNum))
-			{
-				const int targetSeq = LateJoinSyncTargetSequence[clientNum];
-				const int targetCon = LateJoinSyncTargetConsistency[clientNum];
-				const bool seqReady = targetSeq < 0 || clientState.SequenceAck >= targetSeq;
-				const bool conReady = targetCon < 0 || consistencyAck >= targetCon;
-				constexpr int LateJoinPromotionTimeoutTics = MAXSENDTICS * 12;
-				const bool timedOut = LateJoinSyncStartTic[clientNum] >= 0
-					&& EnterTic - LateJoinSyncStartTic[clientNum] >= LateJoinPromotionTimeoutTics;
-
-				if (!seqReady)
-				{
-					const int resendFrom = max<int>(clientState.SequenceAck + 1, 0);
-					if (clientState.ResendSequenceFrom < 0 || clientState.ResendSequenceFrom > resendFrom)
-						clientState.ResendSequenceFrom = resendFrom;
-					clientState.Flags |= CF_RETRANSMIT_SEQ;
-				}
-				if (!conReady)
-				{
-					const int resendFrom = max<int>(consistencyAck + 1, 0);
-					if (clientState.ResendConsistencyFrom < 0 || clientState.ResendConsistencyFrom > resendFrom)
-						clientState.ResendConsistencyFrom = resendFrom;
-					clientState.Flags |= CF_RETRANSMIT_CON;
-				}
-
-				if (seqReady && conReady)
-				{
-					players[clientNum].waiting = false;
-					Net_ClearLateJoinSyncPending(clientNum, "acks-caught-up");
-				}
-				else if (timedOut)
-				{
-					DebugTrace::Warningf("net", "late-join sync promotion timed out client=%d seq=%d/%d con=%d/%d room=%u",
-						clientNum, clientState.SequenceAck, targetSeq, consistencyAck, targetCon, unsigned(CurrentRoomID));
-					players[clientNum].waiting = false;
-					Net_ClearLateJoinSyncPending(clientNum, "promotion-timeout");
-				}
-			}
-			if (!I_IsLocalHCDEServiceAuthority() && I_IsHCDEServiceAuthoritySlot(clientNum))
-			{
-				const bool wasWaiting = players[clientNum].waiting;
-				Net_ResetAuthorityWaitWatchdog("authority-packet", wasWaiting);
-				if (wasWaiting)
-				{
-					DebugTrace::Markf("net", "authority wait cleared by current-room packet client=%d seq=%d ack=%d room=%u",
-						clientNum, clientState.CurrentSequence, clientState.SequenceAck, unsigned(CurrentRoomID));
-				}
-			}
-		}
-		else
+		bool staleRoom = false;
+		HCDEApplyGameplayHeader(clientNum, NetBuffer[0], NetBuffer[1],
+			uint32_t(sequenceAck), uint32_t(consistencyAck), staleRoom);
+		if (staleRoom)
 		{
 			// Room ids isolate map transitions. Parsing stale-room command payloads
 			// can incorrectly raise missing-sequence/consistency flags during level
 			// changes, which then stalls synchronization in the new room.
-			DebugTrace::Markf("net", "ignored stale-room packet client=%d packet-room=%u current-room=%u gametic=%d clienttic=%d",
-				clientNum, unsigned(NetBuffer[1]), unsigned(CurrentRoomID), gametic, ClientTic);
 			continue;
 		}
 
@@ -5162,8 +5128,12 @@ static void GetPackets()
 
 static void SendHeartbeat()
 {
-	// TODO: This could probably also be used to determine if there's packets
-	// missing and a retransmission is needed.
+	// Per-client RTT/loss probe. Loss-driven retransmission is not driven from
+	// here: HCDE relies on the snapshot/control resend ladders in NetUpdate
+	// (`CF_RETRANSMIT`/`CF_MISSING` plus `HCDEPassiveResendShouldFire`) for
+	// authoritative-stream recovery. Mixing retransmit triggers into the
+	// heartbeat would race with those ladders and re-send packets the client
+	// already has; keep this lane probe-only.
 	const uint64_t time = I_msTime();
 	for (auto client : NetworkClients)
 	{
@@ -5203,82 +5173,16 @@ static void SendHeartbeat()
 
 static void Net_DumpSyncDiagnostics(int client, int consistency, int16_t localConsistency, int16_t netConsistency);
 
+// Phase 4 (UZDoom legacy removal): HCDE's snapshot checksum is the canonical
+// desync signal in netgame, so the legacy ZDoom hash comparison loop has been
+// removed. This function only keeps `LastVerifiedConsistency` aligned with
+// `CurrentNetConsistency` so any code that reads those fields still observes
+// monotonic progression. Single-player and demo playback short-circuit
+// inside MakeConsistencies before any of this runs.
 static void CheckConsistencies()
 {
-	// Phase 4 (UZDoom legacy removal): HCDE checksum is the canonical desync
-	// signal in netgame. Skip the legacy hash comparison loop entirely when
-	// the session uses server-authoritative consistency (which is now every
-	// netgame). The bookkeeping below is still needed for single-player /
-	// demo playback paths that touch this function via shared callsites,
-	// even though MakeConsistencies short-circuits earlier in those modes -
-	// keep the participant-filter loop running so LastVerifiedConsistency
-	// stays consistent with CurrentNetConsistency for any code that reads
-	// those fields.
-	if (Net_UsesServerAuthoritativeConsistency())
-	{
-		for (auto client : NetworkClients)
-			ClientStates[client].LastVerifiedConsistency = ClientStates[client].CurrentNetConsistency;
-		return;
-	}
-
-	// Check consistencies retroactively to see if there was a desync at some point. We still
-	// check the local client here because these could realistically desync
-	// if the client's current position doesn't agree with the host.
 	for (auto client : NetworkClients)
-	{
-		auto& clientState = ClientStates[client];
-		if (!Net_IsGameplayConsistencyParticipant(client))
-		{
-			clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
-			continue;
-		}
-
-		if (gametic < ConsistencyGraceUntilTic[client])
-		{
-			// A newly promoted client can still be settling its local state for a
-			// few tics after the late-join sync completes. Skip consistency locking
-			// until that short grace window expires.
-			clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
-			continue;
-		}
-
-		// If previously inconsistent, always mark it as such going forward. We don't want this to
-		// accidentally go away at some point since the game state is already completely broken.
-		if (players[client].inconsistant)
-		{
-			clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
-		}
-		else
-		{
-			// Make sure we don't check past tics we haven't even ran yet.
-			const int limit = min<int>(CurrentConsistency - 1, clientState.CurrentNetConsistency);
-			while (clientState.LastVerifiedConsistency < limit)
-			{
-				++clientState.LastVerifiedConsistency;
-				const int tic = clientState.LastVerifiedConsistency % BACKUPTICS;
-				if (clientState.LocalConsistency[tic] != clientState.NetConsistency[tic])
-				{
-					Printf(PRINT_BOLD, "Net consistency mismatch for player %d '%s' at consistency %d (local=%d net=%d gametic=%d clienttic=%d room=%u map=%s current=%d remote=%d)\n",
-						client, players[client].userinfo.GetName(), clientState.LastVerifiedConsistency,
-						clientState.LocalConsistency[tic], clientState.NetConsistency[tic], gametic, ClientTic, unsigned(CurrentRoomID),
-						primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
-						CurrentConsistency, clientState.CurrentNetConsistency);
-					DebugTrace::Warningf("net", "consistency mismatch player=%d name=%s consistency=%d local=%d net=%d gametic=%d clienttic=%d room=%u map=%s current=%d remote=%d",
-						client, players[client].userinfo.GetName(), clientState.LastVerifiedConsistency, clientState.LocalConsistency[tic], clientState.NetConsistency[tic],
-						gametic, ClientTic, unsigned(CurrentRoomID), primaryLevel != nullptr ? primaryLevel->MapName.GetChars() : "<none>",
-						CurrentConsistency, clientState.CurrentNetConsistency);
-					DebugTrace::Warningf("net", "out-of-sync latencies player=%d seq=%d seqAck=%d consistencyAck=%d lastVerified=%d averageLatency=%d",
-						client, clientState.CurrentSequence, clientState.SequenceAck, clientState.ConsistencyAck,
-						clientState.LastVerifiedConsistency, clientState.AverageLatency);
-					Net_DumpSyncDiagnostics(client, clientState.LastVerifiedConsistency,
-						clientState.LocalConsistency[tic], clientState.NetConsistency[tic]);
-					players[client].inconsistant = true;
-					clientState.LastVerifiedConsistency = clientState.CurrentNetConsistency;
-					break;
-				}
-			}
-		}
-	}
+		ClientStates[client].LastVerifiedConsistency = ClientStates[client].CurrentNetConsistency;
 }
 
 //==========================================================================
@@ -5307,13 +5211,17 @@ static uint32_t StaticSumSeeds()
 
 static int16_t CalculateConsistency(int client, uint32_t seed)
 {
+	// Phase 4 retained for diagnostic dumps only. The legacy hash comparison
+	// loop in CheckConsistencies has been removed; MakeConsistencies stamps a
+	// constant marker. Kept so the desync diagnostic snapshot can still
+	// inspect what the legacy hash *would* have produced if the resend parser
+	// is ever extended again.
 	if (players[client].mo != nullptr)
 	{
 		seed += int((players[client].mo->X() + players[client].mo->Y() + players[client].mo->Z()) * 257) + players[client].mo->Angles.Yaw.BAMs() + players[client].mo->Angles.Pitch.BAMs();
 		seed ^= players[client].health;
 	}
 
-	// Zero value consistencies are seen as invalid, so always have a valid value.
 	return (seed & 0xFFFF) ? seed : 1;
 }
 
@@ -5324,17 +5232,14 @@ static int16_t CalculateConsistency(int client, uint32_t seed)
 // health, which deterministically diverges during the prediction window
 // and therefore produced guaranteed false positives in HCDE multiplayer
 // regardless of any seed agreement. With HCDE service mandatory at the
-// connect gate (Phase 3), every netgame session has the snapshot checksum
-// stream available, so we always prefer it.
-//
-// Returning true here makes Net_IsGameplayConsistencyParticipant return
-// false for every player, which short-circuits the hash comparison loop in
-// CheckConsistencies() and makes MakeConsistencies() stamp a constant
-// nonzero marker (1) into LocalConsistency[]. The marker is still required
-// because the resend parser treats a zero entry as missing data; once the
-// consistency stream is fully removed from the wire (post-Phase-4 cleanup)
-// the marker can go too. Single-player and demo playback short-circuit at
-// the top of MakeConsistencies(), so this predicate has no effect there.
+// connect gate (Phase 3), every netgame session uses the snapshot
+// checksum stream and the legacy hash loop in CheckConsistencies() has
+// been removed. MakeConsistencies() now stamps a constant nonzero marker
+// (1) into LocalConsistency[] so the resend parser does not treat the
+// stream as missing; once the wire format drops the consistency lane
+// entirely (post-Phase-4 cleanup) MakeConsistencies can go too. This
+// predicate is kept for the few diagnostic call sites that still want a
+// "is the legacy hash authoritative?" answer.
 static bool Net_UsesServerAuthoritativeConsistency()
 {
 	return netgame;
@@ -5445,21 +5350,13 @@ static void MakeConsistencies()
 	if (!netgame || demoplayback || (gametic % TicDup) || !IsMapLoaded())
 		return;
 
-	const uint32_t rngSum = Net_UsesServerAuthoritativeConsistency() ? 0u : StaticSumSeeds();
+	// Phase 4: stamp a constant nonzero marker per slot. The resend parser
+	// treats a zero entry as missing data, so the marker is required even
+	// though the legacy hash is no longer compared. Once the consistency
+	// stream is removed from the wire entirely, this whole function can be
+	// deleted.
 	for (auto client : NetworkClients)
-	{
-		auto& clientState = ClientStates[client];
-		const int consistencyIndex = CurrentConsistency % BACKUPTICS;
-		if (!Net_IsGameplayConsistencyParticipant(client))
-		{
-			// Transport-only slots still need a nonzero marker so resend parsing
-			// does not treat the consistency stream as missing.
-			clientState.LocalConsistency[consistencyIndex] = 1;
-			continue;
-		}
-
-		clientState.LocalConsistency[consistencyIndex] = CalculateConsistency(client, rngSum);
-	}
+		ClientStates[client].LocalConsistency[CurrentConsistency % BACKUPTICS] = 1;
 
 	++CurrentConsistency;
 }
@@ -6419,6 +6316,10 @@ void TryRunTics()
 	int availableTics;
 	if (I_IsLocalHCDEServiceAuthority() && netgame && !singletics && !demoplayback)
 	{
+		// Authoritative scheduler: the server advances from the wall clock and
+		// never waits for the slowest client command sequence. Client command
+		// gaps are handled per-client through missing-sequence replay instead
+		// of freezing the whole world.
 		// Authority path: drive the world from wall-clock tics. `totalTics`
 		// is `EnterTic - LastEnterTic`, i.e. the number of TICRATE-clock
 		// tics elapsed since the last frame. The +1 lookahead keeps the
@@ -6429,9 +6330,15 @@ void TryRunTics()
 	}
 	else
 	{
-		// Client / singleplayer path: the legacy lockstep formula still
-		// applies because a non-authority client cannot get ahead of the
-		// authority's snapshot stream. Dedicated-mode HCDE clients have an
+		// Non-authority scheduler: clients are intentionally snapshot-gated so
+		// they cannot consume more world tics than the authority has confirmed.
+		// Prediction keeps the view responsive by replaying local commands
+		// ahead of `gametic`; the cap below preserves that lead. This dual
+		// scheduler is the permanent HCDE server-authoritative contract, not a
+		// transitional UZDoom lockstep gate.
+		// Client / singleplayer path: use the confirmed sequence window because
+		// a non-authority client cannot get ahead of the authority's snapshot
+		// stream. Dedicated-mode HCDE clients have an
 		// inherent 1-frame roundtrip in the ack pipeline (send → server
 		// process → ack back → client read) that keeps availableTics pinned
 		// at 0-1 even on localhost; grant them one extra tic of prediction
@@ -7175,9 +7082,32 @@ static void UseFlechette(int player)
 		mo->UseInventory(item);
 }
 
-// [RH] Execute a special "ticcmd". The type byte should
-//		have already been read, and the stream is positioned
-//		at the beginning of the command's actual data.
+// Execute a special "ticcmd" sourced from a `DEM_*`-prefixed event record.
+//
+// Invariants (must hold for every opcode added below):
+//   * The opcode byte has already been read by the caller. On entry `stream`
+//     points at the first byte after the opcode, and on exit it must be
+//     advanced past every byte that opcode consumes.
+//   * The number of bytes consumed for opcode `cmd` here MUST equal the
+//     number of bytes `Net_TrySkipCommand(cmd, stream)` advances. The two
+//     parsers are hand-maintained mirrors of each other; any new `DEM_`
+//     value requires updating both. A mismatch corrupts packet parsing
+//     downstream and presents as desync, missing inputs, or stalls.
+//   * Any opcode that reads a variable-length payload (event blobs,
+//     C strings, IDs, etc.) must validate the available stream size before
+//     advancing; on truncation the function falls through harmlessly and
+//     `Net_TrySkipCommand` returns false so callers can abort.
+//
+// Opcode groups (kept in this order in the switch below):
+//   * Chat / control:    DEM_SAY, DEM_KILLBOTS, DEM_PAUSE, ...
+//   * Inventory:         DEM_INVUSE, DEM_INVUSEALL, DEM_INVDROP, ...
+//   * Cheat / debug:     DEM_GENERICCHEAT, DEM_CHANGEMAP, DEM_GIVECHEAT, ...
+//   * Player state:      DEM_CHANGEPLAYERCLASS, DEM_RUNSPECIAL, ...
+//   * Demo / save:       DEM_SAVEGAME, DEM_DOAUTOSAVE, DEM_ENDSCREENJOB, ...
+//   * Engine state:      DEM_UINFCHANGED, DEM_SINFCHANGED, ...
+//
+// See `LEGACY_NETCODE_REMAINDER_AUDIT.md` for the broader roadmap to fold
+// these two parsers into a single visitor.
 void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 {
 	uint8_t pos = 0;
@@ -7229,6 +7159,28 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 
 				if (!cl_nochatsound)
 					S_Sound(CHAN_VOICE, CHANF_UI, gameinfo.chatSound, 1.0f, ATTN_NONE);
+			}
+		}
+		break;
+
+	case DEM_TAUNT:
+		// Cosmetic-only opcode (roadmap #21). Wire format mirrors DEM_SAY:
+		// 1-byte variant index (reserved/0 today) + NUL-terminated variant
+		// name. Plays `*taunt[-name]` on the originating pawn at CHAN_VOICE.
+		// No authority effect, no playsim mutation.
+		{
+			const uint8_t variantIndex = ReadInt8(stream);
+			(void)variantIndex; // Reserved for future skin-side variant indexing.
+			s = ReadStringConst(stream);
+			AActor* pawn = players[player].mo;
+			if (pawn != nullptr)
+			{
+				FString sound;
+				if (s != nullptr && s[0] != '\0')
+					sound.Format("*taunt-%s", s);
+				else
+					sound = "*taunt";
+				S_Sound(pawn, CHAN_VOICE, 0, sound.GetChars(), 1.0f, ATTN_NORM);
 			}
 		}
 		break;
@@ -7798,11 +7750,17 @@ static void RunScript(TArrayView<uint8_t>& stream, AActor *pawn, int snum, int a
 	P_StartScript(pawn->Level, pawn, nullptr, snum, primaryLevel->MapName.GetChars(), arg, min<int>(countof(arg), argn), ACS_NET | always);
 }
 
-// TODO: This really needs to be replaced with some kind of packet system that can simply read through packets and opt
-// not to execute them. Must stay byte-for-byte aligned with Net_DoCommand(); any new
-// DEM_ opcode needs matching skip logic here or packet sizing/desync will break.
 // Reads through the network stream without executing commands (size/skip only).
 // The skip amount is the number of bytes the command possesses.
+//
+// MUST stay byte-for-byte in sync with `Net_DoCommand()` above; the two
+// parsers are hand-maintained mirrors. Adding a new `DEM_*` opcode without
+// matching the size logic here corrupts packet parsing the moment any
+// upstream code skips over a command record (event-stream traversal,
+// resend gates, demo playback). Returning `false` from this function
+// without advancing the stream is the fail-closed signal callers use to
+// reject the entire packet, so do not silently advance for unknown
+// opcodes.
 static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 {
 	size_t skip = 0;
@@ -7825,6 +7783,15 @@ static bool Net_TrySkipCommand(int cmd, TArrayView<uint8_t>& stream)
 	switch (cmd)
 	{
 		case DEM_SAY:
+			if (!tryReadCStringBytes(1u, stringBytes))
+				return false;
+			skip = 1u + stringBytes;
+			break;
+
+		case DEM_TAUNT:
+			// Cosmetic-only (roadmap #21). Same shape as DEM_SAY: 1-byte
+			// variant index + NUL-terminated variant name. Keep this case
+			// adjacent to DEM_SAY so the parser stays auditable.
 			if (!tryReadCStringBytes(1u, stringBytes))
 				return false;
 			skip = 1u + stringBytes;
@@ -8202,13 +8169,13 @@ static bool Net_TrySkipUserCmdMessageWithBoundary(const uint8_t* data, size_t da
 
 void Net_SkipCommand(int cmd, TArrayView<uint8_t>& stream)
 {
-	if (!Net_TrySkipCommand(cmd, stream))
-	{
-		// Keep progress monotonic in skip mode so malformed payloads cannot stall
-		// packet scanning loops.
-		if (stream.Size() > 0u)
-			AdvanceStream(stream, 1u);
-	}
+	// Fail-closed semantics: when the opcode-specific skip cannot determine the
+	// record size we leave the stream cursor unchanged so the caller can detect
+	// the lack of progress (`stream.Size() >= before`) and abort packet
+	// processing. The previous behaviour silently advanced one byte to "stay
+	// monotonic", which masked malformed `DEM_*` opcodes by misaligning the
+	// stream and could let bogus opcodes parse cleanly on later iterations.
+	(void)Net_TrySkipCommand(cmd, stream);
 }
 
 // This was taken out of shared_hud, because UI code shouldn't do low level calculations that may change if the backing implementation changes.

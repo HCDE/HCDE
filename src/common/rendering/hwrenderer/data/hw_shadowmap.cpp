@@ -21,6 +21,9 @@
 #include "buffers.h"
 #include "shaderuniforms.h"
 #include "hwrenderer/postprocessing/hw_postprocess.h"
+#include "hwrenderer/postprocessing/hw_postprocess_cvars.h"
+#include "c_dispatch.h"
+#include "printf.h"
 
 /*
 	The 1D shadow maps are stored in a 1024x1024 texture as float depth values (R32F).
@@ -65,6 +68,135 @@ CVAR(Bool, gl_light_shadowmap, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, gl_shadowmap_prioritize, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, hcde_shadow_autofallback, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR(Bool, hcde_shadow_autobudget, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+// HCDE roadmap #17: k8vavoom-style rendering preset scaffold.
+//
+// These CVARs are intentionally low-blast and do not invent any new rendering
+// features by themselves. They provide a stable switchboard that composes
+// existing HCDE shadowmap/postprocess settings into a lighting-heavy profile,
+// without touching playsim, snapshots, saves, demos, or network state.
+//
+// Composition is presentation-only: when the profile is enabled it raises the
+// floor on a curated set of existing CVARs. Disabling the profile does not
+// restore previous values - users who want to revert can reset individual
+// CVARs (or use `r_k8vavoom_status` to see what is currently active). This
+// keeps the profile a one-shot apply rather than a state machine that has to
+// be perfectly symmetric with the rest of the engine.
+EXTERN_CVAR(Int, gl_shadowmap_quality)
+
+namespace
+{
+	struct K8vavoomPresetSnapshot
+	{
+		bool   applied = false;
+		bool   shadowmap = false;
+		bool   prioritize = false;
+		int    quality = 0;
+		bool   bloom = false;
+		int    tonemap = 0;
+		int    ssao = 0;
+		bool   shadow_boost = false;
+		bool   raylight_probe = false;
+	};
+
+	K8vavoomPresetSnapshot g_K8vavoomPresetState;
+
+	void HCDE_K8vavoomApplyLightingProfile(int profile, bool shadowBoost, bool raylightProbe)
+	{
+		K8vavoomPresetSnapshot &s = g_K8vavoomPresetState;
+		s = K8vavoomPresetSnapshot{};
+		s.applied = profile > 0;
+
+		if (profile <= 0)
+			return;
+
+		// Baseline preset: enable shadowmaps and prioritization, raise quality
+		// floor, and enable a conservative postprocess bundle.
+		gl_light_shadowmap = true;
+		gl_shadowmap_prioritize = true;
+
+		const int qualityFloor = shadowBoost ? 1024 : 512;
+		if (gl_shadowmap_quality < qualityFloor)
+			gl_shadowmap_quality = qualityFloor;
+
+		gl_bloom = true;
+		if (gl_tonemap == 0)
+			gl_tonemap = 1; // Linear -> generic tonemap operator
+		if (gl_ssao == 0)
+			gl_ssao = 1; // Low-quality SSAO floor
+
+		s.shadowmap     = gl_light_shadowmap;
+		s.prioritize    = gl_shadowmap_prioritize;
+		s.quality       = gl_shadowmap_quality;
+		s.bloom         = gl_bloom;
+		s.tonemap       = gl_tonemap;
+		s.ssao          = gl_ssao;
+		s.shadow_boost  = shadowBoost;
+		s.raylight_probe = raylightProbe;
+
+		Printf(PRINT_HIGH,
+			"hcde_k8vavoom_lighting_profile=1 applied: shadowmap=%s prioritize=%s quality=%d bloom=%s tonemap=%d ssao=%d boost=%s raylight=%s\n",
+			s.shadowmap ? "on" : "off",
+			s.prioritize ? "on" : "off",
+			s.quality,
+			s.bloom ? "on" : "off",
+			s.tonemap,
+			s.ssao,
+			s.shadow_boost ? "on" : "off",
+			s.raylight_probe ? "on" : "off");
+	}
+}
+
+CVAR(Bool, hcde_k8vavoom_shadow_boost, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+CVAR(Bool, hcde_k8vavoom_raylight_probe, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+
+CUSTOM_CVAR(Int, hcde_k8vavoom_lighting_profile, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	if (self < 0)
+		self = 0;
+	else if (self > 1)
+		self = 1;
+
+	HCDE_K8vavoomApplyLightingProfile(self, hcde_k8vavoom_shadow_boost, hcde_k8vavoom_raylight_probe);
+}
+
+CCMD(r_k8vavoom_status)
+{
+	const K8vavoomPresetSnapshot &s = g_K8vavoomPresetState;
+	Printf(PRINT_HIGH, "k8vavoom lighting profile: %s\n",
+		(hcde_k8vavoom_lighting_profile > 0) ? "ENABLED" : "disabled");
+	Printf(PRINT_HIGH, "  composed snapshot (last apply): applied=%s\n", s.applied ? "yes" : "no");
+	Printf(PRINT_HIGH, "    gl_light_shadowmap        = %s (live=%s)\n", s.shadowmap ? "on" : "off",
+		gl_light_shadowmap ? "on" : "off");
+	Printf(PRINT_HIGH, "    gl_shadowmap_prioritize   = %s (live=%s)\n", s.prioritize ? "on" : "off",
+		gl_shadowmap_prioritize ? "on" : "off");
+	Printf(PRINT_HIGH, "    gl_shadowmap_quality      = %d (live=%d)\n", s.quality, *gl_shadowmap_quality);
+	Printf(PRINT_HIGH, "    gl_bloom                  = %s (live=%s)\n", s.bloom ? "on" : "off",
+		gl_bloom ? "on" : "off");
+	Printf(PRINT_HIGH, "    gl_tonemap                = %d (live=%d)\n", s.tonemap, *gl_tonemap);
+	Printf(PRINT_HIGH, "    gl_ssao                   = %d (live=%d)\n", s.ssao, *gl_ssao);
+	Printf(PRINT_HIGH, "  sub-flags: shadow_boost=%s raylight_probe=%s\n",
+		hcde_k8vavoom_shadow_boost ? "on" : "off",
+		hcde_k8vavoom_raylight_probe ? "on" : "off");
+}
+
+CCMD(r_k8vavoom_reset)
+{
+	hcde_k8vavoom_lighting_profile = 0;
+	hcde_k8vavoom_shadow_boost = false;
+	hcde_k8vavoom_raylight_probe = false;
+
+	gl_light_shadowmap = false;
+	gl_shadowmap_prioritize = true;
+	gl_shadowmap_quality = 512;
+	gl_bloom = false;
+	gl_tonemap = 0;
+	gl_ssao = 0;
+
+	g_K8vavoomPresetState = K8vavoomPresetSnapshot{};
+	Printf(PRINT_HIGH, "k8vavoom lighting preset reset to HCDE defaults.\n");
+	Printf(PRINT_HIGH, "  reset: profile=0 shadowmap=off prioritize=on quality=512 bloom=off tonemap=0 ssao=0\n");
+}
 
 CUSTOM_CVAR(Float, hcde_shadow_autobudget_targetms, 1.20f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 {

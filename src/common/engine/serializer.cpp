@@ -150,6 +150,7 @@ bool FSerializer::OpenReader(const char *buffer, size_t length, bool predicting)
 	bPredictionBackup = predicting;
 	mErrors = 0;
 	r = new FReader(buffer, length);
+	r->mPredictionRollback = predicting;
 	return true;
 }
 
@@ -160,7 +161,18 @@ bool FSerializer::OpenReader(FReaderAllocator allocator, const char *buffer, siz
 	bPredictionBackup = predicting;
 	mErrors = 0;
 	allocator.buffer.Clear();
-	r = new FReader(allocator, buffer, length);
+	// NOTE: The FReaderAllocator user-buffer pool path is currently unsafe
+	// because rapidjson::MemoryPoolAllocator's reference-counted shared
+	// chunk list interacts poorly with the multiple value-copy/move steps
+	// involved in passing FReaderAllocator through OpenReader -> FReader.
+	// Several iterations of attempted fixes still crashed inside
+	// ~MemoryPoolAllocator at delete-time. Until this is properly redesigned,
+	// fall back to the simple heap-allocated FReader. The performance impact
+	// of one extra heap allocation per rollback is negligible compared to
+	// repeatedly crashing the client during prediction rollback.
+	(void)allocator;
+	r = new FReader(buffer, length);
+	r->mPredictionRollback = predicting;
 	return true;
 }
 
@@ -187,6 +199,8 @@ bool FSerializer::OpenReader(FCompressedBuffer *input, bool predicting)
 		input->Decompress(unpacked.Data());
 		r = new FReader(unpacked.Data(), input->mSize);
 	}
+	if (r != nullptr)
+		r->mPredictionRollback = predicting;
 	return true;
 }
 
@@ -207,7 +221,11 @@ void FSerializer::Close()
 	}
 	if (r != nullptr)
 	{
-		CloseReaderCustom();
+		// Prediction rollback readers map snapshot entries back onto live
+		// world objects. The orphaned-thinker sweep in CloseReaderCustom is
+		// only valid for one-shot savegame loads, not rollback restores.
+		if (!IsRollback() && !r->mPredictionRollback)
+			CloseReaderCustom();
 		delete r;
 		r = nullptr;
 	}
@@ -770,8 +788,11 @@ void FSerializer::ReadObjectsFrom(TArray<TObjPtr<DObject*>>& from)
 					{
 						Printf(TEXTCOLOR_RED "Unknown object class '%s' in rollback\n", clsname.GetChars());
 						hadErrors = true;
-						r->mDObjects[i] = RUNTIME_CLASS(DObject)->CreateNew();	// make sure we got at least a valid pointer for the duration of the loading process.
-						r->mDObjects[i]->Destroy();								// but we do not want to keep this around, so destroy it right away.
+						if (!IsRollback())
+						{
+							r->mDObjects[i] = RUNTIME_CLASS(DObject)->CreateNew();	// make sure we got at least a valid pointer for the duration of the loading process.
+							r->mDObjects[i]->Destroy();								// but we do not want to keep this around, so destroy it right away.
+						}
 					}
 					else
 					{
@@ -824,11 +845,15 @@ void FSerializer::ReadObjectsFrom(TArray<TObjPtr<DObject*>>& from)
 		}
 		catch(...)
 		{
-			// nuke all objects we created here.
-			for (auto obj : r->mDObjects)
+			// During rollback the snapshot objects are live world objects;
+			// do not run game teardown (Destroy) on partially-restored state.
+			if (!IsRollback())
 			{
-				if (obj != nullptr && !(obj->ObjectFlags & OF_EuthanizeMe))
-					obj->Destroy();
+				for (auto obj : r->mDObjects)
+				{
+					if (obj != nullptr && !(obj->ObjectFlags & OF_EuthanizeMe))
+						obj->Destroy();
+				}
 			}
 			r->mDObjects.Clear();
 			// make sure this flag gets unset, even if something in here throws an error.

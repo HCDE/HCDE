@@ -754,7 +754,14 @@ dap::ResponseOrError<dap::EvaluateResponse> ZScriptDebugger::Evaluate(const dap:
 
 	if (context == "repl" && !m_executionManager->IsPaused())
 	{
-		// TODO: This isn't safe to do from the debugger thread, figure out a way to safely dispatch to the main thread later
+		// REPL evaluation while the VM is running would mutate engine state
+		// from the debugger thread, racing the main thread that owns CVars,
+		// console commands, and the VM stack. The dispatch shim has not
+		// landed yet, so we deliberately reject the request here. The full
+		// implementation below is preserved (kept under `#if 0`) as the
+		// reference for when a thread-safe "run on main, await result"
+		// adapter is wired up; do not enable it without that adapter or the
+		// debugger will corrupt running scripts.
 #if 0
 		// we don't support repl commands when not paused
 		auto args = Split(request.expression, " ");

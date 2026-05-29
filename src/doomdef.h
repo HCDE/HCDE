@@ -241,6 +241,8 @@ enum ELevelCompatFlag2 : uint32_t
 	COMPATF2_EMULATEMIKOPORTALS = 1 << 19, // Emulate Mikoportals Z Underflow
 	COMPATF2_RESERVEDLINEFLAG = 1 << 20, // MBF21: line flag 0x0800 masks extended line flags.
 	COMPATF2_NOFRIENDLYSPAWN = 1 << 21, // MBF: A_Spawn keeps the spawned actor's default friendliness.
+	COMPATF2_DR_CRUSHER = 1 << 22, // HCDE #8: reserved Doom Retro crusher edge-case fix gate.
+	COMPATF2_DR_LIQUIDFRICTION = 1 << 23, // HCDE #8: reserved Doom Retro liquid-friction gate.
 };
 using ELevelCompatFlags2 = TFlags<ELevelCompatFlag2>;
 DEFINE_TFLAGS_OPERATORS(ELevelCompatFlags2)

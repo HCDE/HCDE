@@ -70,6 +70,7 @@
 EXTERN_CVAR(Bool, r_drawplayersprites)
 EXTERN_CVAR(Bool, r_deathcamera)
 EXTERN_CVAR(Bool, r_fullbrightignoresectorcolor)
+EXTERN_CVAR(Bool, r_fullbright_overrides)
 
 CVAR(Bool, r_noaccel, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 
@@ -154,7 +155,7 @@ namespace swrenderer
 			viewport->CenterY = viewheight / 2;
 
 			BobType = PSPB_2D;
-			FVector2 interp = PlayerBob[Thread->Viewport->viewpoint.camera->player - players].Interpolate2D(Net_ModifyFrac(viewport->viewpoint.TicFrac));
+			FVector2 interp = PlayerBob[Thread->Viewport->viewpoint.camera->player - players].Interpolate2D(R_WeaponBobSmoothFrac(Net_ModifyFrac(viewport->viewpoint.TicFrac)));
 			bobx = interp.X;
 			boby = interp.Y;
 
@@ -355,7 +356,13 @@ namespace swrenderer
 			}
 
 			const FState* const psprState = pspr->GetState();
-			bool fullbright = !foggy && (psprState == nullptr ? false : psprState->GetFullbright());
+			bool forcefullbright = r_fullbright_overrides && tex != nullptr && tex->isFullbright() && !tex->isFullbrightDisabled();
+			bool statefullbright = psprState == nullptr ? false : psprState->GetFullbright();
+			if (tex != nullptr && tex->isFullbrightDisabled())
+			{
+				statefullbright = false;
+			}
+			bool fullbright = !foggy && (statefullbright || forcefullbright);
 			bool fadeToBlack = (vis.RenderStyle.Flags & STYLEF_FadeToBlack) != 0;
 
 			vis.Light.SetColormap(Thread, MINZ, lightlevel, foggy, basecolormap, fullbright, invertcolormap, fadeToBlack, true, false);

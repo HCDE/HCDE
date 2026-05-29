@@ -55,6 +55,7 @@
 #include "gstrings.h"
 #include "hu_stuff.h"
 #include "hwrenderer/scene/hw_drawinfo.h"
+#include "i_input_gyro.h"
 #include "i_interface.h"
 #include "i_system.h"
 #include "i_time.h"
@@ -230,6 +231,7 @@ EXTERN_CVAR (Int, turnspeedsprintslow);
 
 EXTERN_CVAR (Bool, invertmouse);
 EXTERN_CVAR (Bool, invertmousex);
+EXTERN_CVAR (Int, m_smooth_curve);
 
 EXTERN_CVAR (Int, team);
 EXTERN_CVAR (Bool, sv_singleplayerrespawn);
@@ -442,6 +444,23 @@ uint8_t         *zdembodyend; // end of ZDEM BODY chunk
 FIntCVarRef     *angleturn[4] = {&turnspeedwalkfast, &turnspeedsprintfast, &turnspeedwalkslow, &turnspeedsprintslow};
 int             flyspeed[2] = {1*256, 3*256};
 int             lookspeed[2] = {450, 512};
+
+static double HCDE_InputSmoothMouseDelta(double delta)
+{
+	if (m_smooth_curve <= 0 || delta == 0.0)
+	{
+		return delta;
+	}
+
+	const double sign = delta < 0.0 ? -1.0 : 1.0;
+	const double magnitude = fabs(delta);
+	const double curveRange = 64.0;
+	const double clamped = min<double>(magnitude / curveRange, 1.0);
+	const double eased = clamped * clamped * (3.0 - 2.0 * clamped);
+	const double tail = magnitude > curveRange ? magnitude - curveRange : 0.0;
+
+	return sign * ((eased * curveRange) + tail);
+}
 
 int             turnheld; // for accelerative turning
 
@@ -944,9 +963,22 @@ void G_BuildTiccmd (usercmd_t *cmd)
 #undef HELD
 
 	// Handle mice.
+	const double shapedMouseX = HCDE_InputSmoothMouseDelta(mousex);
+	const double shapedMouseY = HCDE_InputSmoothMouseDelta(mousey);
+	float gyroYaw = 0.0f;
+	float gyroPitch = 0.0f;
+	HCDEGyro_GetTiccmdContribution(gyroYaw, gyroPitch);
 	if (!buttonMap.ButtonDown(Button_Mlook) && !freelook)
 	{
-		forward += RoundHalfEven(mousey * m_forward); // why round to even?
+		forward += RoundHalfEven(shapedMouseY * m_forward); // why round to even?
+	}
+	if (gyroYaw != 0.0f)
+	{
+		G_AddViewAngle(joyint(gyroYaw));
+	}
+	if (gyroPitch != 0.0f)
+	{
+		G_AddViewPitch(joyint(gyroPitch));
 	}
 
 	cmd->pitch = LocalViewPitch >> 16;
@@ -958,7 +990,7 @@ void G_BuildTiccmd (usercmd_t *cmd)
 	}
 
 	if (strafe || lookstrafe)
-		side += RoundHalfEven(mousex * m_side); // why round to even?
+		side += RoundHalfEven(shapedMouseX * m_side); // why round to even?
 
 	mousex = mousey = 0;
 
@@ -1391,14 +1423,13 @@ void G_TickStalledCutscene()
 // G_Ticker
 // Make ticcmd_ts for the players.
 //
-void G_Ticker ()
+static void G_ProcessPendingPlayerLifecycle()
 {
-	gamestate_t oldgamestate;
-
-	C_TickQueuedInputs();
-
-	// do player reborns if needed
-	// TODO: These should really be moved to queues.
+	// Player lifecycle changes are queued through `player_t::playerstate`
+	// (`SET_PLAYER_STATE` call sites set PST_GONE/PST_REBORN/PST_ENTER, and
+	// this single point consumes them in tic order). Keeping the consumer here
+	// avoids doing spawn/pop work at the mutation site, which would race with
+	// net snapshot application and event dispatch.
 	for (unsigned int i = 0; i < MAXPLAYERS; ++i)
 	{
 		if (!playeringame[i])
@@ -1409,6 +1440,15 @@ void G_Ticker ()
 		else if (players[i].playerstate == PST_REBORN || players[i].playerstate == PST_ENTER)
 			primaryLevel->DoReborn(i, false);
 	}
+}
+
+void G_Ticker ()
+{
+	gamestate_t oldgamestate;
+
+	C_TickQueuedInputs();
+
+	G_ProcessPendingPlayerLifecycle();
 
 	// do things to change the game state
 	oldgamestate = gamestate;

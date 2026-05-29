@@ -66,6 +66,8 @@ version "4.15.1"
 #include "zscript/actors/player/player_cheat.zs"
 #include "zscript/actors/player/player_inventory.zs"
 #include "zscript/actors/player/player_morph.zs"
+#include "zscript/actors/predator/predator_player.zs"
+#include "zscript/actors/ai/hcde_ai_hint.zs"
 
 #include "zscript/actors/shared/botstuff.zs"
 #include "zscript/actors/shared/sharedmisc.zs"

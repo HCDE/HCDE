@@ -86,15 +86,10 @@ bool CheckCheatmode (bool printmsg, bool sponly)
 	}
 }
 
-/*
-==================
-Cmd_God
-
-Sets client to godmode
-
-argv(0) god
-==================
-*/
+// Queue the generic cheat command for the active player. In netgames this still
+// travels through the normal `DEM_GENERICCHEAT` command stream so the server /
+// demo executor applies the state change in tic order instead of mutating the
+// local player immediately from the console command callback.
 CCMD (god)
 {
 	if (CheckCheatmode ())

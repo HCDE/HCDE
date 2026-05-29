@@ -25,6 +25,13 @@ $random *pain			{ *pain100  *pain75  *pain50  *pain25 }
 // Trying to use a locked door
 $alias misc/keytry		*usefail
 
+// HCDE Nugget-style surface footstep aliases. Mods can override these names
+// with richer terrain-specific samples; defaults intentionally reuse the
+// normal player landing sound so enabling snd_footsteps_surface never changes
+// movement physics or requires new assets.
+$alias *footstep-solid		*land
+$alias *footstep-liquid		*land
+
 // Pickup sounds that were not unique before
 $alias misc/health_pkup		misc/i_pkup	// Pickup health
 $alias misc/armor_pkup		misc/i_pkup	// Pickup armor

@@ -465,9 +465,10 @@ const char* HCDE_ModCompat_ResolveStartupMapOverride(const char* requestedMap)
 		return nullptr;
 	}
 
-	// Doom Connector commonly passes MAP01/E1M1 as a default map value. For mods
-	// with a custom first map, treat those two values as a launcher default and
-	// remap them to the known compatibility entrypoint.
+	// External launchers commonly pass MAP01/E1M1 as a default map value when
+	// the user has not picked one. For mods with a custom first map, treat
+	// those two values as a launcher default and remap them to the known
+	// compatibility entrypoint.
 	if (stricmp(requestedMap, "MAP01") != 0 && stricmp(requestedMap, "E1M1") != 0)
 	{
 		return nullptr;

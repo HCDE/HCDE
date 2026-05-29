@@ -58,6 +58,7 @@
 #include "d_main.h"
 #include "d_net.h"
 #include "d_net_diagnostics.h"
+#include "d_net_rcon.h"
 #include "playsim/playerstate_trace.h"
 #include "d_netinf.h"
 #include "options.h"
@@ -504,6 +505,17 @@ CUSTOM_CVAR (String, vid_cursor, "None", CVAR_ARCHIVE | CVAR_NOINITCALL)
 // Controlled by startup dialog
 CVAR(Bool, disableautoload, false, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
 CVAR(Bool, autoloadbrightmaps, true, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
+
+// HCDE roadmap #11 (International Doom import): brightmap-aware fullbright
+// sprite overrides. When enabled, a small author-driven table forces
+// specific sprites (monster eyes, weapon lights, etc.) to render fullbright
+// regardless of sector light level or brightmap. Presentation only; no
+// authority, collision, or AI impact. Lives next to existing brightmap
+// support; gated behind this CVAR (default off).
+CUSTOM_CVAR(Bool, r_fullbright_overrides, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
+{
+	// Renderer samples this per-frame; no immediate action here.
+}
 CVAR(Bool, autoloadlights, true, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
 CVAR(Bool, autoloadwidescreen, true, CVAR_ARCHIVE | CVAR_NOINITCALL | CVAR_GLOBALCONFIG)
 CVAR(Bool, r_debug_disable_vis_filter, false, 0)
@@ -947,6 +959,8 @@ CVAR (Flag, compat_novdolllockmsg,		compatflags2, COMPATF2_NOVDOLLLOCKMSG);
 CVAR (Flag, compat_emulatemikoportals,	compatflags2, COMPATF2_EMULATEMIKOPORTALS);
 CVAR (Flag, compat_reservedlineflag,	compatflags2, COMPATF2_RESERVEDLINEFLAG);
 CVAR (Flag, compat_nofriendlyspawn,		compatflags2, COMPATF2_NOFRIENDLYSPAWN);
+CVAR (Flag, compat_dr_crusher,			compatflags2, COMPATF2_DR_CRUSHER);
+CVAR (Flag, compat_dr_liquidfriction,	compatflags2, COMPATF2_DR_LIQUIDFRICTION);
 
 CVAR(Bool, vid_activeinbackground, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
@@ -1547,6 +1561,7 @@ void D_DoomLoop ()
 				I_StartFrame ();
 			}
 			I_SetFrameTime();
+			HCDERconPollListener();
 
 			TryRunTics (); // will run at least one tic
 			// Update display, next frame, with current state.

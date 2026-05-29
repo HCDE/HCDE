@@ -95,6 +95,7 @@ enum EDemoCommand
 	DEM_GENERICCHEAT,	// 10 Next byte is cheat to apply (see next enum)
 	DEM_GIVECHEAT,		// 11 String: item to give, Word: quantity
 	DEM_SAY,			// 12 Byte: who to talk to, String: message to display
+	DEM_TAUNT,			// 12.5 (cosmetic) Byte: variant index; plays local skin *taunt sound. No authority effect.
 	DEM_DROPPLAYER,		// 13 Not implemented, takes a byte
 	DEM_CHANGEMAP,		// 14 Name of map to change to
 	DEM_SUICIDE,		// 15 Player wants to die

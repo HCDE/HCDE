@@ -54,6 +54,9 @@
 
 void FDoomSerializer::CloseReaderCustom()
 {
+	if (IsRollback() || (r != nullptr && r->mPredictionRollback))
+		return;
+
 	for (auto obj : r->mDObjects)
 	{
 		auto think = dyn_cast<DThinker>(obj);

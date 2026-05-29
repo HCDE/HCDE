@@ -43,6 +43,7 @@
 EXTERN_CVAR(Float, transsouls)
 EXTERN_CVAR(Int, gl_fuzztype)
 EXTERN_CVAR(Bool, r_drawplayersprites)
+EXTERN_CVAR(Bool, r_fullbright_overrides)
 EXTERN_CVAR(Bool, r_deathcamera)
 
 
@@ -135,13 +136,18 @@ static bool isBright(DPSprite *psp)
 	if (psp != nullptr && psp->GetState() != nullptr)
 	{
 		bool disablefullbright = false;
+		bool forcefullbright = false;
 		FTextureID lump = sprites[psp->GetSprite()].GetSpriteFrame(psp->GetFrame(), 0, nullAngle, nullptr);
 		if (lump.isValid())
 		{
 			auto tex = TexMan.GetGameTexture(lump, true);
-			if (tex) disablefullbright = tex->isFullbrightDisabled();
+			if (tex)
+			{
+				disablefullbright = tex->isFullbrightDisabled();
+				forcefullbright = r_fullbright_overrides && tex->isFullbright();
+			}
 		}
-		return psp->GetState()->GetFullbright() && !disablefullbright;
+		return (psp->GetState()->GetFullbright() || forcefullbright) && !disablefullbright;
 	}
 	return false;
 }
@@ -156,7 +162,7 @@ static WeaponPosition2D GetWeaponPosition2D(player_t *player, double ticFrac)
 {
 	WeaponPosition2D w;
 	BobType = PSPB_2D;
-	FVector2 interp = PlayerBob[player - players].Interpolate2D(Net_ModifyFrac(ticFrac));
+	FVector2 interp = PlayerBob[player - players].Interpolate2D(R_WeaponBobSmoothFrac(Net_ModifyFrac(ticFrac)));
 	w.bobx = interp.X;
 	w.boby = interp.Y;
 

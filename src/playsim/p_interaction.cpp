@@ -21,6 +21,7 @@
 // Data.
 #include "doomdef.h"
 #include "gstrings.h"
+#include "hcde_killfeed.h"
 
 #include "doomstat.h"
 
@@ -65,6 +66,9 @@ static FRandom pr_switcher ("SwitchTarget");
 CVAR (Bool, cl_showsprees, true, CVAR_ARCHIVE)
 CVAR (Bool, cl_showmultikills, true, CVAR_ARCHIVE)
 EXTERN_CVAR (Bool, show_obituaries)
+// HCDE #9 hook: r_killfeed reserves the future kill-feed widget surface.
+// Real consumer is presentation-only and lives outside the playsim.
+EXTERN_CVAR (Bool, r_killfeed)
 
 CVAR (Float, sv_damagefactormobj, 1.0, CVAR_SERVERINFO|CVAR_CHEAT)
 CVAR (Float, sv_damagefactorfriendly, 1.0, CVAR_SERVERINFO|CVAR_CHEAT)
@@ -304,6 +308,16 @@ void ClientObituary (AActor *self, AActor *inflictor, AActor *attacker, int dmgf
 	PronounMessage (message, gendermessage, self->player->userinfo.GetGender(),
 		self->player->userinfo.GetName(), attacker->player->userinfo.GetName());
 	Printf (PRINT_MEDIUM, "%s\n", gendermessage);
+
+	// HCDE #9 kill-feed hook (presentation-only). Real implementation will
+	// post a structured (attacker, victim, MoD, tic) event onto a HUD-side
+	// ring buffer so a future kill-feed widget can render it. Today this is
+	// a no-op gated on `r_killfeed` so the wiring is observable without any
+	// HUD churn or playsim impact.
+	if (r_killfeed)
+	{
+		HCDEKillfeed_Push(gendermessage, self->Level != nullptr ? self->Level->time : 0);
+	}
 }
 
 
