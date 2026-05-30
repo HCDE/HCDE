@@ -49,7 +49,14 @@ cmake -S /path/to/HCDE -B /path/to/HCDE/build -DCMAKE_BUILD_TYPE=Release
 cmake --build /path/to/HCDE/build -j
 ```
 
-See [Building](https://github.com/bokoxthexchocobo/HCDE/wiki/Building) for requirements and output paths, or [Getting Started](https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started) to host or join a dedicated server.
+See [Building](https://github.com/bokoxthexchocobo/HCDE/wiki/Building) for requirements, output paths, and Windows runtime DLLs (`soft_oal.dll` for SFX, `sndfile.dll` for OGG/FLAC/WAV music — auto-staged via `cmake/StageSndFileRuntime.cmake`). [Getting Started](https://github.com/bokoxthexchocobo/HCDE/wiki/Getting-Started) covers hosting/joining a dedicated server and starting a single-player Invasion match.
+
+## Recent updates
+
+- Single-player Invasion (`sv_gametype 4`) starts cleanly, including from external launchers that pass `+set sv_gametype 4` (Doom Connector, etc.).
+- `hcde_lag_hud` and `hcde_hud_debug` are decoupled — the perf/lag overlay is opt-in (`hcde_lag_hud 1`) instead of being forced on by the diagnostic-logging gate.
+- Music lookup prioritizes mod-nested `music/` folders so OGG-only mods (e.g. `D2Re.pk3`) play correctly when `sndfile.dll` is staged.
+- Single-player death/respawn is robust to autosave failures; respawn input is buffered through the death delay.
 
 ## Repository layout
 

@@ -26,6 +26,23 @@ hcde -join 127.0.0.1:10666 -dedicatedjoin -iwad C:\Games\doom2.wad
 hcdeserv -server 8 -iwad C:\Games\doom2.wad -port 10666 -advertise -master hcde.servebeer.com:15000 +map MAP01
 ```
 
+## Single-player Invasion
+
+Invasion (`sv_gametype 4`) also runs in local single-player. The console
+player counts as a participant, so the wave director moves through
+`WAITING -> COUNTDOWN -> SPAWNING` without a remote authority.
+
+```powershell
+hcde -iwad C:\Games\doom2.wad +map MAP01 +set sv_gametype 4 +set sv_invasioncountdowntime 10 +set sv_invasionwaves 8
+```
+
+External launchers (Doom Connector etc.) can pass `+sv_gametype 4` or
+`+set sv_gametype 4`; HCDE preserves an explicit invasion gametype even
+if `-coop` is also present. Once in-game, `invasion_status` shows the
+current state and wave progression. Use `invasion_preset` from the
+console to apply the recommended baseline CVARs, or `sv_gametype 0` to
+return to coop.
+
 ## Where to go next
 
 | Topic | Wiki page |

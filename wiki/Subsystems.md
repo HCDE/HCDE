@@ -23,6 +23,9 @@ detail (CVARs, state machine, on-the-wire layout, diagnostics).
   with CVARs, state machine, and spawn logic in `docs/HCDE_INVASION.md`.
   Audit/test notes: `docs/HCDE_INVASION_AUDIT.md`,
   `tests/netcode_step12/f6_invasion_latejoin_replay.py`.
+  Single-player is supported: launchers can pass `+sv_gametype 4`
+  (or `+set sv_gametype 4`), and the local console player is counted
+  as a participant so waves start without a remote authority.
 - **Predator economy** — phase 1/2 scaffold and snapshot contract are
   landed default-off; buy/currency/role gameplay remains pending.
   See `docs/HCDE_PREDATOR_AUDIT.md` and
@@ -60,6 +63,24 @@ detail (CVARs, state machine, on-the-wire layout, diagnostics).
   See `src/r_view_pain_smooth.cpp`.
 - **Taunts** — voice-line taunts wired through the gameplay layer.
   See `src/g_taunt.cpp`.
+- **Lag / perf overlay** — the top-of-screen "HCDE lag / perf mirror"
+  strip is opt-in via `hcde_lag_hud 1`; the diagnostic-logging gate
+  `hcde_hud_debug` no longer paints it on by default.
+
+## Audio runtime dependencies
+
+- **OpenAL runtime** — sound effects require an OpenAL implementation
+  on the executable search path. HCDE ships `soft_oal.dll` (OpenAL
+  Soft) in releases; when building from source on Windows you can drop
+  `soft_oal.dll` (or rename `OpenAL32.dll`) into `build\` /
+  `build\RelWithDebInfo\`.
+- **libsndfile (`sndfile.dll`)** — required by ZMusic for OGG/FLAC/WAV
+  music decoding (used by mods such as `D2Re.pk3`). Windows developer
+  builds run `cmake/StageSndFileRuntime.cmake` as a `POST_BUILD` step
+  for the `zdoom` target, copying `sndfile.dll` and its license into
+  the build output. Set `-DHCDE_SNDFILE_RUNTIME_DLL=<path>` (or place
+  the DLL in `build\deps\`) to point CMake at your copy. Vanilla MUS
+  and MIDI work without it.
 
 ## Validation
 
