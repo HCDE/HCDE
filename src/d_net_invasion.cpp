@@ -1817,12 +1817,23 @@ static void Net_ResetInvasionState(const char* reason)
 		Net_SetInvasionState(INVS_DISABLED, 0, reason != nullptr ? reason : "reset");
 }
 
+static bool Net_IsLocalSoloInvasionParticipant(int player)
+{
+	return !netgame
+		&& player == consoleplayer
+		&& player >= 0
+		&& player < MAXPLAYERS
+		&& !I_IsServerReservedSlot(player)
+		&& players[player].playerstate != PST_GONE
+		&& players[player].mo != nullptr;
+}
+
 static int Net_CountInvasionParticipants()
 {
 	int count = 0;
 	for (int player = 0; player < MAXPLAYERS; ++player)
 	{
-		if (playeringame[player] && !I_IsServerReservedSlot(player))
+		if ((playeringame[player] || Net_IsLocalSoloInvasionParticipant(player)) && !I_IsServerReservedSlot(player))
 			++count;
 	}
 
@@ -1834,7 +1845,7 @@ static int Net_CountInvasionAliveParticipants()
 	int count = 0;
 	for (int player = 0; player < MAXPLAYERS; ++player)
 	{
-		if (!playeringame[player] || I_IsServerReservedSlot(player))
+		if ((!playeringame[player] && !Net_IsLocalSoloInvasionParticipant(player)) || I_IsServerReservedSlot(player))
 			continue;
 
 		// Dedicated HCDE authority can receive pawn health before the cached

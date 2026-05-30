@@ -991,7 +991,9 @@ void Net_GetLagHUDMetrics(FHCDELagHUDMetrics& out)
 
 bool Net_ShouldDrawLagHUD()
 {
-	return (*hcde_lag_hud || *hcde_hud_debug) && gamestate == GS_LEVEL && !demoplayback;
+	// Only the explicit lag HUD CVar should force the top-of-screen overlay.
+	// hcde_hud_debug is a logging gate; it should not paint a debug strip on screen.
+	return *hcde_lag_hud && gamestate == GS_LEVEL && !demoplayback;
 }
 
 CCMD(hcde_lag_hud)

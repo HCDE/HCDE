@@ -2470,6 +2470,28 @@ static void CheckCmdLine()
 	const bool joiningNetworkGame = Args->CheckParm(FArg_join) || Args->CheckParm(FArg_dedicatedjoin) || Args->CheckParm(FArg_joindedicated);
 	const bool launchingServer = Args->CheckParm(FArg_host) || joiningNetworkGame || HCDE_ServerMode_IsDedicatedServer();
 	const bool explicitMultiplayerMode = Args->CheckParm(FArg_altdeath) || Args->CheckParm(FArg_deathmatch) || Args->CheckParm(FArg_coop);
+	bool hasExplicitGametype = false;
+	int explicitGametypeValue = -1;
+	for (int i = 1; i < Args->NumArgs(); i++)
+	{
+		const char* a = Args->GetArg(i);
+		if (*a == '+' && !stricmp(a + 1, "sv_gametype"))
+		{
+			hasExplicitGametype = true;
+			if (i + 1 < Args->NumArgs())
+				explicitGametypeValue = atoi(Args->GetArg(i + 1));
+			break;
+		}
+		if (*a == '+' && !stricmp(a + 1, "set") && i + 1 < Args->NumArgs()
+			&& !stricmp(Args->GetArg(i + 1), "sv_gametype"))
+		{
+			hasExplicitGametype = true;
+			if (i + 2 < Args->NumArgs())
+				explicitGametypeValue = atoi(Args->GetArg(i + 2));
+			break;
+		}
+	}
+	const bool explicitInvasionMode = hasExplicitGametype && explicitGametypeValue == 4;
 
 	if (!batchrun) Printf ("Checking cmd-line parameters...\n");
 	if (Args->CheckParm (FArg_nomonsters))	flags |= DF_NO_MONSTERS;
@@ -2490,7 +2512,7 @@ static void CheckCmdLine()
 		Net_TraceSetSvGametype(1, "cmdline-deathmatch");
 		flags |= DF_WEAPONS_STAY | DF_ITEMS_RESPAWN;
 	}
-	else if (Args->CheckParm(FArg_coop))
+	else if (Args->CheckParm(FArg_coop) && !explicitInvasionMode)
 	{
 		Net_TraceSetDeathmatch(0, "cmdline-coop");
 		Net_TraceSetTeamplay(0, "cmdline-coop");
@@ -2504,25 +2526,18 @@ static void CheckCmdLine()
 	else if (!explicitMultiplayerMode)
 	{
 		// No explicit mode flag (-coop / -deathmatch / -altdeath) was given.
-		// Check whether +sv_gametype was provided on the command line (already
+		// Check whether sv_gametype was provided on the command line (already
 		// executed by this point via C_ParseCmdLineParams / ExecCommands).
+		// External launchers commonly pass cvars as `+set sv_gametype 4`,
+		// not just `+sv_gametype 4`.
 		// If so, honour that value; otherwise reset to cooperative defaults
 		// so a stale CVAR_ARCHIVE value from a previous invasion/DM session
 		// does not bleed into a fresh server or local game.
-		bool hasExplicitGametype = false;
-		for (int i = 1; i < Args->NumArgs(); i++)
-		{
-			const char* a = Args->GetArg(i);
-			if (*a == '+' && !stricmp(a + 1, "sv_gametype"))
-			{
-				hasExplicitGametype = true;
-				break;
-			}
-		}
 
 		// Only reset stale archived gametype for local solo launches. Dedicated
-		// servers, hosts, and joins inherit CVAR_ARCHIVE (or explicit +sv_gametype)
-		// and receive authoritative serverinfo during net setup.
+		// servers, hosts, joins, and explicit launcher-selected gametypes inherit
+		// CVAR_ARCHIVE/current command-line state and receive authoritative
+		// serverinfo during net setup.
 		if (!hasExplicitGametype && !launchingServer)
 		{
 			Net_TraceSetDeathmatch(0, "cmdline-solo-default");
