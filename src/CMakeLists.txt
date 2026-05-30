@@ -1512,6 +1512,20 @@ add_custom_command(TARGET zdoom POST_BUILD
 	VERBATIM
 )
 
+set(HCDE_SNDFILE_RUNTIME_DLL "" CACHE FILEPATH "Optional path to sndfile.dll for Windows developer runtime staging.")
+if(WIN32)
+	add_custom_command(TARGET zdoom POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E env
+			"HCDE_SNDFILE_RUNTIME_DLL=${HCDE_SNDFILE_RUNTIME_DLL}"
+			"HCDE_BINARY_DIR=${CMAKE_BINARY_DIR}"
+			"HCDE_TARGET_DIR=$<TARGET_FILE_DIR:zdoom>"
+			"HCDE_RESOURCE_DIR=${HCDE_RESOURCE_DIR}"
+			${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/StageSndFileRuntime.cmake"
+		COMMENT "Staging optional sndfile.dll runtime..."
+		VERBATIM
+	)
+endif()
+
 if ( NOT ZMUSIC_SYSTEM_INSTALL AND (NOT DEFINED BUILD_SHARED_LIBS OR BUILD_SHARED_LIBS))
 	# bring zmusic in
 	add_custom_command(TARGET zdoom POST_BUILD
