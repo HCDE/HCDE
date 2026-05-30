@@ -80,6 +80,47 @@ bool HCDEAIDirectorShouldDriveAuthority()
 	return true;
 }
 
+bool HCDEAIDirectorReadRegroupHint(const AActor* actor, int* outGroupId, int* outStoredTic)
+{
+	if (actor == nullptr) return false;
+	for (const auto& hint : RegroupHints)
+	{
+		if (hint.Actor == actor)
+		{
+			if (outGroupId != nullptr)   *outGroupId = hint.GroupId;
+			if (outStoredTic != nullptr) *outStoredTic = hint.StoredTic;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HCDEAIDirectorConsumeRegroupHint(const AActor* actor, int* outGroupId, int* outStoredTic)
+{
+	if (!HCDEAIDirectorReadRegroupHint(actor, outGroupId, outStoredTic))
+		return false;
+	++DirectorState.HintsConsumedTotal;
+	return true;
+}
+
+bool HCDEAIDirectorConsumeRegroupTarget(const AActor* actor, double* outX, double* outY, int* outGroupId, int* outStoredTic)
+{
+	int groupId = -1;
+	int storedTic = 0;
+	if (!HCDEAIDirectorReadRegroupHint(actor, &groupId, &storedTic))
+		return false;
+	if (groupId < 0 || groupId >= int(ObservedClusters.Size()))
+		return false;
+
+	const FHCDEAICluster& cluster = ObservedClusters[groupId];
+	if (outX != nullptr) *outX = cluster.Center.X;
+	if (outY != nullptr) *outY = cluster.Center.Y;
+	if (outGroupId != nullptr) *outGroupId = groupId;
+	if (outStoredTic != nullptr) *outStoredTic = storedTic;
+	++DirectorState.HintsConsumedTotal;
+	return true;
+}
+
 static void HCDEAIDirectorObserveMonsters()
 {
 	const int sweepStartMs = I_msTime();
@@ -92,6 +133,7 @@ static void HCDEAIDirectorObserveMonsters()
 	DirectorState.GroupCountObserved = 0;
 	DirectorState.LargestGroupSizeObserved = 0;
 	DirectorState.RegroupHintsStored = 0;
+	DirectorState.HintsIssuedThisTic = 0;
 	ObservedMonsters.Clear();
 	ObservedClusters.Clear();
 	RegroupHints.Clear();
@@ -158,9 +200,11 @@ static void HCDEAIDirectorObserveMonsters()
 			if (observed.GroupId >= 0 && ObservedClusters[observed.GroupId].Count >= 3)
 			{
 				RegroupHints.Push({ observed.Actor, observed.GroupId, DirectorState.LastSweepTic });
+				++DirectorState.HintsIssuedThisTic;
 			}
 		}
 		DirectorState.RegroupHintsStored = int(RegroupHints.Size());
+		DirectorState.HintsIssuedTotal += DirectorState.HintsIssuedThisTic;
 	}
 
 	DirectorState.LastSweepWallclockMs = int(I_msTime() - sweepStartMs);
@@ -181,12 +225,15 @@ void HCDEAIDirectorTick()
 
 	DirectorState.AuthorityActive = true;
 	DirectorState.TicksSinceStart++;
-	DirectorState.HintsIssuedThisTic = 0;
 	DirectorState.LastTickWallclockMs = I_msTime();
 
 	if (DirectorState.TicksSinceStart == 1 || (DirectorState.TicksSinceStart % *sv_aidirector_sweep_tics) == 0)
 	{
 		HCDEAIDirectorObserveMonsters();
+	}
+	else
+	{
+		DirectorState.HintsIssuedThisTic = 0;
 	}
 
 	// Touching the named RNG here is deferred -- the audit prefers RNG draws
@@ -217,10 +264,11 @@ CCMD(ai_status)
 	Printf(PRINT_HIGH, "  sv_aidirector_regroup_hint = %s\n", *sv_aidirector_regroup_hint ? "on" : "off");
 	Printf(PRINT_HIGH, "  regroup-hints-stored      = %d\n", state.RegroupHintsStored);
 	Printf(PRINT_HIGH, "  deterministic-rng         = pr_aidirector named stream; draws=%d\n", state.DeterministicRngDraws);
-	Printf(PRINT_HIGH, "  hints-issued-this-tic     = %d (Phase 3 work)\n", state.HintsIssuedThisTic);
+	Printf(PRINT_HIGH, "  hints-issued-this-tic     = %d\n", state.HintsIssuedThisTic);
 	Printf(PRINT_HIGH, "  hints-issued-total        = %d\n", state.HintsIssuedTotal);
+	Printf(PRINT_HIGH, "  hints-consumed-total      = %d (regroup direction biases applied)\n", state.HintsConsumedTotal);
 	Printf(PRINT_HIGH, "  last-tick-wallclock-ms    = %d (diagnostic only)\n", state.LastTickWallclockMs);
-	Printf(PRINT_HIGH, "  phase                     = scaffold-only; no actor mutation, no replication.\n");
+	Printf(PRINT_HIGH, "  phase                     = Phase 3: deterministic regroup chase-direction bias; no replication.\n");
 	Printf(PRINT_HIGH, "  see docs/HCDE_AIDIRECTOR_AUDIT.md for boundaries.\n");
 	Printf(PRINT_HIGH, "========================\n");
 }

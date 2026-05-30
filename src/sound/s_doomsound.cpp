@@ -55,6 +55,7 @@
 #include "v_draw.h"
 #include "v_font.h"
 #include "vm.h"
+#include "debugtrace.h"
 
 // EXTERNAL DATA DEFINITIONS -------------------------------------------------
 
@@ -106,6 +107,7 @@ public:
 
 static FString LookupMusic(const char* musicname, int& order)
 {
+	const char* original_in = musicname;
 	// allow specifying "*" as a placeholder to play the level's default music.
 	if (musicname != nullptr && !strcmp(musicname, "*"))
 	{
@@ -157,10 +159,14 @@ static FString LookupMusic(const char* musicname, int& order)
 		if (*aliasp == NAME_None)
 		{
 			order = -1;
+			DebugTrace::Markf("music", "LookupMusic '%s' -> '' (alias suppressed)",
+				original_in ? original_in : "(null)");
 			return "";	// flagged to be ignored
 		}
 		musicname = aliasp->GetChars();
 	}
+	DebugTrace::Markf("music", "LookupMusic in='%s' out='%s' order=%d",
+		original_in ? original_in : "(null)", musicname ? musicname : "(null)", order);
 	return musicname;
 }
 
@@ -172,10 +178,79 @@ static FString LookupMusic(const char* musicname, int& order)
 //
 //==========================================================================
 
+static bool IsKnownMusicExtension(const char* ext)
+{
+	if (ext == nullptr || *ext == 0)
+	{
+		return false;
+	}
+	return !stricmp(ext, "ogg") || !stricmp(ext, "mid") || !stricmp(ext, "midi") ||
+		!stricmp(ext, "mus") || !stricmp(ext, "mp3") || !stricmp(ext, "flac") ||
+		!stricmp(ext, "wav") || !stricmp(ext, "it") || !stricmp(ext, "xm") ||
+		!stricmp(ext, "s3m") || !stricmp(ext, "mod");
+}
+
+static bool HasMusicPathSegment(const char* path)
+{
+	const char* segment = path;
+	while (segment != nullptr && *segment != 0)
+	{
+		const char* nextSlash = strpbrk(segment, "/\\");
+		const size_t segmentLen = nextSlash != nullptr ? size_t(nextSlash - segment) : strlen(segment);
+		if (segmentLen == 5 && !strnicmp(segment, "music", 5))
+		{
+			return true;
+		}
+		segment = nextSlash != nullptr ? nextSlash + 1 : nullptr;
+	}
+	return false;
+}
+
+static bool MusicPathMatchesName(const char* fullName, const char* musicname)
+{
+	if (fullName == nullptr || musicname == nullptr || *musicname == 0)
+	{
+		return false;
+	}
+
+	const char* baseName = strrchr(fullName, '/');
+	const char* baseNameBackslash = strrchr(fullName, '\\');
+	if (baseNameBackslash != nullptr && (baseName == nullptr || baseNameBackslash > baseName))
+	{
+		baseName = baseNameBackslash;
+	}
+	baseName = baseName != nullptr ? baseName + 1 : fullName;
+
+	const char* ext = strrchr(baseName, '.');
+	if (ext == nullptr || ext == baseName || !IsKnownMusicExtension(ext + 1))
+	{
+		return false;
+	}
+
+	const size_t baseLen = size_t(ext - baseName);
+	return strlen(musicname) == baseLen && !strnicmp(baseName, musicname, baseLen);
+}
+
+static int FindNestedMusicFile(const char* musicname)
+{
+	for (int lump = fileSystem.GetNumEntries() - 1; lump >= 0; --lump)
+	{
+		const char* fullName = fileSystem.GetFileFullName(lump, false);
+		if (HasMusicPathSegment(fullName) && MusicPathMatchesName(fullName, musicname))
+		{
+			DebugTrace::Markf("music", "FindMusic nested match '%s' -> '%s' lump=%d",
+				musicname ? musicname : "(null)", fullName ? fullName : "(null)", lump);
+			return lump;
+		}
+	}
+	return -1;
+}
+
 static int FindMusic(const char* musicname)
 {
-	int lumpnum = fileSystem.CheckNumForFullName(musicname);
-	if (lumpnum == -1) lumpnum = fileSystem.CheckNumForName(musicname, FileSys::ns_music);
+	int lumpnum = fileSystem.CheckNumForName(musicname, FileSys::ns_music);
+	if (lumpnum == -1) lumpnum = FindNestedMusicFile(musicname);
+	if (lumpnum == -1) lumpnum = fileSystem.CheckNumForFullName(musicname);
 	return lumpnum;
 }
 
@@ -189,6 +264,7 @@ static int FindMusic(const char* musicname)
 
 void S_Init()
 {
+	DebugTrace::Markf("sound", "S_Init called");
 	// Hook up the music player with the engine specific customizations.
 	static MusicCallbacks cb = { LookupMusic, FindMusic };
 	S_SetMusicCallbacks(&cb);

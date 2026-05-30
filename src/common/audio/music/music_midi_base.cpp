@@ -30,6 +30,7 @@
 #include "s_music.h"
 #include "c_cvars.h"
 #include "printf.h"
+#include "debugtrace.h"
 
 #define DEF_MIDIDEV -5
 
@@ -110,9 +111,11 @@ CUSTOM_CVAR (Int, snd_mididevice, DEF_MIDIDEV, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CV
 		{
 			Printf("ID out of range. Using default device.\n");
 		}
+		DebugTrace::Markf("music", "snd_mididevice=%d not in device list (%d entries) - resetting to %d", (int)self, amount, DEF_MIDIDEV);
 		if (self != DEF_MIDIDEV) self = DEF_MIDIDEV;
 		return;
 	}
+	DebugTrace::Markf("music", "snd_mididevice=%d accepted (device list has %d entries)", (int)self, amount);
 	bool change = ChangeMusicSetting(zmusic_snd_mididevice, nullptr, self);
 	if (change) S_MIDIDeviceChanged(self);
 }

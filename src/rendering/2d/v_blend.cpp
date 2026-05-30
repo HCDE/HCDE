@@ -39,6 +39,19 @@
 #include "d_main.h"
 #include "v_draw.h"
 
+EXTERN_CVAR(Bool, r_view_pain_smooth)
+EXTERN_CVAR(Float, r_view_pain_smooth_strength)
+EXTERN_CVAR(Bool, r_fakeradio)
+EXTERN_CVAR(Float, r_fakeradio_strength)
+EXTERN_CVAR(Bool, r_geom_ao)
+EXTERN_CVAR(Float, r_geom_ao_strength)
+
+// HCDE #8 Doom-Retro pain-view smoothing: pure helper defined in
+// `src/r_view_pain_smooth.cpp`. Returns a value in [0, 1] suitable for scaling
+// the damage-derived blend alpha. Vanilla = identity (when r_view_pain_smooth
+// is off this branch is not entered).
+extern float HCDEViewPainSmoothScale(int rawDamageCount, float strength);
+
 CVAR(Float, underwater_fade_scalar, 1.0f, CVAR_ARCHIVE) // [Nash] user-settable underwater blend intensity
 CVAR( Float, blood_fade_scalar, 1.0f, CVAR_ARCHIVE )	// [SP] Pulled from Skulltag - changed default from 0.5 to 1.0
 CVAR( Float, pickup_fade_scalar, 1.0f, CVAR_ARCHIVE )	// [SP] Uses same logic as blood_fade_scalar except for pickups
@@ -134,6 +147,22 @@ void V_AddPlayerBlend (player_t *CPlayer, float blend[4], float maxinvalpha, int
 	if (painFlash.a != 0)
 	{
 		cnt = DamageToAlpha[min (CPlayer->damagecount * painFlash.a / 255, (uint32_t)113)];
+
+		// HCDE #8 Doom-Retro pain-view smoothing. Default off; when on, scale
+		// the damage-derived count by smoothed/linear so the rise/fall shape is
+		// smoothed but the peak (damagecount=100) is preserved. Authoritative
+		// `damagecount` is unchanged -- this is rendering only.
+		if (r_view_pain_smooth && CPlayer->damagecount > 0)
+		{
+			const float strength = *r_view_pain_smooth_strength;
+			const float linear   = HCDEViewPainSmoothScale(CPlayer->damagecount, 0.0f);
+			const float smoothed = HCDEViewPainSmoothScale(CPlayer->damagecount, strength);
+			if (linear > 0.0f)
+			{
+				const float ratio = smoothed / linear;
+				cnt = (int)(cnt * ratio);
+			}
+		}
 
 		// [BC] Allow users to tone down the intensity of the blood on the screen.
 		cnt = (int)( cnt * blood_fade_scalar );
@@ -341,6 +370,29 @@ FVector4 V_CalcBlend(sector_t* viewsector, PalEntry* modulateColor)
 		// except for fadeto effects
 		player_t* player = (players[consoleplayer].camera->player != NULL) ? players[consoleplayer].camera->player : &players[consoleplayer];
 		V_AddBlend(player->BlendR, player->BlendG, player->BlendB, player->BlendA, blend);
+	}
+
+	// HCDE #6 Doomsday-style presentation hook. This is the intentionally
+	// conservative first render-path integration for the FakeRadio/AO CVARs:
+	// a darkening overlay in the existing view-blend pass, default off, local
+	// only, and skipped while fullbright effects are active. Later renderer
+	// work can replace this fallback with real geometry-edge and corner-AO
+	// sampling without changing the user-facing CVAR contract.
+	if (!fullbright && (r_fakeradio || r_geom_ao))
+	{
+		float darken = 0.0f;
+		if (r_fakeradio)
+		{
+			darken += clamp(*r_fakeradio_strength, 0.0f, 1.0f) * 0.06f;
+		}
+		if (r_geom_ao)
+		{
+			darken += clamp(*r_geom_ao_strength, 0.0f, 1.0f) * 0.08f;
+		}
+		if (darken > 0.0f)
+		{
+			V_AddBlend(0.0f, 0.0f, 0.0f, clamp(darken, 0.0f, 0.18f), blend);
+		}
 	}
 
 	const float br = clamp(blend[0] * 255.f, 0.f, 255.f);

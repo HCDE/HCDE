@@ -68,7 +68,7 @@ Snapshot source: GitHub project item list visible on 2026-05-27.
 
 | Issue | Board item | Integration meaning |
 | --- | --- | --- |
-| #4 | NanoBSP from Woof doom engine | **Scoped + loader CVAR + vendor slot + build-from-scratch dispatch landed (2026-05-28).** `hcde_nanobsp_loader` (0=existing builder, 1=NanoBSP dispatch for build-from-scratch only, 2=advanced soak) and `r_nanobsp_status` CCMD live in `src/d_nanobsp_loader.cpp`. Upstream `nano_bsp.c/.h` are vendored under `src/utility/nodebuilder/nano/` but not compiled. `src/maploader/maploader.cpp` now consults the NanoBSP dispatch only inside the forced node rebuild path; the adapter currently refuses to emit nodes and falls back to the existing builder until deterministic HCDE data-structure mapping exists. `tests/nanobsp_validation/compare_nanobsp.py` writes an adapter-pending comparison report with LOS sample cases and soak report fields. |
+| #4 | NanoBSP from Woof doom engine | **HCDE-native adapter emission landed (2026-05-30).** `hcde_nanobsp_loader` (0=existing builder, 1=NanoBSP dispatch for build-from-scratch only, 2=advanced soak) and `r_nanobsp_status` CCMD live in `src/d_nanobsp_loader.cpp`. Upstream `nano_bsp.c/.h` are vendored under `src/nodebuilders/nanobsp/` as reference source, while the runtime adapter ports NanoBSP partitioning onto HCDE arrays and emits vertices/segs/subsectors/nodes directly. Polyobject and invalid inputs still fall back. `tests/nanobsp_validation/compare_nanobsp.py` now queues engine-run comparisons with LOS sample cases and soak report fields. |
 | #9 | Nugget Doom -- Player Feel & Input | **Scoped + default-off feel features landed (2026-05-28).** `m_smooth_curve` shapes mouse deltas in `G_BuildTiccmd` through a stateless smoothstep curve. `r_crosshair_recoil` offsets only the rendered crosshair from clamped local refire/weapon-bob state. `r_killfeed` records existing obituary text into a HUD-side ring buffer and renders recent entries. `snd_footsteps_surface` selects `*footstep-solid` / `*footstep-liquid` aliases in ZScript only. No physics, hitscan, commands, scoring, or weapon timing changes. |
 | #7 | Nugget Doom -- Gyroscope Input | **Scoped + Windows/SDL dynamic probe + command integration landed (2026-05-28).** `HCDEGyro_GetTiccmdContribution()` is called from `G_BuildTiccmd` and stays zero by default. When `joy_gyro_enable=1` on Windows, `src/i_input_gyro.cpp` dynamically probes `SDL2.dll` sensor symbols without a hard SDL include and reads `SDL_SENSOR_GYRO` samples when available. `joy_gyro_mode` is parsed: always-on contributes; held/toggle remain zero until a binding exists. |
 | #8 | Doom Retro -- Physics & Feel Layer | **Scoped (2026-05-28).** Highest-risk roadmap item: every imported tweak ships behind a compat flag with demo-version awareness. One tweak per PR; first candidate is the rendering-only pain view-kick smoothing. See `docs/HCDE_DOOM_RETRO_AUDIT.md`. |
@@ -462,13 +462,11 @@ authority behaviour change.
 
 **Out of scope this run:**
 
-- Vendoring the NanoBSP source under
-  `src/utility/nodebuilder/nano/` (#4 Phase 1 work).
+- NanoBSP runtime adapter work beyond the initial HCDE-native emission path.
 - Predator snapshot replication, buy command opcode, predator pawn class
   (#12 Phase 2-4 work).
-- AI director observation pass, hint mechanism, ZScript per-monster hooks
-  (#13 Phase 2-3 work).
-- Real libcurl link, RCON sockets/auth/dispatch, gyro sensor polling.
+- Additional AI director hint types and ZScript per-monster hooks (#13 Phase 4+ work).
+- Real libcurl link and gyro held/toggle binding polish.
 - Eternity mixer registration past the existing skeleton.
 
 ### 2026-05-28 -- Roadmap batch run (ID24 executable harness)
@@ -540,11 +538,8 @@ building.
 
 **Code / vendor (#4):**
 
-- `src/utility/nodebuilder/nano/nano_bsp.c` and `.h` now vendor the upstream
+- `src/nodebuilders/nanobsp/nano_bsp.c` and `.h` now vendor the upstream
   Woof NanoBSP source files with MIT license headers preserved.
-- `src/utility/nodebuilder/nano/README.md` documents the upstream source,
-  license, and HCDE integration boundary. The files are not added to
-  `src/CMakeLists.txt` and no code includes them yet.
 
 **Tests / harness (#4):**
 
@@ -561,14 +556,15 @@ building.
 **Current validation result:**
 
 - Harness runs successfully and reports vendor status `present`.
-- All map cases are skipped with reason `adapter-missing`, which is expected
-  until HCDE map-data adapters exist for the upstream source.
+- Static adapter checks pass and map cases are queued with reason
+  `engine-run-required`.
 
-**Out of scope this run:**
+**Remaining validation scope:**
 
-- Compiling NanoBSP or adapting Woof structures to HCDE structures. The
-  `hcde_nanobsp_loader=1` dispatch point now exists, but intentionally falls
-  back until the adapter can prove deterministic output.
+- Add an engine launch wrapper that captures ZDBSP-vs-NanoBSP subsector/seg
+  counts, line-mapping hashes, LOS samples, and load times.
+- Soak `hcde_nanobsp_loader=1` on curated single-player and multiplayer maps
+  before considering it as a default path.
 
 ### 2026-05-28 -- Roadmap batch run (Doom Retro + Nugget feel)
 

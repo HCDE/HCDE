@@ -1,8 +1,9 @@
 # HCDE Roadmap #13 — Monster AI System Scoping
 
 **Last updated:** 2026-05-28
-**Status:** Scoping. No code lands as part of this audit; this document
-defines the integration boundary so future PRs are bounded.
+**Status:** Phase 3 initial regroup hint wired behind `sv_aidirector_enable`
+and `sv_aidirector_regroup_hint`. This document defines the integration
+boundary for future hints.
 
 ## What #13 actually means
 
@@ -89,9 +90,13 @@ Three layers, top to bottom:
 - **Phase 2.** Add named FRandom `pr_aidirector` and a status CCMD
   `ai_status` that prints active monster counts, current "groups", and
   the director's frame budget (similar to `net_stressreport`).
-- **Phase 3.** Wire the first concrete hint: "regroup" (a monster whose
-  group leader took damage moves toward the leader on its next A_Chase
-  decision instead of toward the player). Soak in single-player.
+- **Phase 3.** Wire the first concrete hint: "regroup". **Initial version
+  landed 2026-05-30:** the server-authoritative director clusters nearby
+  living monsters, stores regroup targets for clusters of 3+, and
+  `P_NewChaseDir` applies a small deterministic bias toward the group center
+  when both `sv_aidirector_enable=1` and `sv_aidirector_regroup_hint=1`.
+  Movement still goes through `P_DoNewChaseDir`/`P_TryWalk`; no replication
+  path or direct actor teleport/state override was added. Soak remains.
 - **Phase 4.** Multiplayer soak with `sv_aidirector_enable=1` on a
   dedicated server. Verify saves/demos replay identically.
 - **Phase 5+.** Additional hint types (ambush, flee, retarget). Each as
@@ -115,6 +120,7 @@ Three layers, top to bottom:
 | ------- | ---- |
 | Director core | `src/d_net_aidirector.cpp` (new), header `.h` |
 | Director CVARs/CCMDs | `src/d_net_aidirector.cpp` (CVAR section + `ai_status` CCMD) |
+| First playsim hook | `src/playsim/p_enemy.cpp` (`P_NewChaseDir` regroup bias) |
 | ZScript per-monster hooks | `wadsrc/static/zscript/actors/<game>/...` (extend existing classes) |
 | Replication | reuse existing actor snapshot stream in `d_net_snapshot_part1.cpp`/`part2.cpp` |
 | Build system | `src/CMakeLists.txt` (add `d_net_aidirector.cpp`) |

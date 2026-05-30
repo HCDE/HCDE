@@ -815,10 +815,17 @@ class PlayerPawn : Actor
 		uint freshRespawnPress = (player.cmd.buttons & wantRespawnButtons)
 			& ~(player.oldbuttons & wantRespawnButtons);
 		bool forcedRespawn = (deathmatch || alwaysapplydmflags) && sv_forcerespawn;
-		if ((freshRespawnPress != 0 || forcedRespawn) && !sv_norespawn)
+
+		if (freshRespawnPress != 0)
+		{
+			self.special2 = 1; // Buffer the respawn press
+		}
+
+		if ((self.special2 != 0 || forcedRespawn) && !sv_norespawn)
 		{
 			if (Level.maptime >= player.respawn_time)
 			{
+				self.special2 = 0; // Clear the buffer
 				player.cls = NULL;		// Force a new class if the player is using a random class
 				player.playerstate = (multiplayer || level.AllowRespawn || sv_singleplayerrespawn || G_SkillPropertyInt(SKILLP_PlayerRespawn)) ? PST_REBORN : PST_ENTER;
 				if (special1 > 2)

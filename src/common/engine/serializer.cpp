@@ -210,6 +210,35 @@ FWriterBuffer FSerializer::CloseAndGetBuffer() {
 	return ret;
 }
 
+FReader::~FReader()
+{
+	if (!mPredictionRollback)
+		return;
+
+	// Prediction rollback JSON is deserialized over live world state. When
+	// ~GenericDocument runs it calls SetNull(), which recursively destroys
+	// the parsed tree; that walk clobbers ownAllocator_ (crash registers
+	// showed ~MemoryPoolAllocator invoked on baseAllocator+0x10) and then
+	// Destroy() faults in ~MemoryPoolAllocator. Replace the root with a
+	// fresh null value without running ~GenericValue on the old tree, and
+	// clear the document allocator pointers so ~GenericDocument skips both
+	// SetNull and pool deletion. One small leak per call (~64 KiB pool).
+	//
+	// IMPORTANT: sizeof(rapidjson::GenericValue) is 24 bytes in 64-bit mode
+	// (RAPIDJSON_48BITPOINTER_OPTIMIZATION=0, see document.h ~line 2105).
+	// GenericDocument layout therefore is:
+	//   offset  0..23 : GenericValue::data_
+	//   offset 24..31 : GenericDocument::allocator_
+	//   offset 32..39 : GenericDocument::ownAllocator_
+	using ValueType = rapidjson::Document::ValueType;
+	new (static_cast<ValueType*>(static_cast<void*>(&mDoc))) ValueType();
+
+	void* null = nullptr;
+	unsigned char* docBytes = reinterpret_cast<unsigned char*>(&mDoc);
+	memcpy(docBytes + 24, &null, sizeof(void*)); // GenericDocument::allocator_
+	memcpy(docBytes + 32, &null, sizeof(void*)); // GenericDocument::ownAllocator_
+}
+
 void FSerializer::Close()
 {
 	if (w == nullptr && r == nullptr) return;	// double close? This should skip the I_Error at the bottom.

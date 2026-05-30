@@ -1840,6 +1840,16 @@ static void P_RollbackPlayers(FSerializer& arc)
 
 void P_PredictClient()
 {
+	if (!netgame)
+	{
+		P_UnPredictClient();
+		if (consoleplayer >= 0 && consoleplayer < MAXPLAYERS)
+		{
+			players[consoleplayer].cheats &= ~CF_PREDICTING;
+		}
+		return;
+	}
+
 	if (gamestate != GS_LEVEL)
 		return;
 

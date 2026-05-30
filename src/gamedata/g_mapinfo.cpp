@@ -317,6 +317,7 @@ void level_info_t::Reset()
 
 	specialactions.Clear();
 	DefaultEnvironment = 0;
+	Environment = nullptr; // Initialize the new member
 	PrecacheSounds.Clear();
 
 	brightfog = -1;
@@ -2087,6 +2088,7 @@ MapFlagHandlers[] =
 	{ "compat_avoidhazards",			MITYPE_COMPATFLAG, 0, COMPATF2_AVOID_HAZARDS },
 	{ "compat_stayonlift",				MITYPE_COMPATFLAG, 0, COMPATF2_STAYONLIFT },
 	{ "compat_nombf21",					MITYPE_COMPATFLAG, 0, COMPATF2_NOMBF21 },
+	{ "compat_noid24",					MITYPE_COMPATFLAG, 0, COMPATF2_NOID24 },
 	{ "compat_voodoozombies",			MITYPE_COMPATFLAG, 0, COMPATF2_VOODOO_ZOMBIES },
 	{ "compat_noacsargcheck",			MITYPE_COMPATFLAG, 0, COMPATF2_NOACSARGCHECK },
 	{ "compat_novdolllockmsg",			MITYPE_COMPATFLAG, 0, COMPATF2_NOVDOLLLOCKMSG },

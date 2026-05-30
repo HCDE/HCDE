@@ -369,11 +369,22 @@ static bool Net_DiagCopyFileIfExists(const char* srcPath, const char* dstPath)
 	}
 	char buffer[8192];
 	size_t readBytes = 0;
+	bool ok = true;
+	// Track short writes and stream errors so a truncated/corrupt copy is not
+	// reported as success and then listed in the bundle manifest as complete.
 	while ((readBytes = fread(buffer, 1, sizeof(buffer), in)) > 0)
-		fwrite(buffer, 1, readBytes, out);
+	{
+		if (fwrite(buffer, 1, readBytes, out) != readBytes)
+		{
+			ok = false;
+			break;
+		}
+	}
+	if (ferror(in))
+		ok = false;
 	fclose(in);
 	fclose(out);
-	return true;
+	return ok;
 }
 
 static void Net_DiagAppendManifestLine(FILE* manifest, const char* line)

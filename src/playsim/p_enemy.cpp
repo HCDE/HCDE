@@ -44,6 +44,8 @@
 #include "teaminfo.h"
 #include "vm.h"
 
+#include "../d_net_aidirector.h"
+
 static FRandom pr_checkmissilerange ("CheckMissileRange");
 static FRandom pr_opendoor ("OpenDoor");
 static FRandom pr_trywalk ("TryWalk");
@@ -1061,6 +1063,27 @@ void P_NewChaseDir(AActor * actor)
 			{
 				actor->strafecount = pr_enemystrafe() & 15;
 				delta = -delta;
+			}
+		}
+	}
+
+	// HCDE #13 AI Director Phase 3: when explicitly enabled, bias the normal
+	// chase direction a little toward the director's deterministic group
+	// center. Movement still goes through P_DoNewChaseDir/P_TryWalk, so doors,
+	// dropoffs, blocking lines, and vanilla fallback directions remain in
+	// charge. The small blend avoids yanking monsters off their target.
+	if (actor->strafecount == 0)
+	{
+		double regroupX = 0;
+		double regroupY = 0;
+		int aiHintGroupId = 0;
+		int aiHintStoredTic = 0;
+		if (HCDEAIDirectorConsumeRegroupTarget(actor, &regroupX, &regroupY, &aiHintGroupId, &aiHintStoredTic))
+		{
+			DVector2 regroupDelta(regroupX - actor->X(), regroupY - actor->Y());
+			if (regroupDelta.LengthSquared() > 64.0 * 64.0)
+			{
+				delta = delta * 0.75 + regroupDelta * 0.25;
 			}
 		}
 	}

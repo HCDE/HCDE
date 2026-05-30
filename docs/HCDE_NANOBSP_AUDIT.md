@@ -76,7 +76,7 @@ join — same model as the existing nodebuild compat flags.
 
 - **Phase 0 (this doc).** Define the boundary.
 - **Phase 1.** Vendor the NanoBSP source under
-  `src/utility/nodebuilder/nano/` so it is present but unused. No CVAR
+  `src/nodebuilders/nanobsp/` so it is present as reference source. No CVAR
   behaviour change. Add a unit-style harness that runs both builders on a
   small map set and diffs subsector/seg counts and line-of-sight results from
   a fixed sample grid. **Vendor slot and harness scaffold landed
@@ -86,9 +86,14 @@ join — same model as the existing nodebuild compat flags.
 - **Phase 2.** Add the `hcde_nanobsp_loader` CVAR (default 0). Wire it
   into map loading for the "build from scratch" path only (value 1).
   **Dispatch landed 2026-05-28:** `MapLoader` consults the NanoBSP adapter
-  only after `ForceNodeBuild` is true. The adapter currently refuses to emit
-  nodes and returns to the existing builder until HCDE/Woof structure mapping
-  and determinism comparisons are implemented.
+  only after `ForceNodeBuild` is true. **Initial adapter emission landed
+  2026-05-30:** the adapter now ports NanoBSP's partitioning logic onto HCDE
+  arrays and emits vertices/segs/subsectors/nodes directly. Determinism
+  comparisons and soak gating remain before making it the default.
+  **Preflight boundary landed 2026-05-29:** the dispatch now classifies
+  adapter inputs before falling back, tracking empty geometry, missing source
+  arrays, polyobject presence, and the global "adapter not enabled" blocker in
+  `r_nanobsp_status` and the comparison harness report.
 - **Phase 3.** Soak in single-player on a curated map list (Doom 1/2,
   Plutonia, TNT, modern megawads). Compare:
      - load time
@@ -120,6 +125,74 @@ join — same model as the existing nodebuild compat flags.
 A future NanoBSP import lives next to the existing builder, not in
 playsim, the renderer's runtime path, or netcode.
 
+## Current Testing Status (2026-05-30)
+
+### What can be tested TODAY
+
+The dispatch scaffold is live and observable:
+
+1. **Diagnostic CCMD:** `r_nanobsp_status` in console shows:
+   - Current loader mode (`hcde_nanobsp_loader` value)
+   - Effective build path (NanoBSP vs ZDBSP)
+   - Dispatch request count
+   - Adapter fallback count
+   - Preflight pass/reject counts
+   - Polyobject case count
+   - Recent dispatch history (last 8 maps with geometry stats)
+
+2. **Preflight classification and emission:** The adapter classifies inputs
+   before building. Blockers tracked:
+   - `empty-geometry` (zero vertices/lines/sides)
+   - `missing-array` (null pointer inputs)
+   - `polyobjects` (maps with polyobjects - potential compatibility issue)
+   Clean inputs now attempt HCDE-native NanoBSP emission; blocked inputs still
+   fall back to ZDBSP.
+
+3. **Command-line flag:** `-forceswnodes` sets `hcde_nanobsp_loader=1` for
+   testing the dispatch path without modifying config.
+
+### What requires future implementation / validation
+
+**The adapter layer (Phase 2 completion):**
+- **Initial HCDE-native adapter landed 2026-05-30.** The runtime path no
+  longer calls Woof's `BSP_BuildNodes()` directly because that source assumes
+  Woof globals (`lines`, `segs`, `nodes`, `world_arena`) that HCDE does not
+  expose. Instead, `src/d_nanobsp_loader.cpp` ports the NanoBSP partitioning
+  logic onto HCDE's `FNodeBuilder::FLevel`/`FLevelLocals` arrays.
+- Current emitted data: vertices (including split vertices), segs,
+  subsectors, and nodes in the same `FLevelLocals` arrays consumed by the
+  existing maploader.
+- Current fallback rules remain: empty input, missing arrays, and polyobject
+  maps still fall back to the existing builder.
+- Determinism comparison can now begin.
+
+**Comparison harness (Phase 3):**
+- Build identical maps with both builders
+- Compare subsector counts and ordering
+- Compare segment-to-line mappings
+- Sample point line-of-sight verification
+- Load time benchmarks
+
+### Test procedure for TODAY
+
+1. Build HCDE with current code
+2. Run with `-forceswnodes` or set `hcde_nanobsp_loader 1` in console
+3. Load various maps (especially build-from-scratch maps)
+4. Run `r_nanobsp_status` to verify:
+   - Dispatch requests increment
+   - Adapter reports either `adapter-emitted:hcde-nanobsp` or correct blockers
+   - Blocked inputs fall back to ZDBSP (no crash, map loads)
+   - Polyobject maps are flagged
+
+### Safety verification
+
+- [ ] `hcde_nanobsp_loader=0` (default): maps load normally, never touch NanoBSP path
+- [ ] `hcde_nanobsp_loader=1` with existing GL nodes: skips build-from-scratch path entirely
+- [ ] `hcde_nanobsp_loader=1` with missing/bad nodes: enters dispatch, adapter emits on clean maps
+- [ ] Polyobject maps and invalid inputs still fall back to ZDBSP
+- [ ] No crash when loading any map with any loader value
+- [ ] Determinism: netgames with same loader value produce identical nodes
+
 ## Open questions (for the implementing PR, not this audit)
 
 1. Does NanoBSP guarantee identical subsector ordering for the same input?
@@ -129,3 +202,6 @@ playsim, the renderer's runtime path, or netcode.
    `nodebuild_classify_nosse2.cpp` and the `polyobjects.cpp` interactions.)
 3. Memory footprint at peak vs. ZDBSP — useful or not on dedicated servers
    where simultaneous map loads happen for late joiners?
+4. **NEW:** What is the performance cost of HCDE↔Woof data conversion?
+   Is the conversion overhead small enough that NanoBSP's speed advantage
+   is still meaningful?

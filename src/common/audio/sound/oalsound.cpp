@@ -30,6 +30,7 @@
 #include "i_module.h"
 #include "oalsound.h"
 #include "printf.h"
+#include "debugtrace.h"
 
 const char *GetSampleTypeName(SampleType type);
 const char *GetChannelConfigName(ChannelConfig chan);
@@ -57,6 +58,8 @@ CVARD(String, snd_aldriver, DEFAULT_DRIVER, CVAR_ARCHIVE|CVAR_GLOBALCONFIG, "See
 CVAR(Bool, snd_waterreverb, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 CVAR (String, snd_aldevice, "Default", CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, snd_efx, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+// HCDE #6 Doomsday-style environmental reverb regions. Requires snd_efx.
+CVAR (Bool, snd_env_reverb, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CUSTOM_CVARD(Int, snd_environmentprofile, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL,
 	"Global reverb profile. 0=classic, 1=doomsday room, 2=doomsday cave, 3=doomsday cinematic.")
 {
@@ -645,6 +648,7 @@ static void LoadALCFunc(ALCdevice *device, const char *name, T *x)
 OpenALSoundRenderer::OpenALSoundRenderer()
 	: QuitThread(false), Device(NULL), Context(NULL), SFXPaused(0), PrevEnvironment(NULL), EnvSlot(0)
 {
+	DebugTrace::Markf("sound", "OpenALSoundRenderer constructor called");
 	EnvFilters[0] = EnvFilters[1] = 0;
 
 	Printf("I_InitSound: Initializing OpenAL\n");
@@ -1821,9 +1825,15 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 		if(!env)
 			env = DefaultEnvironments[0];
 
+		// HCDE #6: snd_env_reverb gates environmental reverb from EDF/sector definitions.
+		// When disabled, we use a dry environment (no reverb) unless underwater.
+		if (!*snd_env_reverb && !listener->underwater)
+		{
+			env = DefaultEnvironments[0]; // "Off" environment - dry sound
+		}
 		// Optional global profile overrides for modders who want a Doomsday-like
 		// wet mix without hand-editing dozens of reverb CVARs.
-		if (!(listener->underwater || env->SoftwareWater))
+		else if (!(listener->underwater || env->SoftwareWater))
 		{
 			env = HCDE_SelectEnvironmentProfile(env);
 		}
@@ -1831,7 +1841,7 @@ void OpenALSoundRenderer::UpdateListener(SoundListener *listener)
 	if(env != PrevEnvironment || env->Modified)
 	{
 		PrevEnvironment = env;
-		DPrintf(DMSG_NOTIFY, "Reverb Environment %s\n", env->Name);
+		DPrintf(DMSG_NOTIFY, "Reverb Environment %s (snd_env_reverb=%s)\n", env->Name, *snd_env_reverb ? "on" : "off");
 
 		if(EnvSlot != 0)
 			LoadReverb(env);

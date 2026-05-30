@@ -815,6 +815,7 @@ set (PCH_SOURCES
 	hcde_killfeed.cpp
 	i_input_feel.cpp
 	i_input_gyro.cpp
+	r_doomsday_features.cpp
 	d_netinfo.cpp
 	d_protocol.cpp
 	d_steam.cpp

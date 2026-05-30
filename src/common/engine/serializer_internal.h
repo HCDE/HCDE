@@ -23,6 +23,7 @@
 
 #pragma once
 #include <optional>
+#include <cstring>
 const char* UnicodeToString(const char* cc);
 const char* StringToUnicode(const char* cc, int size = -1);
 
@@ -217,6 +218,8 @@ struct FReader
 		mDoc.Parse(buffer, length);
 		mObjects.Push(FJSONObject(&mDoc));
 	}
+
+	~FReader();
 
 	rapidjson::Value *FindKey(const char *key)
 	{

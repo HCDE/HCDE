@@ -1474,6 +1474,23 @@ void G_Ticker ()
 		case ga_loadgamehidecon:
 		case ga_autoloadgame:
 			G_DoLoadGame ();
+			if (gameaction == ga_nothing)
+			{
+				// If the load failed, it returned early and left gameaction as ga_nothing.
+				// Clear BackupSaveName so we don't get stuck in a loop trying to load a broken save.
+				BackupSaveName = "";
+
+				// Any player that was in PST_ENTER waiting for the load will be stuck
+				// and trigger an infinite loop of load attempts on subsequent tics.
+				// Reset them to PST_DEAD so they can try again or stay dead cleanly.
+				for (int i = 0; i < MAXPLAYERS; ++i)
+				{
+					if (playeringame[i] && players[i].playerstate == PST_ENTER)
+					{
+						SET_PLAYER_STATE(&players[i], i, PST_DEAD, "autoloadgame_failed");
+					}
+				}
+			}
 			break;
 		case ga_savegame:
 			G_DoSaveGame (true, false, savegamefile, savedescription.GetChars());

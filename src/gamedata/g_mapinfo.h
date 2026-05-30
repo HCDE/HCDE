@@ -363,6 +363,7 @@ struct level_info_t
 	ELevelCompatFlags2	compatmask2;
 	FString		Translator;	// for converting Doom-format linedef and sector types.
 	int			DefaultEnvironment;	// Default sound environment for the map.
+	ReverbContainer* Environment; // HCDE: Eternity-style reverb environment for the map.
 	FName		Intermission;
 	FName		deathsequence;
 	FName		slideshow;

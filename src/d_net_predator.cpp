@@ -10,11 +10,18 @@
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "common/engine/i_net.h"
+#include "d_net.h"
+#include "d_player.h"
+#include "d_protocol.h"
 #include "doomdef.h"
 #include "doomstat.h"
 #include "m_random.h"
 #include "printf.h"
 #include "templates.h"
+#include "vm.h"
+#include "actor.h"
+
+#include <cstring>
 
 namespace
 {
@@ -24,11 +31,99 @@ FHCDEPredatorRoundDirector PredatorDirector;
 // predator role and any future round-roll logic must run through this
 // instance so saves/demos serialize the RNG state deterministically.
 FRandom pr_predator("Predator");
+
+PClass* HCDEPredatorPawnClass()
+{
+	static PClass* cls = nullptr;
+	static bool lookedUp = false;
+	if (!lookedUp)
+	{
+		cls = PClass::FindClass("HCDEPredatorPawn");
+		lookedUp = true;
+	}
+	return cls;
+}
+
+bool HCDEPredatorPawnSupportsMirror(AActor* mo)
+{
+	PClass* cls = HCDEPredatorPawnClass();
+	return mo != nullptr && cls != nullptr && mo->GetClass()->IsDescendantOf(cls);
+}
+
+void HCDEPredatorMirrorPawnState(int playernum)
+{
+	if (playernum < 0 || playernum >= MAXPLAYERS)
+		return;
+
+	AActor* mo = players[playernum].mo;
+	if (!HCDEPredatorPawnSupportsMirror(mo))
+		return;
+
+	const bool isPredator = PredatorDirector.PredatorPlayerNum == playernum;
+	const int currency = HCDEPredatorGetCurrency(playernum);
+
+	{
+		IFVIRTUALPTRNAME(mo, "HCDEPredatorPawn", HCDE_SetPredatorRole)
+		{
+			VMValue params[2] = { mo, isPredator };
+			VMCall(func, params, 2, nullptr, 0);
+		}
+	}
+
+	{
+		IFVIRTUALPTRNAME(mo, "HCDEPredatorPawn", HCDE_SetPredatorCurrency)
+		{
+			VMValue params[2] = { mo, currency };
+			VMCall(func, params, 2, nullptr, 0);
+		}
+	}
+
+	{
+		IFVIRTUALPTRNAME(mo, "HCDEPredatorPawn", HCDE_SetPredatorRoundState)
+		{
+			VMValue params[2] = { mo, int(PredatorDirector.State) };
+			VMCall(func, params, 2, nullptr, 0);
+		}
+	}
+
+	const FHCDEPredatorBuyResult& result = PredatorDirector.LastBuyResult;
+	if (result.AuthoritySequence != 0 && result.PlayerNum == playernum)
+	{
+		{
+			IFVIRTUALPTRNAME(mo, "HCDEPredatorPawn", HCDE_SetPredatorBuyResult)
+			{
+				VMValue params[7] =
+				{
+					mo,
+					int(result.Item),
+					int(result.Code),
+					result.Cost,
+					result.BalanceAfter,
+					result.ClientRequestId,
+					result.AuthoritySequence
+				};
+				VMCall(func, params, 7, nullptr, 0);
+			}
+		}
+	}
+}
+
+void HCDEPredatorMirrorAllPawns()
+{
+	for (int i = 0; i < MAXPLAYERS; ++i)
+	{
+		if (playeringame[i])
+		{
+			HCDEPredatorMirrorPawnState(i);
+		}
+	}
+}
 }
 
 // CVAR surface. All default-off / conservative values; the audit explicitly
 // requires that mode activation is server-driven.
 CVAR(Bool, sv_predator_enable, false, CVAR_ARCHIVE | CVAR_SERVERINFO)
+CVAR(Bool, sv_predator_allow_cheats, false, CVAR_ARCHIVE | CVAR_SERVERINFO)
 CUSTOM_CVAR(Int, sv_predator_round_seconds, 180, CVAR_ARCHIVE | CVAR_SERVERINFO)
 {
 	if (self < 30) self = 30;
@@ -208,6 +303,7 @@ void HCDEPredatorTick()
 	}
 
 	HCDEPredatorRefreshCountdown();
+	HCDEPredatorMirrorAllPawns();
 }
 
 bool HCDEPredatorBuildSnapshotV1(FHCDEPredatorSnapshotV1& out)
@@ -249,6 +345,7 @@ void HCDEPredatorApplySnapshotV1(const FHCDEPredatorSnapshotV1& snapshot)
 		PredatorDirector.PlayerCurrency[i] = snapshot.PlayerCurrency[i];
 		PredatorDirector.PlayerCurrencyValid[i] = snapshot.PlayerCurrencyValid[i];
 	}
+	HCDEPredatorMirrorAllPawns();
 }
 
 int HCDEPredatorGetCurrency(int playernum)
@@ -295,6 +392,7 @@ static void HCDEPredatorPublishBuyResult(FHCDEPredatorBuyResult& result)
 {
 	result.AuthoritySequence = ++PredatorDirector.BuyResultSequence;
 	PredatorDirector.LastBuyResult = result;
+	HCDEPredatorMirrorPawnState(result.PlayerNum);
 }
 
 bool HCDEPredatorServerSubmitBuyRequest(const FHCDEPredatorBuyRequest& request, FHCDEPredatorBuyResult& result)
@@ -382,11 +480,164 @@ int HCDEPredatorServerSelectPredatorRole()
 	return selected;
 }
 
+bool HCDEPredatorShouldRejectCheatOpcode(uint8_t opcode)
+{
+	if (!*sv_predator_enable || *sv_predator_allow_cheats)
+		return false;
+
+	switch (opcode)
+	{
+	case DEM_GENERICCHEAT:
+	case DEM_GIVECHEAT:
+	case DEM_TAKECHEAT:
+	case DEM_SETINV:
+	case DEM_WARPCHEAT:
+		++PredatorDirector.CheatRejects;
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool HCDEPredator_HandleNetEvent(int playerNum, const char* name, int arg0, int arg1, int arg2)
+{
+	(void)arg2;
+	if (name == nullptr)
+		return false;
+	if (std::strcmp(name, HCDEPredatorBuyNetEventName()) != 0)
+		return false;
+
+	// Arrival path:
+	//   - The DEM_NETEVENT lane delivers this to every client during command
+	//     playback. Only the authority instance actually validates and mutates
+	//     state. Non-authority clients ignore the event (the result will reach
+	//     them through the existing snapshot stream).
+	if (!HCDEPredatorShouldDriveAuthority())
+		return true;
+
+	FHCDEPredatorBuyRequest request;
+	request.PlayerNum = playerNum;
+	request.Item = static_cast<EHCDEPredatorBuyItem>(arg0);
+	request.ClientRequestId = arg1;
+
+	FHCDEPredatorBuyResult result;
+	(void)HCDEPredatorServerSubmitBuyRequest(request, result);
+	return true;
+}
+
+bool HCDEPredator_SendBuyRequest(EHCDEPredatorBuyItem item, int clientRequestId)
+{
+	// The DEM_NETEVENT lane already accepts this format: name + argcount(3) +
+	// 3x int32 + manual-flag. We mirror that wire layout exactly so
+	// `EventManager::SendNetworkEvent` and `HCDEPredator_HandleNetEvent` see
+	// the same byte sequence in both directions.
+	Net_WriteInt8(DEM_NETEVENT);
+	Net_WriteString(HCDEPredatorBuyNetEventName());
+	Net_WriteInt8(3);
+	Net_WriteInt32(static_cast<int32_t>(item));
+	Net_WriteInt32(clientRequestId);
+	Net_WriteInt32(0);
+	Net_WriteInt8(0); // manual flag (always 0 for engine-issued buys)
+	return true;
+}
+
+// Diagnostic CCMDs. Phase 3 wiring (DEM_NETEVENT-routed buy command from
+// client to server) is a follow-up; for now these CCMDs let an operator
+// exercise the server-side path locally (e.g. on a listen server) so the
+// validation logic, currency math, and result publication can be tested
+// end-to-end before the network handshake lands.
+//
+// Both CCMDs gate on `HCDEPredatorShouldDriveAuthority()` so a pure client
+// instance cannot mutate state.
+
+CCMD(predator_buy)
+{
+	// Client-side buy command. Anyone can invoke this; the server is the
+	// authority. The request rides DEM_NETEVENT and is validated server-side
+	// inside HCDEPredator_HandleNetEvent.
+	if (argv.argc() < 2)
+	{
+		Printf(PRINT_HIGH, "usage: predator_buy <armor|ammo|medkit>\n");
+		return;
+	}
+	const FString itemName = argv[1];
+	EHCDEPredatorBuyItem item = EHCDEPredatorBuyItem::None;
+	if (itemName.CompareNoCase("armor") == 0)        item = EHCDEPredatorBuyItem::Armor;
+	else if (itemName.CompareNoCase("ammo") == 0)    item = EHCDEPredatorBuyItem::Ammo;
+	else if (itemName.CompareNoCase("medkit") == 0)  item = EHCDEPredatorBuyItem::Medkit;
+	else
+	{
+		Printf(PRINT_HIGH, "predator_buy: unknown item '%s' (use armor/ammo/medkit)\n", itemName.GetChars());
+		return;
+	}
+
+	const int clientRequestId = ++PredatorDirector.BuyResultSequence;
+	HCDEPredator_SendBuyRequest(item, clientRequestId);
+	Printf(PRINT_HIGH, "predator_buy: dispatched DEM_NETEVENT '%s' item=%s requestId=%d (waiting for authority result)\n",
+		HCDEPredatorBuyNetEventName(), HCDEPredatorBuyItemName(item), clientRequestId);
+}
+
+CCMD(predator_buy_test)
+{
+	if (!HCDEPredatorShouldDriveAuthority())
+	{
+		Printf(PRINT_HIGH, "predator_buy_test: not authority (or sv_predator_enable=0); ignoring.\n");
+		return;
+	}
+	if (argv.argc() < 3)
+	{
+		Printf(PRINT_HIGH, "usage: predator_buy_test <playernum> <armor|ammo|medkit>\n");
+		return;
+	}
+	const int playernum = atoi(argv[1]);
+	const FString itemName = argv[2];
+	EHCDEPredatorBuyItem item = EHCDEPredatorBuyItem::None;
+	if (itemName.CompareNoCase("armor") == 0)        item = EHCDEPredatorBuyItem::Armor;
+	else if (itemName.CompareNoCase("ammo") == 0)    item = EHCDEPredatorBuyItem::Ammo;
+	else if (itemName.CompareNoCase("medkit") == 0)  item = EHCDEPredatorBuyItem::Medkit;
+	else
+	{
+		Printf(PRINT_HIGH, "predator_buy_test: unknown item '%s' (use armor/ammo/medkit)\n", itemName.GetChars());
+		return;
+	}
+
+	FHCDEPredatorBuyRequest request;
+	request.PlayerNum = playernum;
+	request.Item = item;
+	request.ClientRequestId = ++PredatorDirector.BuyResultSequence; // synthetic id for the test path
+
+	FHCDEPredatorBuyResult result;
+	const bool granted = HCDEPredatorServerSubmitBuyRequest(request, result);
+	Printf(PRINT_HIGH, "predator_buy_test: player=%d item=%s granted=%d code=%s cost=%d balance=%d\n",
+		result.PlayerNum, HCDEPredatorBuyItemName(result.Item), granted ? 1 : 0,
+		HCDEPredatorBuyResultName(result.Code), result.Cost, result.BalanceAfter);
+}
+
+CCMD(predator_admin_grant)
+{
+	if (!HCDEPredatorShouldDriveAuthority())
+	{
+		Printf(PRINT_HIGH, "predator_admin_grant: not authority; ignoring.\n");
+		return;
+	}
+	if (argv.argc() < 3)
+	{
+		Printf(PRINT_HIGH, "usage: predator_admin_grant <playernum> <delta>\n");
+		return;
+	}
+	const int playernum = atoi(argv[1]);
+	const int delta = atoi(argv[2]);
+	const bool ok = HCDEPredatorServerAddCurrency(playernum, delta);
+	Printf(PRINT_HIGH, "predator_admin_grant: player=%d delta=%d ok=%d balance=%d\n",
+		playernum, delta, ok ? 1 : 0, HCDEPredatorGetCurrency(playernum));
+}
+
 CCMD(predator_status)
 {
 	const FHCDEPredatorRoundDirector& dir = HCDEPredatorRoundDirector();
 	Printf(PRINT_HIGH, "\n=== HCDE Predator Economy ===\n");
 	Printf(PRINT_HIGH, "  sv_predator_enable             = %s\n", *sv_predator_enable ? "on" : "off");
+	Printf(PRINT_HIGH, "  sv_predator_allow_cheats       = %s\n", *sv_predator_allow_cheats ? "on" : "off");
 	Printf(PRINT_HIGH, "  sv_predator_round_seconds      = %d\n", *sv_predator_round_seconds);
 	Printf(PRINT_HIGH, "  sv_predator_buy_seconds        = %d\n", *sv_predator_buy_seconds);
 	Printf(PRINT_HIGH, "  sv_predator_starting_currency  = %d\n", *sv_predator_starting_currency);
@@ -413,6 +664,7 @@ CCMD(predator_status)
 		dir.LastBuyResult.Cost,
 		dir.LastBuyResult.BalanceAfter,
 		dir.LastBuyResult.ClientRequestId);
+	Printf(PRINT_HIGH, "  cheat-opcode-rejects            = %d\n", dir.CheatRejects);
 	Printf(PRINT_HIGH, "  snapshot-v1-capability         = 0x%016llx\n", (unsigned long long)HCDELiveCapPredatorSnapshotV1);
 	Printf(PRINT_HIGH, "  phase                          = snapshot contract only; no buy/currency/role gameplay yet.\n");
 	Printf(PRINT_HIGH, "  see docs/HCDE_PREDATOR_AUDIT.md for boundaries.\n");

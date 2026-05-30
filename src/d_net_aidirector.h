@@ -36,9 +36,12 @@ struct FHCDEAIDirectorState
 	int    LargestGroupSizeObserved = 0;
 	int    RegroupHintsStored = 0;
 	int    DeterministicRngDraws = 0;
-	int    HintsIssuedThisTic = 0;      // 0 in Phase 1
-	int    HintsIssuedTotal = 0;        // 0 in Phase 1
+	int    HintsIssuedThisTic = 0;
+	int    HintsIssuedTotal = 0;
+	int    HintsConsumedTotal = 0;      // bumps when a chase call applies a regroup target
 };
+
+class AActor;
 
 const FHCDEAIDirectorState& HCDEAIDirectorReadState();
 
@@ -51,3 +54,30 @@ void HCDEAIDirectorTick();
 
 // True iff the director is enabled AND this instance is the authority.
 bool HCDEAIDirectorShouldDriveAuthority();
+
+// Phase 3 read-only hint accessor. Returns true if `actor` currently has a
+// stored regroup hint, populating `outGroupId` and `outStoredTic`. Otherwise
+// returns false and leaves the outputs unchanged. Calling this DOES NOT
+// mutate the hint store -- a future PR may add a paired "consume" API once
+// the A_Chase callsite is ready.
+//
+// Today this is purely observational: even when it returns true, no monster
+// behaviour changes. The function exists so the eventual Phase 3 actor hook
+// has a stable interface to call before the playsim wiring lands.
+bool HCDEAIDirectorReadRegroupHint(const AActor* actor, int* outGroupId, int* outStoredTic);
+
+// Phase 3 consume hook. Returns true and populates outputs if a hint was
+// available, then increments `HintsConsumedTotal`. This is the API the
+// eventual A_Chase patch will call. With `sv_aidirector_regroup_hint=0`
+// (default) no hints are stored, so this always returns false.
+//
+// Even with the CVAR on, returning true does NOT mutate the actor or its
+// state -- the caller is responsible for any movement decision. This API
+// is the "hand the hint to the call site" boundary.
+bool HCDEAIDirectorConsumeRegroupHint(const AActor* actor, int* outGroupId, int* outStoredTic);
+
+// Phase 3 movement hook. Returns a deterministic XY regroup target for
+// `actor` and increments `HintsConsumedTotal` when a target is returned. The
+// caller still uses normal playsim movement helpers; this function only hands
+// back a point to bias the existing chase direction.
+bool HCDEAIDirectorConsumeRegroupTarget(const AActor* actor, double* outX, double* outY, int* outGroupId, int* outStoredTic);

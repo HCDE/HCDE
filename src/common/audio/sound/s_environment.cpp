@@ -538,7 +538,7 @@ void S_AddEnvironment (ReverbContainer *settings)
 		{
 			settings->Next = probe->Next;
 			*ptr = settings;
-			delete[] const_cast<char *>(probe->Name);
+			free(const_cast<char *>(probe->Name));
 			delete probe;
 		}
 	}

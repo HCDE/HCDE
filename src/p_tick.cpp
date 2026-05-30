@@ -32,6 +32,7 @@
 #include "actorinlines.h"
 #include "g_game.h"
 #include "am_map.h"
+#include "d_net_aidirector.h"
 #include "d_net_rcon.h"
 #include "hcde_servermode.h"
 #include "i_interface.h"
@@ -193,6 +194,10 @@ void P_Ticker (void)
 	}
 
 	HCDERconPollListener();
+	// HCDE #13 AI Director Phase 2: run the observation sweep every
+	// sv_aidirector_sweep_tics tics. The sweep is server-authoritative and
+	// free on the hot path when sv_aidirector_enable=0 (default).
+	HCDEAIDirectorTick();
 
 	// run the tic
 	if (paused || P_CheckTickerPaused())

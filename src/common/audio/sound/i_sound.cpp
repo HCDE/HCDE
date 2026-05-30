@@ -33,6 +33,7 @@
 #include "m_argv.h"
 #include "oalsound.h"
 #include "printf.h"
+#include "debugtrace.h"
 
 EXTERN_CVAR (Float, snd_sfxvolume)
 EXTERN_CVAR(Float, snd_musicvolume)
@@ -244,6 +245,7 @@ public:
 
 void I_InitSound ()
 {
+	DebugTrace::Markf("sound", "I_InitSound called, backend=%s", *snd_backend);
 	FModule_SetProgDir(progdir.GetChars());
 	/* Get command line options: */
 	nosound = !!Args->CheckParm (FArg_nosound);
@@ -273,6 +275,7 @@ void I_InitSound ()
 			}
 			else
 			{
+				DebugTrace::Markf("sound", "OpenAL runtime not found");
 				Printf(TEXTCOLOR_ORANGE "OpenAL runtime not found. Put soft_oal.dll or OpenAL32.dll next to hcde.exe.\n");
 			}
 		#endif
@@ -281,6 +284,7 @@ void I_InitSound ()
 	{
 		I_CloseSound();
 		GSnd = new NullSoundRenderer;
+		DebugTrace::Markf("sound", "Sound init failed. Using nosound.");
 		Printf (TEXTCOLOR_RED"Sound init failed. Using nosound.\n");
 	}
 	snd_sfxvolume->Callback ();

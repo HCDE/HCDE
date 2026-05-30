@@ -327,4 +327,5 @@ CCMD(snd_eternity_status)
 			spatial.LastAreaSound ? 1 : 0);
 	}
 	Printf(PRINT_HIGH, "  boundary = client-local audio backend; no snapshots, saves, demos, or authority state\n");
+	Printf(PRINT_HIGH, "  note: Eternity facade is silent; use snd_backend=openal for full audio with snd_env_reverb support\n");
 }

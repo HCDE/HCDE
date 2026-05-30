@@ -8,14 +8,15 @@ This directory contains the comparison harness that must pass before
 Current state:
 
 - Upstream NanoBSP source is vendored under
-  `src/utility/nodebuilder/nano/`.
-- The source is not compiled and no runtime behavior changes.
-- `compare_nanobsp.py` verifies the vendor files are present and writes
-  `dist/nanobsp_compare_report.json`.
-- Until the HCDE adapter exists, every map case is reported as skipped with
-  reason `adapter-missing`.
+  `src/nodebuilders/nanobsp/` as reference source.
+- `src/d_nanobsp_loader.cpp` contains the HCDE-native adapter that emits
+  vertices, segs, subsectors, and nodes into `FLevelLocals`.
+- `compare_nanobsp.py` verifies the vendor files and adapter markers are
+  present and writes `dist/nanobsp_compare_report.json`.
+- Map cases are queued with reason `engine-run-required` until an engine
+  launch wrapper captures ZDBSP-vs-NanoBSP metrics.
 
-Required comparison fields once the adapter lands:
+Required comparison fields for the engine-backed runner:
 
 - existing builder subsector count
 - NanoBSP subsector count
@@ -27,6 +28,6 @@ Required comparison fields once the adapter lands:
 
 Merge rule:
 
-`hcde_nanobsp_loader=1` may only be wired into the build-from-scratch node path
-after this harness can compare both builders and reports matching line-of-sight
-results on the curated map set.
+`hcde_nanobsp_loader=1` may only become a default path after this harness can
+compare both builders and reports matching line-of-sight results on the curated
+map set.

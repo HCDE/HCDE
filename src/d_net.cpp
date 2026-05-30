@@ -4376,7 +4376,7 @@ static void Net_EnsureRuntimeClientSlot(int client, int sourceClient)
 
 	const bool reserved = I_IsServerReservedSlot(client);
 	playeringame[client] = !reserved;
-	if (!reserved && (players[client].playerstate == PST_GONE || players[client].playerstate == PST_DEAD))
+	if (!reserved && !wasKnown && (players[client].playerstate == PST_GONE || players[client].playerstate == PST_DEAD))
 	{
 		SET_PLAYER_STATE(&players[client], client, PST_ENTER, "runtime_slot_activated");
 	}
@@ -7211,24 +7211,39 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 
 	case DEM_GIVECHEAT:
 		s = ReadStringConst(stream);
-		cht_Give(&players[player], s, ReadInt32(stream));
-		if (player != consoleplayer)
+		i = ReadInt32(stream);
+		if (!HCDEPredatorShouldRejectCheatOpcode(DEM_GIVECHEAT))
 		{
-			FString message = GStrings.GetString("TXT_X_CHEATS");
-			message.Substitute("%s", players[player].userinfo.GetName());
-			Printf("%s: give %s\n", message.GetChars(), s);
+			cht_Give(&players[player], s, i);
+			if (player != consoleplayer)
+			{
+				FString message = GStrings.GetString("TXT_X_CHEATS");
+				message.Substitute("%s", players[player].userinfo.GetName());
+				Printf("%s: give %s\n", message.GetChars(), s);
+			}
 		}
 		break;
 
 	case DEM_TAKECHEAT:
 		s = ReadStringConst(stream);
-		cht_Take(&players[player], s, ReadInt32(stream));
+		i = ReadInt32(stream);
+		if (!HCDEPredatorShouldRejectCheatOpcode(DEM_TAKECHEAT))
+		{
+			cht_Take(&players[player], s, i);
+		}
 		break;
 
 	case DEM_SETINV:
 		s = ReadStringConst(stream);
 		i = ReadInt32(stream);
-		cht_SetInv(&players[player], s, i, !!ReadInt8(stream));
+		if (!HCDEPredatorShouldRejectCheatOpcode(DEM_SETINV))
+		{
+			cht_SetInv(&players[player], s, i, !!ReadInt8(stream));
+		}
+		else
+		{
+			(void)ReadInt8(stream);
+		}
 		break;
 
 	case DEM_WARPCHEAT:
@@ -7236,12 +7251,19 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			int x = ReadInt16(stream);
 			int y = ReadInt16(stream);
 			int z = ReadInt16(stream);
-			P_TeleportMove(players[player].mo, DVector3(x, y, z), true);
+			if (!HCDEPredatorShouldRejectCheatOpcode(DEM_WARPCHEAT))
+			{
+				P_TeleportMove(players[player].mo, DVector3(x, y, z), true);
+			}
 		}
 		break;
 
 	case DEM_GENERICCHEAT:
-		cht_DoCheat(&players[player], ReadInt8(stream));
+		i = ReadInt8(stream);
+		if (!HCDEPredatorShouldRejectCheatOpcode(DEM_GENERICCHEAT))
+		{
+			cht_DoCheat(&players[player], i);
+		}
 		break;
 
 	case DEM_CHANGEMAP2:
@@ -7667,7 +7689,17 @@ void Net_DoCommand(int cmd, TArrayView<uint8_t>& stream, int player)
 			for (int i = 0; i < 3; i++)
 				arg[i] = ReadInt32(stream);
 			bool manual = !!ReadInt8(stream);
-			primaryLevel->localEventManager->Console(player, s, arg[0], arg[1], arg[2], manual, false);
+			// HCDE Predator buy lane (#12). The authority validates, the others
+			// observe through the existing snapshot stream. Other event names
+			// continue to flow into the ZScript event manager.
+			if (!HCDEPredator_HandleNetEvent(player, s, arg[0], arg[1], arg[2]))
+			{
+				primaryLevel->localEventManager->Console(player, s, arg[0], arg[1], arg[2], manual, false);
+			}
+			else
+			{
+				(void)argn;
+			}
 		}
 		break;
 

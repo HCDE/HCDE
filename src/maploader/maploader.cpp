@@ -47,6 +47,7 @@
 #include "i_time.h"
 #include "m_argv.h"
 #include "fragglescript/t_fs.h"
+#include "d_main.h"
 #include "swrenderer/r_swrenderer.h"
 #include "flatvertices.h"
 #include "xlat/xlat.h"
@@ -1362,7 +1363,7 @@ void MapLoader::LoadThings (MapData * map)
 				if (flags & BTF_NOTCOOPERATIVE)	mti[i].flags &= ~MTF_COOPERATIVE;
 				if (flags & BTF_FRIENDLY)		mti[i].flags |= MTF_FRIENDLY;
 			}
-			if (flags & BTF_NOTSINGLE)			mti[i].flags &= ~MTF_SINGLE;
+			// if (flags & BTF_NOTSINGLE)			mti[i].flags &= ~MTF_SINGLE;
 		}
 	}
 }
@@ -3145,10 +3146,31 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 		};
 		leveldata.FindMapBounds();
 
-		if (HCDENanoBSPShouldUseForBuildFromScratch() &&
-			HCDENanoBSPBuildFromScratch(leveldata, polyspots, anchors, BuildGLNodes, *Level))
+		if (HCDENanoBSPShouldUseForBuildFromScratch())
 		{
-			DPrintf(DMSG_NOTIFY, "HCDE NanoBSP generated build-from-scratch nodes\n");
+			DPrintf(DMSG_NOTIFY, "HCDE NanoBSP dispatch for build-from-scratch nodes\n");
+			// The adapter is the sole entry point to NanoBSP.
+			// It handles: HCDE->Woof data conversion, NanoBSP execution, Woof->HCDE conversion.
+			// Currently always returns false (fallback to ZDBSP) until the adapter is fully implemented.
+			if (HCDENanoBSPBuildFromScratch(leveldata, polyspots, anchors, BuildGLNodes, *Level))
+			{
+				// NanoBSP path succeeded (future implementation)
+				// Re-populate leveldata after NanoBSP build
+				leveldata = {
+					&Level->vertexes[0], (int)Level->vertexes.Size(),
+					&Level->sides[0], (int)Level->sides.Size(),
+					&Level->lines[0], (int)Level->lines.Size(),
+					0, 0, 0, 0
+				};
+				leveldata.FindMapBounds();
+			}
+			else
+			{
+				DPrintf(DMSG_NOTIFY, "HCDE NanoBSP adapter fell back to ZDBSP path\n");
+				FNodeBuilder builder(leveldata, polyspots, anchors, BuildGLNodes);
+				builder.Extract(*Level);
+				oldvertextable = builder.GetOldVertexTable();
+			}
 		}
 		else
 		{

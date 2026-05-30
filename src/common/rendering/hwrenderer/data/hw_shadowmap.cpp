@@ -83,6 +83,67 @@ CVAR(Bool, hcde_shadow_autobudget, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 // keeps the profile a one-shot apply rather than a state machine that has to
 // be perfectly symmetric with the rest of the engine.
 EXTERN_CVAR(Int, gl_shadowmap_quality)
+EXTERN_CVAR(Int, vid_rendermode)
+
+namespace
+{
+	// Backend capability snapshot. Today this is read-only -- we report what
+	// the active backend likely supports based on `vid_rendermode` so operators
+	// can see why the raylight probe is not yet performing real ray queries.
+	// A future `Phase 2` PR will wire this to actual extension lookups in the
+	// GL/Vulkan backends.
+	struct K8vavoomBackendCapabilities
+	{
+		const char* BackendName = "unknown";
+		bool        IsHardwareRenderer = false;
+		bool        SupportsShadowmaps = false;       // gl_light_shadowmap is gated by HW renderer
+		bool        SupportsRayQueries = false;       // requires Vulkan + ray-query extension
+		bool        RaylightProbeMeaningful = false;  // true once a real probe lands
+		const char* Notes = "";
+	};
+
+	K8vavoomBackendCapabilities ProbeBackendCapabilities()
+	{
+		K8vavoomBackendCapabilities caps;
+		const int rendermode = *vid_rendermode;
+		caps.IsHardwareRenderer = (rendermode == 3 || rendermode == 4);
+		switch (rendermode)
+		{
+		case 0:
+			caps.BackendName = "software (palette)";
+			break;
+		case 1:
+			caps.BackendName = "software (truecolor)";
+			break;
+		case 2:
+			caps.BackendName = "software (truecolor + linear)";
+			break;
+		case 3:
+			caps.BackendName = "vulkan";
+			break;
+		case 4:
+			caps.BackendName = "opengl";
+			break;
+		default:
+			caps.BackendName = "unknown";
+			break;
+		}
+		caps.SupportsShadowmaps = caps.IsHardwareRenderer;
+		// Real ray-query support requires a Vulkan device with VK_KHR_ray_query
+		// (or VK_KHR_ray_tracing_pipeline). The active code path doesn't probe
+		// extensions yet; we report potential availability based on backend.
+		// Phase 2 must replace this with a runtime extension query.
+		caps.SupportsRayQueries = (rendermode == 3); // vulkan only
+		caps.RaylightProbeMeaningful = false;        // probe is a placeholder
+		if (!caps.IsHardwareRenderer)
+			caps.Notes = "software backend; raytracing/shadowmap features inactive";
+		else if (rendermode == 3)
+			caps.Notes = "vulkan backend; ray-query extensions not yet probed at runtime";
+		else
+			caps.Notes = "opengl backend; ray-query path requires vulkan";
+		return caps;
+	}
+}
 
 namespace
 {
@@ -163,6 +224,7 @@ CUSTOM_CVAR(Int, hcde_k8vavoom_lighting_profile, 0, CVAR_ARCHIVE | CVAR_GLOBALCO
 CCMD(r_k8vavoom_status)
 {
 	const K8vavoomPresetSnapshot &s = g_K8vavoomPresetState;
+	const K8vavoomBackendCapabilities caps = ProbeBackendCapabilities();
 	Printf(PRINT_HIGH, "k8vavoom lighting profile: %s\n",
 		(hcde_k8vavoom_lighting_profile > 0) ? "ENABLED" : "disabled");
 	Printf(PRINT_HIGH, "  composed snapshot (last apply): applied=%s\n", s.applied ? "yes" : "no");
@@ -178,6 +240,15 @@ CCMD(r_k8vavoom_status)
 	Printf(PRINT_HIGH, "  sub-flags: shadow_boost=%s raylight_probe=%s\n",
 		hcde_k8vavoom_shadow_boost ? "on" : "off",
 		hcde_k8vavoom_raylight_probe ? "on" : "off");
+	Printf(PRINT_HIGH, "  backend capabilities (vid_rendermode=%d):\n", *vid_rendermode);
+	Printf(PRINT_HIGH, "    backend                   = %s\n", caps.BackendName);
+	Printf(PRINT_HIGH, "    hardware-renderer         = %s\n", caps.IsHardwareRenderer ? "yes" : "no");
+	Printf(PRINT_HIGH, "    supports-shadowmaps       = %s\n", caps.SupportsShadowmaps ? "yes" : "no");
+	Printf(PRINT_HIGH, "    supports-ray-queries      = %s (potential; runtime extension probe pending)\n",
+		caps.SupportsRayQueries ? "yes" : "no");
+	Printf(PRINT_HIGH, "    raylight-probe-meaningful = %s (today: placeholder)\n",
+		caps.RaylightProbeMeaningful ? "yes" : "no");
+	Printf(PRINT_HIGH, "    notes                     = %s\n", caps.Notes);
 }
 
 CCMD(r_k8vavoom_reset)

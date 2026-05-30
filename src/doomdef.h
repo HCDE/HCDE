@@ -243,6 +243,7 @@ enum ELevelCompatFlag2 : uint32_t
 	COMPATF2_NOFRIENDLYSPAWN = 1 << 21, // MBF: A_Spawn keeps the spawned actor's default friendliness.
 	COMPATF2_DR_CRUSHER = 1 << 22, // HCDE #8: reserved Doom Retro crusher edge-case fix gate.
 	COMPATF2_DR_LIQUIDFRICTION = 1 << 23, // HCDE #8: reserved Doom Retro liquid-friction gate.
+	COMPATF2_NOID24 = 1 << 24, // HCDE #2: disable ID24 deviations from prior compat surfaces (default off, ID24 features active).
 };
 using ELevelCompatFlags2 = TFlags<ELevelCompatFlag2>;
 DEFINE_TFLAGS_OPERATORS(ELevelCompatFlags2)

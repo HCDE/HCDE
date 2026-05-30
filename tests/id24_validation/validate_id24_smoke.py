@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import signal
 import subprocess
 import sys
 import threading
 import time
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +114,7 @@ def load_manifest_cases(manifest_path: Path, hcde: Path, iwad: Path | None) -> l
                 "skip_if_missing_files": bool(case.get("skip_if_missing_files", True)),
                 "iwad_path": iwad_path,
                 "files": files,
+                "mode": str(case.get("mode", "parse")),
                 "args": [replace_tokens(str(x), hcde, iwad) for x in case.get("args", [])],
                 "pass_markers": [str(x) for x in case.get("pass_markers", [])],
                 "fail_markers": [str(x) for x in case.get("fail_markers", [])],
@@ -136,12 +139,6 @@ def terminate_process(proc: subprocess.Popen[str]) -> None:
     proc.wait(timeout=5)
 
 
-def read_stream_lines(proc: subprocess.Popen[str], sink: list[str]) -> None:
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        sink.append(line.rstrip("\r\n"))
-
-
 def run_case(hcde: Path, case: dict[str, Any], workdir: Path) -> CaseResult:
     case_id = case["id"]
     if not case["enabled"]:
@@ -163,66 +160,119 @@ def run_case(hcde: Path, case: dict[str, Any], workdir: Path) -> CaseResult:
     if iwad_path is not None:
         cmd.extend(["-iwad", str(iwad_path)])
     if case["files"]:
-        cmd.append("-file")
-        cmd.extend(str(path) for path in case["files"])
+        for f in case["files"]:
+            cmd.extend(["-file", str(f)])
+    # Parse-mode cases use the engine's documented "compile-only" path (see
+    # FArg_norun in src/d_main.cpp): it bails just before video init, after all
+    # WADs are mounted and all scripts/DEH/MAPINFO are parsed. Runtime cases
+    # intentionally omit -norun and are terminated by this harness as soon as
+    # their pass marker appears.
+    if case["mode"] == "parse":
+        cmd.append("-norun")
+    elif case["mode"] != "runtime":
+        return CaseResult(case_id, case["description"], "error", 0.0, [], [], [], f"unknown mode: {case['mode']}", [])
     cmd.extend(case["args"])
 
-    log_lines: list[str] = []
     start = time.monotonic()
     proc = subprocess.Popen(
         cmd,
         cwd=str(workdir),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.PIPE,  # Capture stdout
+        stderr=subprocess.STDOUT,  # Redirect stderr to stdout
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
-        bufsize=1,
     )
-    reader = threading.Thread(target=read_stream_lines, args=(proc, log_lines), daemon=True)
-    reader.start()
 
     matched_pass: set[str] = set()
     matched_fail_lines: list[str] = []
-    status = "timeout"
+    # status is decided by the post-loop classifier; "unknown" is just a
+    # placeholder. The previous default of "timeout" was sticky: when the
+    # process exited cleanly with no markers, every branch in the classifier
+    # short-circuited and the case was misreported as a timeout even though
+    # nothing actually timed out.
+    status = "unknown"
     notes = ""
+    output_lines: list[str] = []
+    timed_out = False
+    line_queue: queue.Queue[str] = queue.Queue()
+
+    def enqueue_output() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line_queue.put(line)
+
+    def process_line(line: str) -> None:
+        stripped = line.strip()
+        if stripped:
+            output_lines.append(stripped)
+        for marker in case["pass_markers"]:
+            if marker in line:
+                matched_pass.add(marker)
+        for marker in case["fail_markers"]:
+            if marker in line and line not in matched_fail_lines:
+                matched_fail_lines.append(line)
+    reader: threading.Thread | None = None
 
     try:
-        while True:
-            for line in log_lines:
-                for marker in case["fail_markers"]:
-                    if marker in line and line not in matched_fail_lines:
-                        matched_fail_lines.append(line)
-                for marker in case["pass_markers"]:
-                    if marker in line:
-                        matched_pass.add(marker)
+        # Read output through a background thread so runtime cases cannot hang
+        # forever inside readline() if the engine keeps running but goes quiet.
+        reader = threading.Thread(target=enqueue_output, daemon=True)
+        reader.start()
+        while proc.poll() is None:
+            try:
+                process_line(line_queue.get(timeout=0.05))
+            except queue.Empty:
+                pass
 
-            if matched_fail_lines:
-                status = "failed"
-                notes = "fail marker found"
-                break
             if case["pass_markers"] and len(matched_pass) == len(case["pass_markers"]):
-                status = "passed"
-                notes = "all pass markers matched"
                 break
-            if proc.poll() is not None:
-                if case["pass_markers"] and len(matched_pass) == len(case["pass_markers"]):
-                    status = "passed"
-                    notes = "process exited after matching pass markers"
-                else:
-                    status = "failed"
-                    notes = f"process exited before pass markers (exit={proc.returncode})"
-                break
+
             if time.monotonic() - start > case["timeout_seconds"]:
+                timed_out = True
                 status = "timeout"
                 notes = f"timed out after {case['timeout_seconds']}s"
                 break
-            time.sleep(0.05)
+
+        # Process any queued output before terminating/after process exit.
+        while True:
+            try:
+                process_line(line_queue.get_nowait())
+            except queue.Empty:
+                break
+
     finally:
         terminate_process(proc)
-        reader.join(timeout=1)
+        if reader is not None:
+            reader.join(timeout=1.0)
+        while True:
+            try:
+                process_line(line_queue.get_nowait())
+            except queue.Empty:
+                break
+
+    # Classifier precedence:
+    #   1. Any fail marker fires => failed (regardless of pass markers, since
+    #      an "Unknown command" line means the run was structurally broken).
+    #   2. All pass markers matched => passed.
+    #   3. Hit the wall clock => timeout (set above before break).
+    #   4. Process exited cleanly but never produced a pass marker => failed.
+    #   5. Otherwise non-zero exit code => failed with the exit code.
+    if matched_fail_lines:
+        status = "failed"
+        notes = "fail marker found"
+    elif case["pass_markers"] and len(matched_pass) == len(case["pass_markers"]):
+        status = "passed"
+        notes = "all pass markers matched"
+    elif timed_out:
+        # status / notes already set when the timeout fired.
+        pass
+    elif proc.returncode != 0:
+        status = "failed"
+        notes = f"process exited with non-zero code {proc.returncode}"
+    else:
+        status = "failed"
+        notes = "process exited before pass markers"
 
     return CaseResult(
         case_id=case_id,
@@ -233,7 +283,7 @@ def run_case(hcde: Path, case: dict[str, Any], workdir: Path) -> CaseResult:
         matched_pass_markers=sorted(matched_pass),
         matched_fail_lines=matched_fail_lines,
         notes=notes,
-        log_tail=log_lines[-80:],
+        log_tail=output_lines[-80:] if output_lines else [],
     )
 
 
@@ -280,6 +330,11 @@ def main() -> int:
     failed = [r for r in results if r.status in {"failed", "timeout", "error"}]
     for result in results:
         print(f"[{result.status.upper()}] {result.case_id}: {result.notes}")
+        if result.log_tail:
+            print("--- Log Tail ---")
+            for line in result.log_tail:
+                print(line)
+            print("----------------")
     print(f"Wrote report: {args.report}")
     return 1 if failed else 0
 

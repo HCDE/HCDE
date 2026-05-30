@@ -185,7 +185,9 @@ void ComputeSectorHash()
 		CategoryHashes[CHK_SECTORS] = 0u;
 		return;
 	}
-	for (int i = 0; i < primaryLevel->sectors.Size(); ++i)
+	// sectors.Size() is unsigned; iterate with an unsigned index so the bound
+	// check is a clean same-signedness compare (no -Wsign-compare surprise).
+	for (unsigned i = 0; i < primaryLevel->sectors.Size(); ++i)
 	{
 		const sector_t* sec = &primaryLevel->sectors[i];
 		hash = MixU32(hash, uint32_t(i));
@@ -205,7 +207,7 @@ void ComputeMoverHash()
 		CategoryHashes[CHK_MOVERS] = 0u;
 		return;
 	}
-	for (int i = 0; i < primaryLevel->sectors.Size(); ++i)
+	for (unsigned i = 0; i < primaryLevel->sectors.Size(); ++i)
 	{
 		sector_t* sec = &primaryLevel->sectors[i];
 		if (!sec->PlaneMoving(sector_t::floor) && !sec->PlaneMoving(sector_t::ceiling))

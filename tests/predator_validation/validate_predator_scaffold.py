@@ -20,7 +20,23 @@ STATIC_CHECKS = [
     ("buy-request", ROOT / "src" / "d_net_predator.h", "FHCDEPredatorBuyRequest"),
     ("buy-result", ROOT / "src" / "d_net_predator.h", "FHCDEPredatorBuyResult"),
     ("role-selection", ROOT / "src" / "d_net_predator.cpp", "HCDEPredatorServerSelectPredatorRole"),
+    ("netevent-buy-name", ROOT / "src" / "d_net_predator.h", "HCDEPredatorBuyNetEventName"),
+    ("netevent-handler", ROOT / "src" / "d_net.cpp", "HCDEPredator_HandleNetEvent"),
+    ("buy-console-command", ROOT / "src" / "d_net_predator.cpp", "CCMD(predator_buy)"),
+    ("runtime-pawn-mirror", ROOT / "src" / "d_net_predator.cpp", "HCDEPredatorMirrorPawnState"),
+    ("runtime-pawn-guard", ROOT / "src" / "d_net_predator.cpp", "IsDescendantOf(cls)"),
+    ("runtime-pawn-buy-result", ROOT / "src" / "d_net_predator.cpp", "HCDE_SetPredatorBuyResult"),
+    ("cheat-whitelist-cvar", ROOT / "src" / "d_net_predator.cpp", "sv_predator_allow_cheats"),
+    ("cheat-filter-helper", ROOT / "src" / "d_net_predator.h", "HCDEPredatorShouldRejectCheatOpcode"),
+    ("cheat-filter-give", ROOT / "src" / "d_net.cpp", "HCDEPredatorShouldRejectCheatOpcode(DEM_GIVECHEAT)"),
+    ("cheat-filter-take", ROOT / "src" / "d_net.cpp", "HCDEPredatorShouldRejectCheatOpcode(DEM_TAKECHEAT)"),
+    ("cheat-filter-generic", ROOT / "src" / "d_net.cpp", "HCDEPredatorShouldRejectCheatOpcode(DEM_GENERICCHEAT)"),
+    ("cheat-filter-setinv", ROOT / "src" / "d_net.cpp", "HCDEPredatorShouldRejectCheatOpcode(DEM_SETINV)"),
+    ("cheat-filter-warp", ROOT / "src" / "d_net.cpp", "HCDEPredatorShouldRejectCheatOpcode(DEM_WARPCHEAT)"),
     ("zscript-pawn", ROOT / "wadsrc" / "static" / "zscript" / "actors" / "predator" / "predator_player.zs", "class HCDEPredatorPawn"),
+    ("zscript-round-state", ROOT / "wadsrc" / "static" / "zscript" / "actors" / "predator" / "predator_player.zs", "HCDE_SetPredatorRoundState"),
+    ("zscript-buy-result", ROOT / "wadsrc" / "static" / "zscript" / "actors" / "predator" / "predator_player.zs", "HCDE_SetPredatorBuyResult"),
+    ("zscript-buy-eligibility", ROOT / "wadsrc" / "static" / "zscript" / "actors" / "predator" / "predator_player.zs", "HCDE_CanPredatorBuy"),
 ]
 
 

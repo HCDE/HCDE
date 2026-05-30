@@ -103,6 +103,11 @@ These are non-negotiable:
       `DEM_NETEVENT` already exists).
     - Server-side validator
     - Authority event reply (granted / rejected)
+    - **Cheat scoping landed 2026-05-29:** while `sv_predator_enable` is on,
+      `DEM_GENERICCHEAT`, `DEM_GIVECHEAT`, `DEM_TAKECHEAT`, `DEM_SETINV`,
+      and `DEM_WARPCHEAT` are rejected by default during command playback.
+      Servers must explicitly set `sv_predator_allow_cheats=1` to whitelist
+      those opcodes for testing.
 - **Phase 4.** Predator selection + role-based behaviour. This is where
   ZScript class extensions come in (a predator pawn class derived from
   the existing player pawn).

@@ -22,9 +22,19 @@
 
 #include "filesystem.h"
 #include "actor.h"
+#include "cmdlib.h"
 #include "hcde_eternity_compat.h"
 #include "info.h"
+#include "i_soundinternal.h"
+#include "s_soundinternal.h" // Added
 #include "printf.h"
+
+// Global vector for EDF-parsed reverb containers.
+// These are populated during EDF parsing and referenced by EMAPINFO.
+// Ownership: The ReverbContainer objects are owned by the audio subsystem after
+// S_AddEnvironment() accepts them. We only store accepted pointers here for
+// EMAPINFO lookup and clear the vector when parse state resets.
+std::vector<ReverbContainer*> HCDEReverbContainers;
 
 namespace
 {
@@ -48,6 +58,45 @@ namespace
 		int Line = 0;
 		bool IsDelta = false;
 		bool HasUnsupportedBehavior = false;
+	};
+
+	struct EdfReverbDefinition
+	{
+		std::string Name;
+		int Id1 = -1;
+		int Id2 = -1;
+		int SourceLump = -1;
+		int Line = 0;
+
+		float Room = 0.5f;
+		float Damping = 1.0f;
+		float RoomHF = 0.8f;
+		float RoomLF = 0.0f;
+		float DecayTime = 1.0f;
+		float DecayHFRatio = 0.5f;
+		float DecayLFRatio = 1.0f;
+		float Reflections = 0.0f;
+		float ReflectionsDelay = 0.0f;
+		float Reverb = 0.0f;
+		float ReverbDelay = 0.04f;
+		float EchoTime = 0.25f;
+		float EchoDepth = 0.0f;
+		float ModulationTime = 0.25f;
+		float ModulationDepth = 0.0f;
+		float AirAbsorptionHF = 0.994f;
+		float HFReference = 5000.0f;
+		float LFReference = 250.0f;
+		float RoomRolloffFactor = 0.0f;
+		float DecayHFLimit = 1.0f; // This is a bool in EAX_REVERB_EFFECT, 0.0f means false, 1.0f means true
+
+		// Eternity-specific
+		float wetscale = 0.33333334f;
+		float dryscale = 0.0f;
+		float width = 1.0f;
+		int predelay = 0;
+		float eq_lowgain = 1.0f;
+		float eq_midgain = 1.0f;
+		float eq_highgain = 1.0f;
 	};
 
 	struct EdfParseStats
@@ -91,6 +140,7 @@ namespace
 	EdfActorStats ActorStats;
 	std::vector<int> ParsedLumps;
 	std::vector<EdfThingDefinition> ThingDefinitions;
+	std::vector<EdfReverbDefinition> ReverbDefinitions;
 	std::vector<EdfIssueSample> IssueSamples;
 	size_t ReportedIssueSamples = 0;
 	bool ParsedAnyEdf = false;
@@ -723,6 +773,157 @@ namespace
 		}
 	}
 
+	static void ParseReverbPropertyLine(EdfReverbDefinition& reverb, const EdfSourceLine& sourceLine)
+	{
+		const auto tokens = TokenizeSimple(sourceLine.Text);
+		if (tokens.empty())
+		{
+			return;
+		}
+
+		const std::string key = LowerCopy(tokens[0]);
+		if (key.empty())
+		{
+			return;
+		}
+
+		ParseStats.Properties++;
+		if (key == "roomsize")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.Room = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "damping")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.Damping = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "wetscale")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.wetscale = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "dryscale")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.dryscale = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "width")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.width = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "predelay")
+		{
+			int value = 0;
+			if (ParseFirstIntAfter(tokens, 1, value))
+			{
+				reverb.predelay = value;
+			}
+		}
+		else if (key == "+equalized")
+		{
+			reverb.DecayHFLimit = 1.0f;
+		}
+		else if (key == "-equalized")
+		{
+			reverb.DecayHFLimit = 0.0f;
+		}
+		else if (key == "eq.lowfreq")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.LFReference = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "eq.highfreq")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.HFReference = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "eq.lowgain")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.eq_lowgain = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "eq.midgain")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.eq_midgain = std::stof(tokens[1]);
+			}
+		}
+		else if (key == "eq.highgain")
+		{
+			if (tokens.size() >= 2)
+			{
+				reverb.eq_highgain = std::stof(tokens[1]);
+			}
+		}
+		else
+		{
+			// Record unsupported reverb property
+			ParseStats.UnsupportedProperties++;
+			RecordIssue("reverb", reverb.Name + " property '" + key + "' is not supported", reverb.SourceLump, sourceLine.Line);
+		}
+	}
+
+	static void ParseReverbHeader(EdfReverbDefinition& reverb, const std::string& header)
+	{
+		const size_t brace = header.find('{');
+		const std::string headerOnly = brace == std::string::npos ? header : header.substr(0, brace);
+		const auto tokens = TokenizeSimple(headerOnly);
+		if (tokens.size() < 2)
+		{
+			return;
+		}
+
+		reverb.Name = tokens[1];
+
+		// Parse ID1 and ID2
+		// Format: reverb <name> : <id1>, <id2>
+		bool colonFound = false;
+		for (size_t i = 2; i < tokens.size(); ++i)
+		{
+			if (tokens[i] == ":")
+			{
+				colonFound = true;
+				continue;
+			}
+
+			if (colonFound)
+			{
+				int id = -1;
+				if (ParseIntStrict(tokens[i], id))
+				{
+					if (reverb.Id1 == -1)
+					{
+						reverb.Id1 = id;
+					}
+					else if (reverb.Id2 == -1)
+					{
+						reverb.Id2 = id;
+						break; // Found both IDs
+					}
+				}
+			}
+		}
+	}
+
 	static void ParseThingBlock(const std::string& header, const std::vector<EdfSourceLine>& body, int lump, int headerLine, bool isDelta)
 	{
 		EdfThingDefinition thing;
@@ -797,6 +998,36 @@ namespace
 		}
 
 		ThingDefinitions.push_back(thing);
+	}
+
+	static void ParseReverbBlock(const std::string& header, const std::vector<EdfSourceLine>& body, int lump, int headerLine)
+	{
+		EdfReverbDefinition reverb;
+		reverb.SourceLump = lump;
+		reverb.Line = headerLine;
+		ParseReverbHeader(reverb, header);
+
+		if (reverb.Name.empty())
+		{
+			ParseStats.InvalidProperties++;
+			RecordIssue("reverb", "missing reverb name", lump, reverb.Line);
+			return;
+		}
+
+		ParseStats.SoundBlocks++; // Reverb is a type of sound block
+
+		for (const auto& line : body)
+		{
+			const std::string trimmed = TrimCopy(line.Text);
+			if (trimmed.empty())
+			{
+				continue;
+			}
+			ParseReverbPropertyLine(reverb, line);
+		}
+		ReverbDefinitions.push_back(reverb);
+		// Printf(PRINT_HIGH, "HCDE: Parsed Reverb: %s (Id1=%d, Id2=%d, Room=%.2f, Damping=%.2f, Wet=%.2f)\n",
+		//	reverb.Name.c_str(), reverb.Id1, reverb.Id2, reverb.Room, reverb.Damping, reverb.wetscale);
 	}
 
 	static int ResolveIncludeLump(int sourceLump, const std::string& includeName)
@@ -972,6 +1203,10 @@ namespace
 				{
 					ParseThingBlock(header, body, lump, lines[i].Line, key == "thingdelta");
 				}
+				else if (key == "reverb")
+				{
+					ParseReverbBlock(header, body, lump, lines[i].Line);
+				}
 				else
 				{
 					CountSkippedBlock(key);
@@ -1097,6 +1332,51 @@ namespace
 		return "<reserved>";
 	}
 
+	// Creates a ReverbContainer from an EDF reverb definition. Name allocation
+	// uses copystring() because the shared reverb environment list frees names
+	// with free() in S_AddEnvironment()/S_UnloadReverbDef().
+	static ReverbContainer* CreateReverbContainer(const EdfReverbDefinition& edfReverb)
+	{
+		ReverbContainer* reverb = new ReverbContainer();
+		memset(reverb, 0, sizeof(ReverbContainer));
+
+		reverb->Name = copystring(edfReverb.Name.c_str());
+
+		reverb->ID = (uint16_t)((edfReverb.Id1 << 8) | edfReverb.Id2);
+		reverb->Builtin = false;
+		reverb->Modified = false;
+
+		reverb->Properties.EnvSize = edfReverb.Room;
+		reverb->Properties.EnvDiffusion = edfReverb.Damping;
+		reverb->Properties.Room = (int)(edfReverb.Room * 10000.f); // Assuming scale factor
+		reverb->Properties.RoomHF = (int)(edfReverb.RoomHF * 10000.f);
+		reverb->Properties.RoomLF = (int)(edfReverb.RoomLF * 10000.f);
+		reverb->Properties.DecayTime = edfReverb.DecayTime;
+		reverb->Properties.DecayHFRatio = edfReverb.DecayHFRatio;
+		reverb->Properties.DecayLFRatio = edfReverb.DecayLFRatio;
+		reverb->Properties.Reflections = (int)(edfReverb.Reflections * 10000.f);
+		reverb->Properties.ReflectionsDelay = edfReverb.ReflectionsDelay;
+		reverb->Properties.Reverb = (int)(edfReverb.Reverb * 10000.f);
+		reverb->Properties.ReverbDelay = edfReverb.ReverbDelay;
+		reverb->Properties.EchoTime = edfReverb.EchoTime;
+		reverb->Properties.EchoDepth = edfReverb.EchoDepth;
+		reverb->Properties.ModulationTime = edfReverb.ModulationTime;
+		reverb->Properties.ModulationDepth = edfReverb.ModulationDepth;
+		reverb->Properties.AirAbsorptionHF = edfReverb.AirAbsorptionHF;
+		reverb->Properties.HFReference = edfReverb.HFReference;
+		reverb->Properties.LFReference = edfReverb.LFReference;
+		reverb->Properties.RoomRolloffFactor = edfReverb.RoomRolloffFactor;
+		reverb->Properties.Diffusion = edfReverb.Damping; // Assuming Damping maps to Diffusion
+		reverb->Properties.Density = edfReverb.Room; // Assuming Room maps to Density
+		reverb->Properties.Flags = edfReverb.DecayHFLimit > 0.f ? REVERB_FLAGS_DECAYHFLIMIT : 0;
+
+		// Eternity-specific properties
+		// These will need to be handled separately or mapped to existing HCDE concepts.
+		// For now, they are not directly mapped to REVERB_PROPERTIES.
+
+		return reverb;
+	}
+
 	static void ReportParseSummary()
 	{
 		if (!ParsedAnyEdf)
@@ -1170,6 +1450,10 @@ namespace
 		ActorStats = {};
 		ParsedLumps.clear();
 		ThingDefinitions.clear();
+		ReverbDefinitions.clear();
+		// Accepted ReverbContainer ownership lives in the shared audio
+		// environment list. ResetState only clears this EDF lookup cache.
+		HCDEReverbContainers.clear();
 		IssueSamples.clear();
 		ReportedIssueSamples = 0;
 		ParsedAnyEdf = false;
@@ -1191,6 +1475,25 @@ void HCDE_EdfCompat_ParseLoadedResources()
 	for (int lump : roots)
 	{
 		ParseEdfLump(lump, true);
+	}
+
+	for (const auto& edfReverb : ReverbDefinitions)
+	{
+		ReverbContainer* rc = CreateReverbContainer(edfReverb);
+		HCDEReverbContainers.erase(
+			std::remove_if(HCDEReverbContainers.begin(), HCDEReverbContainers.end(),
+				[rc](const ReverbContainer* existing) { return existing != nullptr && existing->ID == rc->ID; }),
+			HCDEReverbContainers.end());
+		S_AddEnvironment(rc);
+		if (S_FindEnvironment(rc->ID) == rc)
+		{
+			HCDEReverbContainers.push_back(rc);
+		}
+		else
+		{
+			free(const_cast<char*>(rc->Name));
+			delete rc;
+		}
 	}
 
 	ReportParseSummary();
@@ -1293,4 +1596,9 @@ void HCDE_EdfCompat_ApplyActorMappings()
 			sample.Detail.c_str()
 		);
 	}
+}
+
+void HCDE_ClearEDFReverbContainers()
+{
+	HCDEReverbContainers.clear();
 }

@@ -25,6 +25,7 @@
 #include "filesystem.h"
 #include "g_mapinfo.h"
 #include "gi.h"
+#include "hcde_edf.h" // Added
 #include "printf.h"
 
 namespace
@@ -471,15 +472,44 @@ namespace
 			return false;
 		}
 
-		int first = 0;
-		int second = 0;
+	int first = 0;
+	int second = 0;
 		if (!ParseInt(parts[0], first) || (parts.size() == 2 && !ParseInt(parts[1], second)))
 		{
 			RecordInvalid(stats, mapName, key, line);
 			return false;
 		}
 
-		info->DefaultEnvironment = (first << 8) | second;
+		// Try to find a matching ReverbContainer from parsed EDF reverb blocks
+		ReverbContainer* matchingReverb = nullptr;
+		uint16_t targetID = (uint16_t)((first << 8) | second);
+
+		for (ReverbContainer* rc : HCDEReverbContainers)
+		{
+			if (rc->ID == targetID)
+			{
+				matchingReverb = rc;
+				break;
+			}
+		}
+
+		if (matchingReverb != nullptr)
+		{
+			// Store the pointer for fine-grained per-sector use (Phase 2+).
+			info->Environment = matchingReverb;
+			// Also propagate the numeric ID so the maploader's zone-reverb
+			// pipeline (S_FindEnvironment -> all-zones fill) picks up the
+			// Eternity reverb automatically without any extra plumbing.
+			info->DefaultEnvironment = matchingReverb->ID;
+			Printf("HCDE: EMAPINFO mapped defaultenvironment to Eternity Reverb: %s (ID: %d, %d)\n", matchingReverb->Name, first, second);
+		}
+		else
+		{
+			// Fallback to old behavior if no matching Eternity reverb is found
+			info->DefaultEnvironment = targetID;
+			RecordUnsupported(stats, mapName, key, line);
+		}
+
 		return true;
 	}
 

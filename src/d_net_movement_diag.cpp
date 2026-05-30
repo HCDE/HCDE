@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <cmath>
 #include <stdint.h>
 
 EXTERN_CVAR(Int, net_predict_debug)
@@ -181,25 +182,26 @@ void EnsureCsvHeader(const char* path)
 {
 	if (gCsvHeaderProbed)
 		return;
+	// Open in append mode. "ab" creates the file when missing but, crucially,
+	// never truncates an existing CSV - unlike the previous fopen(path, "w")
+	// path, which wiped accumulated history whenever the read probe failed for
+	// a file that actually existed (AV lock, transient permission error, etc.).
+	FILE* csv = fopen(path, "ab");
+	if (csv == nullptr)
+		return; // Could not open at all; leave the flag clear so we retry later.
 	gCsvHeaderProbed = true;
-	bool needsHeader = true;
-	if (FILE* probe = fopen(path, "rb"))
+	// Seek to the end so ftell reports the real size; a zero here means the
+	// file is brand new / empty and still needs its column header. Append-mode
+	// writes always land at EOF regardless of the current seek position.
+	fseek(csv, 0, SEEK_END);
+	if (ftell(csv) <= 0)
 	{
-		fseek(probe, 0, SEEK_END);
-		needsHeader = ftell(probe) <= 0;
-		fclose(probe);
+		fprintf(csv,
+			"ms_time,gametic,client,server_tic,event,drift_units,vel_delta,"
+			"server_health,local_health,repair,jitter_avg_ms,jitter_max_ms,"
+			"jitter_min_ms,jitter_long_stretches,frame_avg_ms,frame_max_ms\n");
 	}
-	if (needsHeader)
-	{
-		if (FILE* hdr = fopen(path, "w"))
-		{
-			fprintf(hdr,
-				"ms_time,gametic,client,server_tic,event,drift_units,vel_delta,"
-				"server_health,local_health,repair,jitter_avg_ms,jitter_max_ms,"
-				"jitter_min_ms,jitter_long_stretches,frame_avg_ms,frame_max_ms\n");
-			fclose(hdr);
-		}
-	}
+	fclose(csv);
 }
 
 // Pick the peer with the most snapshot RX samples as a stand-in for the
@@ -324,6 +326,15 @@ void HCDEMovementResetJitter()
 void HCDEMovementOnReconcile(uint32_t serverTic, double driftUnits, double velDeltaUnits,
 	int serverHealth, int localHealth, int repairTier)
 {
+	// Guard the Welford accumulators against NaN/Inf. A single non-finite
+	// sample would permanently poison DriftAvgUnits / DriftM2 / DriftMaxUnits
+	// (NaN compares false against everything, so DriftMaxUnits could also latch
+	// a bogus value), corrupting every later stdev/summary readout. Coerce a
+	// bad sample to zero drift so the counters stay meaningful.
+	if (!std::isfinite(driftUnits))
+		driftUnits = 0.0;
+	if (!std::isfinite(velDeltaUnits))
+		velDeltaUnits = 0.0;
 	++gDrift.Samples;
 	const double delta = driftUnits - gDrift.DriftAvgUnits;
 	gDrift.DriftAvgUnits += delta / double(gDrift.Samples);

@@ -138,6 +138,7 @@ using namespace FileSys;
 EXTERN_CVAR(Bool, hud_althud)
 EXTERN_CVAR(Int, sv_gametype)
 EXTERN_CVAR(Int, vr_mode)
+EXTERN_CVAR(Int, hcde_nanobsp_loader)
 EXTERN_CVAR(Bool, cl_customizeinvulmap)
 EXTERN_CVAR(Bool, log_vgafont)
 EXTERN_CVAR(Bool, dlg_vgafont)
@@ -257,6 +258,8 @@ FARG(playdemo, "Loading", "Automatically plays demo file upon startup.", "demofi
 FARG(timedemo, "Loading", "Plays back a demo quickly.", "demofile[.lmp]",
 	"Plays back a demo faster than -playdemo and displays a framerate when the demo is over. If"
 	" the .lmp extension is omitted, it will automatically be added.");
+FARG(forceswnodes, "Loading", "Forces software nodes builder (NanoBSP) to be used.", "",
+	"Forces software nodes builder (NanoBSP) to be used when software renderer is active.");
 FARG(xlat, "Loading", "Specifies a different default map translator to use.", "file",
 	"Specify a different default map translator to use if one isn't specified in MAPINFO. The"
 	" default translators are xlat/doom.txt for Doom, Chex Quest, Urban Brawl and Harmony;"
@@ -961,6 +964,7 @@ CVAR (Flag, compat_reservedlineflag,	compatflags2, COMPATF2_RESERVEDLINEFLAG);
 CVAR (Flag, compat_nofriendlyspawn,		compatflags2, COMPATF2_NOFRIENDLYSPAWN);
 CVAR (Flag, compat_dr_crusher,			compatflags2, COMPATF2_DR_CRUSHER);
 CVAR (Flag, compat_dr_liquidfriction,	compatflags2, COMPATF2_DR_LIQUIDFRICTION);
+CVAR (Flag, compat_noid24,				compatflags2, COMPATF2_NOID24);
 
 CVAR(Bool, vid_activeinbackground, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 
@@ -3807,6 +3811,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<FileSys::ResourceN
 	D_GrabCVarDefaults(); //parse DEFCVARS
 	InitPalette();
 
+	DebugTrace::Markf("sound", "S_Init: Setting up sound.");
 	if (!batchrun) Printf(dedicatedserver ? "S_Init: Setting up server sound tables.\n" : "S_Init: Setting up sound.\n");
 	S_Init();
 
@@ -4367,6 +4372,11 @@ static int D_DoomMain_Internal (void)
 		RemapUserTranslation,
 		System_DisableAnisotropicFiltering
 	};
+
+	if (Args->CheckParm(FArg_forceswnodes))
+	{
+		hcde_nanobsp_loader = 1;
+	}
 
 	std::set_new_handler(NewFailure);
 	const char *batchout = Args->CheckValue(FArg_errorlog);

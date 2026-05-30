@@ -91,3 +91,33 @@ This document is a placeholder for the full survey. The initial
 inventory (2026-05-28) lists the recommended strategy and the open
 questions. A follow-up pass with the ID24 spec will fill in the
 classification table.
+
+## 2026-05-29 — `compat_noid24` umbrella flag landed
+
+The umbrella opt-out called for in §"Recommended flag strategy" item 2 is
+now wired up:
+
+| Surface | Token / name | Files |
+| --- | --- | --- |
+| `COMPATF2_*` enum bit | `COMPATF2_NOID24` (1 << 24) | `src/doomdef.h` |
+| User CVAR | `compat_noid24` (Flag, off by default) | `src/d_main.cpp` |
+| MAPINFO key | `compat_noid24` | `src/gamedata/g_mapinfo.cpp` |
+| `compatibility.txt` token | `noid24` | `src/maploader/compatibility.cpp` |
+
+Semantics:
+
+- **Default off.** ID24 features remain active by default; this flag is an
+  opt-out, not an opt-in. Server admins or MAPINFO authors can turn it on
+  for maps that need pre-ID24 behaviour.
+- **Mirrors `compat_nombf21`.** The shape, default, persistence, and
+  MAPINFO/`compatibility.txt` exposure all match the existing MBF21
+  umbrella so operators learn one pattern.
+- **Behavioural gating is per-feature.** Code that implements an ID24
+  deviation should test `(i_compatflags2 & COMPATF2_NOID24) == 0` in the
+  same place it would test `COMPATF2_NOMBF21`. Until those tests are
+  written, the flag is observable but inert — no current ID24 behaviour is
+  gated yet.
+
+When the official ID24 spec diff lands and a concrete deviation is
+identified (e.g. a new boss-death or respawn-tic rule), the implementing
+PR should add the gate at the call site and reference this section.

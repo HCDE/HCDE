@@ -43,7 +43,7 @@
 #include "configfile.h"
 #include "c_cvars.h"
 #include "md5.h"
-
+#include "debugtrace.h"
 
 // EXTERNAL FUNCTION PROTOTYPES --------------------------------------------
 
@@ -248,11 +248,18 @@ void S_CreateStream()
 	ZMusic_GetStreamInfoEx(mus_playing.handle, &fmt);
 	mus_playing.isfloat = fmt.mSampleType == SampleType_Float32;
 	if (!mus_playing.isfloat) fmt.mBufferSize *= 2;
+	DebugTrace::Markf("music", "S_CreateStream handle=%p bufsize=%d sampleRate=%d channels=%d isfloat=%d",
+		mus_playing.handle, fmt.mBufferSize, fmt.mSampleRate, (int)fmt.mChannelConfig, (int)mus_playing.isfloat);
 	if (fmt.mBufferSize > 0) // if buffer size is 0 the library will play the song itself (e.g. Windows system synth.)
 	{
 		// always create a floating point streaming buffer so we can apply replay gain without risk of integer overflows.
 		musicStream.reset(GSnd->CreateStream(FillStream, fmt.mBufferSize, SampleType_Float32, fmt.mChannelConfig, fmt.mSampleRate, nullptr));
+		DebugTrace::Markf("music", "S_CreateStream GSnd->CreateStream returned %s", musicStream ? "stream-ok" : "NULL");
 		if (musicStream) musicStream->Play(true, 1);
+	}
+	else
+	{
+		DebugTrace::Markf("music", "S_CreateStream skipped (device handles its own output)");
 	}
 }
 
@@ -292,8 +299,12 @@ static bool S_StartMusicPlaying(ZMusic_MusicStream song, bool loop, float rel_vo
 	mod_dumb_mastervolume->Callback();
 	if (!ZMusic_Start(song, subsong, loop))
 	{
+		const char* err = ZMusic_GetLastError();
+		DebugTrace::Markf("music", "ZMusic_Start FAILED handle=%p subsong=%d loop=%d err=%s",
+			song, subsong, (int)loop, err ? err : "(no error)");
 		return false;
 	}
+	DebugTrace::Markf("music", "ZMusic_Start OK handle=%p subsong=%d loop=%d", song, subsong, (int)loop);
 
 	// Notify the sound system of the changed relative volume
 	snd_musicvolume->Callback();
@@ -679,6 +690,8 @@ static void CheckReplayGain(const char *musicname, EMidiDevice playertype, const
 
 bool S_ChangeMusic(const char* musicname, int order, bool looping, bool force)
 {
+	DebugTrace::Markf("music", "S_ChangeMusic enter musicname='%s' order=%d looping=%d force=%d",
+		musicname ? musicname : "(null)", order, (int)looping, (int)force);
 	if (!MusicEnabled()) return false;	// skip the entire procedure if music is globally disabled.
 
 	if (!force && PlayList.GetNumSongs())
@@ -691,6 +704,8 @@ bool S_ChangeMusic(const char* musicname, int order, bool looping, bool force)
 	{
 		musicname_ = mus_cb.LookupFileName(musicname, order);
 		musicname = musicname_.GetChars();
+		DebugTrace::Markf("music", "S_ChangeMusic after LookupFileName musicname='%s'",
+			musicname ? musicname : "(null)");
 	}
 
 	if (musicname == nullptr || musicname[0] == 0)
@@ -781,10 +796,20 @@ bool S_ChangeMusic(const char* musicname, int order, bool looping, bool force)
 		// This config var is only effective when opening a music stream so there's no need for active synchronization. Setting it here is sufficient.
 		// Ideally this should have been a parameter to ZMusic_OpenSong, but that would have necessitated an API break.
 		ChangeMusicSettingInt(zmusic_mod_preferredplayer, mus_playing.handle, mod_player, &scratch);
+		const int requested_dev = devp ? devp->device : (int)MDEV_DEFAULT;
+		const char* requested_args = devp ? devp->args.GetChars() : "";
+		DebugTrace::Markf("music", "ZMusic_OpenSong music='%s' lump=%d requested_device=%d args='%s' snd_mididevice=%d",
+			musicname, lumpnum, requested_dev, requested_args ? requested_args : "(null)", (int)snd_mididevice);
 		mus_playing.handle = ZMusic_OpenSong(mreader, devp ? (EMidiDevice)devp->device : MDEV_DEFAULT, devp ? devp->args.GetChars() : "");
 		if (mus_playing.handle == nullptr)
 		{
-			Printf("Unable to load %s: %s\n", mus_playing.name.GetChars(), ZMusic_GetLastError());
+			const char* errmsg = ZMusic_GetLastError();
+			DebugTrace::Markf("music", "ZMusic_OpenSong FAILED for '%s': %s", musicname, errmsg ? errmsg : "(no error)");
+			Printf("Unable to load %s: %s\n", mus_playing.name.GetChars(), errmsg ? errmsg : "");
+		}
+		else
+		{
+			DebugTrace::Markf("music", "ZMusic_OpenSong OK handle=%p music='%s'", mus_playing.handle, musicname);
 		}
 	}
 

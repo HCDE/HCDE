@@ -27,6 +27,7 @@
 #include "c_cvars.h"
 #include "v_video.h"
 #include "fs_filesystem.h"
+#include "d_nanobsp_loader.h"
 #include <csignal>
 
 extern bool		advancedemo;

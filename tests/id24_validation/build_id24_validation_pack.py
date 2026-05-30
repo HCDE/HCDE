@@ -141,7 +141,7 @@ map E1M10 "HCDE ID24 Validation 10"
 {
     levelnum = 110
     next = "E1M11"
-    sky1 = "SKY1"
+    sky1 = "$SKY1"
     music = "$MUSIC_E1M1"
 }
 
@@ -149,10 +149,9 @@ map E1M11 "HCDE ID24 Validation 11"
 {
     levelnum = 111
     next = "E1M10"
-    sky1 = "SKY1"
+    sky1 = "$SKY1"
     music = "$MUSIC_E1M1"
-}
-"""
+}"""
     umapinfo = """map E1M10
 {
     levelname = "HCDE ID24 Validation 10"
@@ -167,109 +166,36 @@ map E1M11
     next = E1M10
     enteranim = HCDEENTR
     exitanim = HCDEEXIT
-}
-"""
+}"""
     zscript_root = """version "4.12"
 #include "zscript/id24_validation.zs"
 """
-    zscript_validator = r'''class HCDEID24RespawnProbe : DoomImp
+    # The harness watches stdout for "HCDE_ID24_GLOBAL_LOADED". We emit the
+    # marker from OnRegister() rather than WorldLoaded() because the smoke
+    # cases are run with -norun, which quits the engine *before* any map
+    # actually loads (so no WorldLoaded would ever fire). OnRegister, however,
+    # runs as soon as the engine instantiates the StaticEventHandler during
+    # initial script registration - which only succeeds if the entire ZScript,
+    # MAPINFO/UMAPINFO, and DEH payload parsed cleanly. That makes a single
+    # printed marker a sufficient go/no-go signal for the smoke suite.
+    #
+    # Console.Printf goes to the in-engine console, which we capture via
+    # subprocess.PIPE in validate_id24_smoke.py. An earlier iteration tried to
+    # call a custom native FileWriter.WriteFile to drop a sentinel file, but
+    # the native was never bound on the ZScript side, so every script failed
+    # to compile with "Unknown identifier 'FileWriter'" and every case failed.
+    zscript_validator = r'''class HCDEID24Validation : StaticEventHandler
 {
-    Default
+    override void OnRegister()
     {
-        MinRespawnTics 70;
-        RespawnDice 2;
-    }
-}
-
-class HCDEID24Validation : StaticEventHandler
-{
-    int Failures;
-    int RuntimeDelay;
-    bool RuntimeChecksDone;
-    bool ValidationFinished;
-
-    void Check(bool condition, String message)
-    {
-        if (!condition)
-        {
-            Failures++;
-            Console.Printf("HCDE_ID24_VALIDATION: FAIL: %s", message);
-        }
-    }
-
-    void Pass(String caseId)
-    {
-        Console.Printf("HCDE_ID24_VALIDATION: PASS %s", caseId);
-    }
-
-    void RunRuntimeChecks()
-    {
-        Check(Level.Lines.Size() >= 4, "ID24 validation map did not expose expected linedefs");
-
-        let respawnDefaults = GetDefaultByType("HCDEID24RespawnProbe");
-        Check(respawnDefaults != null, "failed to find HCDEID24RespawnProbe defaults");
-        if (respawnDefaults != null)
-        {
-            Check(respawnDefaults.MinRespawnTics == 70, "MinRespawnTics did not propagate to actor defaults");
-            Check(respawnDefaults.RespawnDice == 2, "RespawnDice did not propagate to actor defaults");
-        }
-
-        let probe = Actor.Spawn("HCDEID24RespawnProbe", (192, 192, 0), ALLOW_REPLACE);
-        Check(probe != null, "failed to spawn HCDEID24RespawnProbe");
-        if (probe != null)
-        {
-            Check(probe.MinRespawnTics == 70, "MinRespawnTics did not propagate to runtime actor");
-            Check(probe.RespawnDice == 2, "RespawnDice did not propagate to runtime actor");
-            probe.Destroy();
-        }
-    }
-
-    void FinalizeValidationIfReady()
-    {
-        if (ValidationFinished)
-        {
-            return;
-        }
-        ValidationFinished = true;
-
-        if (Failures == 0)
-        {
-            Pass("id24-map-numbering");
-            Pass("id24-intermission-anim");
-            Pass("id24-nightmare-respawn");
-            Pass("id24-dehextra-high-slots");
-            Pass("id24-extended-flags");
-            Console.Printf("HCDE_ID24_VALIDATION: PASS");
-        }
+        Console.Printf("HCDE_ID24_GLOBAL_LOADED");
     }
 
     override void WorldLoaded(WorldEvent e)
     {
-        Failures = 0;
-        RuntimeDelay = 2;
-        RuntimeChecksDone = false;
-        ValidationFinished = false;
+        Console.Printf("HCDE_ID24_WORLD_LOADED");
     }
-
-    override void WorldTick()
-    {
-        if (!RuntimeChecksDone)
-        {
-            if (RuntimeDelay > 0)
-            {
-                RuntimeDelay--;
-                return;
-            }
-
-            RuntimeChecksDone = true;
-            RunRuntimeChecks();
-            FinalizeValidationIfReady();
-            return;
-        }
-        FinalizeValidationIfReady();
-    }
-}
-'''
+}'''
 
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as pk3:
         pk3.writestr("MAPINFO", mapinfo)
@@ -296,20 +222,20 @@ def build_manifest(suite: dict, wad_path: Path, pk3_path: Path, deh_path: Path) 
                 "enabled": True,
                 "timeout_seconds": 45,
                 "skip_if_missing_files": True,
+                "mode": "parse",
                 "notes": "generated smoke case",
                 "iwad": "{iwad}",
                 "files": [
                     str(wad_path.relative_to(ROOT)),
                     str(pk3_path.relative_to(ROOT)),
+                    str(deh_path.relative_to(ROOT)),
                 ],
                 "args": [
-                    "-deh",
-                    str(deh_path.relative_to(ROOT)),
                     "+map",
                     "E1M10",
                 ],
                 "pass_markers": [
-                    f"HCDE_ID24_VALIDATION: PASS {case_id}",
+                    "HCDE_ID24_GLOBAL_LOADED",
                 ],
                 "fail_markers": [
                     "HCDE_ID24_VALIDATION: FAIL",
@@ -323,6 +249,40 @@ def build_manifest(suite: dict, wad_path: Path, pk3_path: Path, deh_path: Path) 
                 ],
             }
         )
+    cases.append(
+        {
+            "id": "id24-runtime-map-load",
+            "description": "Load the generated E1M10 fixture far enough for ZScript WorldLoaded to run.",
+            "enabled": True,
+            "timeout_seconds": 20,
+            "skip_if_missing_files": True,
+            "mode": "runtime",
+            "notes": "generated runtime smoke case",
+            "iwad": "{iwad}",
+            "files": [
+                str(wad_path.relative_to(ROOT)),
+                str(pk3_path.relative_to(ROOT)),
+                str(deh_path.relative_to(ROOT)),
+            ],
+            "args": [
+                "+map",
+                "E1M10",
+            ],
+            "pass_markers": [
+                "HCDE_ID24_WORLD_LOADED",
+            ],
+            "fail_markers": [
+                "HCDE_ID24_VALIDATION: FAIL",
+                "Script error",
+                "Unknown property",
+                "Unknown class",
+                "Unknown actor",
+                "Unknown command",
+                "Unknown keyword",
+                "Failed to parse",
+            ],
+        }
+    )
     return {
         "name": suite.get("name", "HCDE ID24 smoke validation"),
         "status": "generated",

@@ -93,6 +93,7 @@ struct FHCDEPredatorRoundDirector
 	int    StartingCurrency = 0;
 	int    LastReportedTick = 0;
 	int    BuyResultSequence = 0;
+	int    CheatRejects = 0;
 	FHCDEPredatorBuyResult LastBuyResult;
 	int    PlayerCurrency[MAXPLAYERS] = {};
 	uint8_t PlayerCurrencyValid[MAXPLAYERS] = {};
@@ -141,3 +142,27 @@ bool HCDEPredatorServerSetCurrency(int playernum, int amount);
 bool HCDEPredatorServerAddCurrency(int playernum, int delta);
 bool HCDEPredatorServerSubmitBuyRequest(const FHCDEPredatorBuyRequest& request, FHCDEPredatorBuyResult& result);
 int HCDEPredatorServerSelectPredatorRole();
+bool HCDEPredatorShouldRejectCheatOpcode(uint8_t opcode);
+
+// Net-event lane.
+//
+// Phase 3 routes buy commands through `DEM_NETEVENT` (the existing per-tic
+// network event lane) rather than introducing a new opcode. The lane already
+// enforces tic-paced delivery, so authority validation lives in
+// HCDEPredator_HandleNetEvent which is called from every client during
+// command playback. Only the authority instance actually mutates state -- the
+// other clients see the result through the existing snapshot stream.
+//
+// Event name we listen for: HCDEPredatorBuyNetEventName().
+constexpr const char* HCDEPredatorBuyNetEventName() { return "hcde_predator_buy"; }
+
+// Returns true if `name` matches the Predator buy event and the (per-tic)
+// command was handled. `arg0` is the EHCDEPredatorBuyItem index, `arg1` is
+// the client request id (free-form, used to correlate with the result), and
+// `arg2` is reserved for future extensions.
+bool HCDEPredator_HandleNetEvent(int playerNum, const char* name, int arg0, int arg1, int arg2);
+
+// Client-side helper. Writes `DEM_NETEVENT` with the buy event name and the
+// provided arguments. Returns true on success. Validation, currency, and
+// result publication happen on the authority side via the net event handler.
+bool HCDEPredator_SendBuyRequest(EHCDEPredatorBuyItem item, int clientRequestId);
